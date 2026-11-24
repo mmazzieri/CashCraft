@@ -76,8 +76,9 @@ fn backup(path: &Path, from: i64) -> Result<PathBuf> {
         bail!(tr("the backup copy is not sound"));
     }
     copy.close().map_err(|(_, e)| e)?;
+    // Windows flushes only a file open for writing.
+    OpenOptions::new().write(true).open(&part.0)?.sync_all()?;
     std::fs::set_permissions(&part.0, std::fs::metadata(path)?.permissions())?;
-    OpenOptions::new().read(true).open(&part.0)?.sync_all()?;
     for n in 1..1000 {
         let target = match n {
             1 => beside(path, &format!(".v{from}-backup.db")),
