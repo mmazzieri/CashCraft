@@ -409,6 +409,7 @@ the date is not valid	data non valida
 the date is not valid (yyyy-mm-dd)	data non valida (gg/mm/aaaa)
 the entry does not balance: debits {debit}, credits {credit} ({currency})	la registrazione non quadra: dare {debit}, avere {credit} ({currency})
 the file "{path}" cannot be read: {error}	file "{path}" non leggibile: {error}
+the workbook is empty	la cartella di lavoro è vuota
 the file is empty or is not a CSV	il file è vuoto o non è un CSV
 the folder "{path}" cannot be used: {error}	cartella "{path}" non valida: {error}
 the folder of "{path}" cannot be used: {error}	cartella di "{path}" non valida: {error}

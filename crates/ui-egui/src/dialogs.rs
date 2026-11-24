@@ -530,7 +530,8 @@ impl App {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button(tr("📂 Choose file…")).clicked()
-                && let Some(p) = rfd::FileDialog::new().add_filter("CSV", &["csv", "CSV", "txt"]).pick_file()
+                && let Some(p) =
+                    rfd::FileDialog::new().add_filter("CSV, Excel", &["csv", "CSV", "txt", "xls", "XLS"]).pick_file()
             {
                 st.path_text = p.display().to_string();
                 st.load();

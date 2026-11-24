@@ -104,7 +104,7 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "preview_csv",
-            description: "Analyzes a bank CSV without importing it: separator, recognized columns and first rows.",
+            description: "Analyzes a bank statement (CSV or Excel 97 .xls) without importing it: separator, recognized columns and first rows.",
             schema: obj(
                 json!({"path": s("Path of the CSV file."), "invert": b("Invert the sign of the amounts."), "limit": n("Preview rows (default 10)."),
                 "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."), "credit_column": s("Money-in column."),
@@ -114,7 +114,7 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "import_csv",
-            description: "Imports a CSV exported by an Italian bank into an account. Columns, separator, encoding and amount format are detected; transactions already imported are skipped; rules assign the categories.",
+            description: "Imports a CSV or Excel 97 .xls file exported by an Italian bank into an account. Columns, separator, encoding and amount format are detected; transactions already imported are skipped; rules assign the categories.",
             schema: obj(
                 json!({"path": s("Path of the CSV file."), "account": s(ACCOUNT), "invert": b("Invert the sign (e.g. credit card statements with positive expenses)."),
                 "dry_run": b("Trial run: saves nothing."), "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."),
@@ -708,8 +708,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 Some(r) => r.read_path(&raw)?,
                 None => PathBuf::from(raw),
             };
-            let (text, enc) = importer::read_text(&path)?;
-            let t = importer::analyze(&text, enc)?;
+            let t = importer::load(&path)?;
             let m = mapping_overrides(&t, a)?;
             if m.date.is_none() {
                 bail!(tr("the date column was not found: give it with date_column"));
