@@ -1,9 +1,11 @@
-//! Operazioni comuni a CLI e server MCP: ogni operazione riceve argomenti JSON
-//! e restituisce JSON. Gli importi in uscita sono in euro (numeri con due decimali).
+//! Operations shared by the command line and the MCP server: each takes JSON arguments and
+//! returns JSON. Amounts come out in euros (numbers with two decimals). The descriptions of the
+//! operations are English in every language; messages and errors are in the language in use.
 
 use crate::db::{self, AccountKind, Cents, Db, NewScheduled, NewTx, TxEdit, TxFilter};
+use crate::i18n::{Lang, lang, tr, trf, trn};
 use crate::importer;
-use crate::money::{fmt_eur, parse_amount, parse_date};
+use crate::money::{fmt_date, fmt_eur, fmt_machine, fmt_plain, parse_amount, parse_date};
 use anyhow::{Result, anyhow, bail};
 use chrono::{Datelike, Months, NaiveDate};
 use serde_json::{Map, Value, json};
@@ -28,199 +30,198 @@ fn obj(props: Value, required: &[&str]) -> Value {
     json!({"type": "object", "properties": props, "required": required})
 }
 
-const AMOUNT: &str =
-    "Importo in euro: numero (-12.5) o testo all'italiana (\"-12,50\"). Negativo = uscita, positivo = entrata.";
-const DATE: &str = "Data: AAAA-MM-GG o GG/MM/AAAA (predefinita: oggi).";
-const ACCOUNT: &str = "Conto: id numerico o nome.";
-const CATEGORY: &str = "Categoria: id, nome o percorso \"Padre:Figlio\" (es. \"Casa:Bollette\").";
+const AMOUNT: &str = "Amount in euros: a number (-12.5), or text in the English (\"-1,234.50\") or Italian (\"-1.234,50\") style. Negative = money out, positive = money in. Prefer numbers: text with one separator before exactly three digits (\"1,234\" or \"1.234\") is read in the language in use, English over MCP.";
+const DATE: &str = "Date: YYYY-MM-DD or DD/MM/YYYY (default: today).";
+const ACCOUNT: &str = "Account: numeric id or name.";
+const CATEGORY: &str = "Category: id, name or path \"Parent:Child\" (e.g. \"Home:Utilities\").";
 
 pub fn tools() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "list_accounts",
-            description: "Elenca i conti con saldo attuale e patrimonio netto totale.",
-            schema: obj(json!({"include_archived": b("Includi i conti archiviati.")}), &[]),
+            description: "Lists the accounts with their balance and the total net worth.",
+            schema: obj(json!({"include_archived": b("Include archived accounts.")}), &[]),
         },
         ToolDef {
             name: "create_account",
-            description: "Crea un nuovo conto (bank, cash, credit_card, savings, investment, loan).",
+            description: "Creates an account (bank, cash, credit_card, savings, investment, loan).",
             schema: obj(
-                json!({"name": s("Nome del conto."), "kind": s("Tipo: bank, cash, credit_card, savings, investment, loan."),
-                "opening_balance": n("Saldo iniziale in euro."), "currency": s("Valuta (predefinita EUR)."), "iban": s("IBAN (facoltativo).")}),
+                json!({"name": s("Name of the account."), "kind": s("Type: bank, cash, credit_card, savings, investment, loan."),
+                "opening_balance": n("Opening balance in euros."), "currency": s("Currency (default EUR)."), "iban": s("IBAN (optional).")}),
                 &["name"],
             ),
         },
         ToolDef {
             name: "delete_account",
-            description: "Elimina un conto e tutti i suoi movimenti.",
+            description: "Deletes an account and all its transactions.",
             schema: obj(json!({"account": s(ACCOUNT)}), &["account"]),
         },
         ToolDef {
             name: "list_transactions",
-            description: "Elenca i movimenti (dal più recente), con filtri facoltativi.",
+            description: "Lists transactions, newest first, with optional filters.",
             schema: obj(
-                json!({"account": s(ACCOUNT), "category": s(CATEGORY), "from": s("Dal giorno (incluso)."), "to": s("Al giorno (incluso)."),
-                "search": s("Testo da cercare in beneficiario, note, categoria."), "uncategorized": b("Solo movimenti senza categoria."),
-                "limit": n("Numero massimo di movimenti (predefinito 100).")}),
+                json!({"account": s(ACCOUNT), "category": s(CATEGORY), "from": s("From this day (included)."), "to": s("To this day (included)."),
+                "search": s("Text to look for in payee, notes and category."), "uncategorized": b("Only transactions without a category."),
+                "limit": n("Maximum number of transactions (default 100).")}),
                 &[],
             ),
         },
         ToolDef {
             name: "add_transaction",
-            description: "Registra un movimento. Se non si indica la categoria vengono applicate le regole automatiche.",
+            description: "Records a transaction. Without a category, the automatic rules are applied.",
             schema: obj(
-                json!({"account": s(ACCOUNT), "amount": s(AMOUNT), "payee": s("Beneficiario o descrizione."), "date": s(DATE),
-                "category": s(CATEGORY), "memo": s("Note."), "cleared": b("Movimento già verificato sull'estratto conto.")}),
+                json!({"account": s(ACCOUNT), "amount": s(AMOUNT), "payee": s("Payee or description."), "date": s(DATE),
+                "category": s(CATEGORY), "memo": s("Notes."), "cleared": b("Already checked against the bank statement.")}),
                 &["account", "amount", "payee"],
             ),
         },
         ToolDef {
             name: "update_transaction",
-            description: "Modifica un movimento esistente; i campi non indicati restano invariati. category vuota = senza categoria.",
+            description: "Changes a transaction; fields left out stay as they are. Empty category = no category.",
             schema: obj(
-                json!({"id": n("Id del movimento."), "date": s(DATE), "amount": s(AMOUNT), "payee": s("Beneficiario."), "memo": s("Note."),
-                "category": s(CATEGORY), "cleared": b("Verificato.")}),
+                json!({"id": n("Id of the transaction."), "date": s(DATE), "amount": s(AMOUNT), "payee": s("Payee."), "memo": s("Notes."),
+                "category": s(CATEGORY), "cleared": b("Cleared.")}),
                 &["id"],
             ),
         },
         ToolDef {
             name: "delete_transaction",
-            description: "Elimina un movimento (per i giroconti elimina entrambe le parti).",
-            schema: obj(json!({"id": n("Id del movimento.")}), &["id"]),
+            description: "Deletes a transaction (both sides of a transfer).",
+            schema: obj(json!({"id": n("Id of the transaction.")}), &["id"]),
         },
         ToolDef {
             name: "add_transfer",
-            description: "Registra un giroconto tra due conti.",
+            description: "Records a transfer between two accounts.",
             schema: obj(
-                json!({"from": s("Conto di origine."), "to": s("Conto di destinazione."), "amount": s("Importo positivo in euro."),
-                "date": s(DATE), "memo": s("Note.")}),
+                json!({"from": s("Account to transfer from."), "to": s("Account to transfer to."), "amount": s("Positive amount in euros."),
+                "date": s(DATE), "memo": s("Notes.")}),
                 &["from", "to", "amount"],
             ),
         },
         ToolDef {
             name: "preview_csv",
-            description: "Analizza un CSV bancario senza importarlo: separatore, colonne riconosciute e prime righe.",
+            description: "Analyzes a bank CSV without importing it: separator, recognized columns and first rows.",
             schema: obj(
-                json!({"path": s("Percorso del file CSV."), "invert": b("Inverti il segno degli importi."), "limit": n("Righe di anteprima (predefinito 10)."),
-                "date_column": s("Colonna data (nome o numero da 1)."), "amount_column": s("Colonna importo."), "credit_column": s("Colonna entrate."),
-                "debit_column": s("Colonna uscite."), "description_column": s("Colonna descrizione."), "payee_column": s("Colonna beneficiario.")}),
+                json!({"path": s("Path of the CSV file."), "invert": b("Invert the sign of the amounts."), "limit": n("Preview rows (default 10)."),
+                "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."), "credit_column": s("Money-in column."),
+                "debit_column": s("Money-out column."), "description_column": s("Description column."), "payee_column": s("Payee column.")}),
                 &["path"],
             ),
         },
         ToolDef {
             name: "import_csv",
-            description: "Importa un CSV esportato da una banca italiana in un conto. Colonne, separatore, codifica e formato degli importi sono riconosciuti automaticamente; i movimenti già importati vengono saltati; le regole assegnano le categorie.",
+            description: "Imports a CSV exported by an Italian bank into an account. Columns, separator, encoding and amount format are detected; transactions already imported are skipped; rules assign the categories.",
             schema: obj(
-                json!({"path": s("Percorso del file CSV."), "account": s(ACCOUNT), "invert": b("Inverti il segno (es. estratti carta di credito con spese positive)."),
-                "dry_run": b("Solo prova: non salva nulla."), "date_column": s("Colonna data (nome o numero da 1)."), "amount_column": s("Colonna importo."),
-                "credit_column": s("Colonna entrate."), "debit_column": s("Colonna uscite."), "description_column": s("Colonna descrizione."),
-                "payee_column": s("Colonna beneficiario.")}),
+                json!({"path": s("Path of the CSV file."), "account": s(ACCOUNT), "invert": b("Invert the sign (e.g. credit card statements with positive expenses)."),
+                "dry_run": b("Trial run: saves nothing."), "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."),
+                "credit_column": s("Money-in column."), "debit_column": s("Money-out column."), "description_column": s("Description column."),
+                "payee_column": s("Payee column.")}),
                 &["path", "account"],
             ),
         },
         ToolDef {
             name: "list_categories",
-            description: "Elenca le categorie di entrata e di uscita.",
+            description: "Lists the income and expense categories.",
             schema: obj(json!({}), &[]),
         },
         ToolDef {
             name: "create_category",
-            description: "Crea una categoria (anche annidata, es. \"Casa:Giardino\").",
+            description: "Creates a category (nested ones too, e.g. \"Home:Garden\").",
             schema: obj(
-                json!({"path": s("Nome o percorso Padre:Figlio."), "income": b("Categoria di entrata (predefinito: uscita).")}),
+                json!({"path": s("Name or path Parent:Child."), "income": b("Income category (default: expense).")}),
                 &["path"],
             ),
         },
         ToolDef {
             name: "delete_category",
-            description: "Elimina una categoria (i movimenti restano, senza categoria).",
+            description: "Deletes a category (its transactions stay, without a category).",
             schema: obj(json!({"category": s(CATEGORY)}), &["category"]),
         },
         ToolDef {
             name: "spending_by_category",
-            description: "Totali per categoria in un periodo (predefinito: mese corrente). Uscite negative.",
+            description: "Totals by category in a period (default: current month). Expenses are negative.",
             schema: obj(
-                json!({"from": s("Dal giorno."), "to": s("Al giorno."), "month": s("Mese AAAA-MM (alternativo a from/to).")}),
+                json!({"from": s("From this day."), "to": s("To this day."), "month": s("Month YYYY-MM (instead of from/to).")}),
                 &[],
             ),
         },
         ToolDef {
             name: "monthly_summary",
-            description: "Entrate, uscite e risparmio per mese.",
-            schema: obj(json!({"months": n("Quanti mesi (predefinito 12).")}), &[]),
+            description: "Income, expenses and savings by month.",
+            schema: obj(json!({"months": n("How many months (default 12).")}), &[]),
         },
         ToolDef {
             name: "net_worth",
-            description: "Patrimonio netto attuale e andamento a fine mese.",
-            schema: obj(json!({"months": n("Quanti mesi di storico (predefinito 12).")}), &[]),
+            description: "Current net worth and its value at the end of each month.",
+            schema: obj(json!({"months": n("How many months of history (default 12).")}), &[]),
         },
         ToolDef {
             name: "set_budget",
-            description: "Imposta il budget mensile di una categoria (0 per rimuoverlo).",
+            description: "Sets the monthly budget of a category (0 removes it).",
             schema: obj(
-                json!({"category": s(CATEGORY), "monthly_amount": s("Importo mensile in euro.")}),
+                json!({"category": s(CATEGORY), "monthly_amount": s("Monthly amount in euros.")}),
                 &["category", "monthly_amount"],
             ),
         },
         ToolDef {
             name: "budget_status",
-            description: "Budget del mese: previsto, speso e rimanente per categoria.",
-            schema: obj(json!({"month": s("Mese AAAA-MM (predefinito: corrente).")}), &[]),
+            description: "Budget of the month: planned, spent and left by category.",
+            schema: obj(json!({"month": s("Month YYYY-MM (default: current).")}), &[]),
         },
         ToolDef {
             name: "list_rules",
-            description: "Elenca le regole di categorizzazione automatica.",
+            description: "Lists the automatic categorization rules.",
             schema: obj(json!({}), &[]),
         },
         ToolDef {
             name: "add_rule",
-            description: "Aggiunge una regola: se il beneficiario o la descrizione contengono una delle parole chiave (separate da |), assegna la categoria.",
+            description: "Adds a rule: when the payee or the description contains one of the keywords (separated by |), it assigns the category.",
             schema: obj(
-                json!({"keywords": s("Parole chiave separate da | (es. \"conad|coop\")."), "category": s(CATEGORY),
-                "rename_payee": s("Nuovo nome del beneficiario (facoltativo).")}),
+                json!({"keywords": s("Keywords separated by | (e.g. \"bakery|panificio\")."), "category": s(CATEGORY),
+                "rename_payee": s("New name of the payee (optional).")}),
                 &["keywords", "category"],
             ),
         },
         ToolDef {
             name: "delete_rule",
-            description: "Elimina una regola.",
-            schema: obj(json!({"id": n("Id della regola.")}), &["id"]),
+            description: "Deletes a rule.",
+            schema: obj(json!({"id": n("Id of the rule.")}), &["id"]),
         },
         ToolDef {
             name: "apply_rules",
-            description: "Applica le regole a tutti i movimenti ancora senza categoria.",
+            description: "Applies the rules to every transaction without a category.",
             schema: obj(json!({}), &[]),
         },
         ToolDef {
             name: "list_scheduled",
-            description: "Elenca i movimenti pianificati (ricorrenti).",
+            description: "Lists the scheduled (recurring) transactions.",
             schema: obj(json!({}), &[]),
         },
         ToolDef {
             name: "add_scheduled",
-            description: "Aggiunge un movimento ricorrente (o un giroconto ricorrente con to_account).",
+            description: "Adds a recurring transaction (or a recurring transfer, with to_account).",
             schema: obj(
-                json!({"account": s(ACCOUNT), "amount": s(AMOUNT), "payee": s("Beneficiario."), "next_date": s("Prossima scadenza."),
-                "every": n("Ogni quante unità (predefinito 1)."), "unit": s("giorno, settimana, mese, anno (predefinito mese)."),
-                "category": s(CATEGORY), "memo": s("Note."), "to_account": s("Conto di destinazione per un giroconto.")}),
+                json!({"account": s(ACCOUNT), "amount": s(AMOUNT), "payee": s("Payee."), "next_date": s("Next due date."),
+                "every": n("Every how many units (default 1)."), "unit": s("day, week, month, year (default month)."),
+                "category": s(CATEGORY), "memo": s("Notes."), "to_account": s("Account to transfer to, for a transfer.")}),
                 &["account", "amount", "payee", "next_date"],
             ),
         },
         ToolDef {
             name: "delete_scheduled",
-            description: "Elimina un movimento pianificato.",
+            description: "Deletes a scheduled transaction.",
             schema: obj(json!({"id": n("Id.")}), &["id"]),
         },
         ToolDef {
             name: "post_scheduled",
-            description: "Registra i movimenti pianificati scaduti fino alla data indicata (predefinita: oggi).",
-            schema: obj(json!({"until": s("Fino al giorno.")}), &[]),
+            description: "Records the scheduled transactions due up to a date (default: today).",
+            schema: obj(json!({"until": s("Up to this day.")}), &[]),
         },
         ToolDef {
             name: "export_csv",
-            description: "Esporta i movimenti in un file CSV (separatore ;, importi all'italiana).",
+            description: "Exports transactions to a CSV file. Over MCP, and in English: comma separator, amounts as 1234.56, dates as YYYY-MM-DD. In the Italian command line: semicolon, 1.234,56, DD/MM/YYYY.",
             schema: obj(
-                json!({"path": s("File da scrivere."), "account": s(ACCOUNT), "from": s("Dal giorno."), "to": s("Al giorno.")}),
+                json!({"path": s("File to write."), "account": s(ACCOUNT), "from": s("From this day."), "to": s("To this day.")}),
                 &["path"],
             ),
         },
@@ -238,8 +239,12 @@ fn opt_str(a: &Value, k: &str) -> Option<String> {
     }
 }
 
+fn missing(k: &str) -> anyhow::Error {
+    anyhow!(trf("the parameter \"{name}\" is missing", &[("name", &k)]))
+}
+
 fn req_str(a: &Value, k: &str) -> Result<String> {
-    opt_str(a, k).filter(|s| !s.trim().is_empty()).ok_or_else(|| anyhow!("manca il parametro \"{k}\""))
+    opt_str(a, k).filter(|s| !s.trim().is_empty()).ok_or_else(|| missing(k))
 }
 
 fn opt_bool(a: &Value, k: &str) -> bool {
@@ -260,7 +265,7 @@ fn opt_i64(a: &Value, k: &str) -> Option<i64> {
 }
 
 fn req_i64(a: &Value, k: &str) -> Result<i64> {
-    opt_i64(a, k).ok_or_else(|| anyhow!("manca il parametro numerico \"{k}\""))
+    opt_i64(a, k).ok_or_else(|| anyhow!(trf("the numeric parameter \"{name}\" is missing", &[("name", &k)])))
 }
 
 fn amount_of(v: &Value) -> Result<Cents> {
@@ -268,7 +273,7 @@ fn amount_of(v: &Value) -> Result<Cents> {
         // The decimal text of the number, so that no amount goes through floating point.
         Value::Number(n) => crate::money::parse_amount_with(&n.to_string(), Some(false)),
         Value::String(s) => parse_amount(s),
-        _ => bail!("importo non valido"),
+        _ => bail!(tr("the amount is not valid")),
     }
 }
 
@@ -280,7 +285,7 @@ fn opt_amount(a: &Value, k: &str) -> Result<Option<Cents>> {
 }
 
 fn req_amount(a: &Value, k: &str) -> Result<Cents> {
-    opt_amount(a, k)?.ok_or_else(|| anyhow!("manca il parametro \"{k}\""))
+    opt_amount(a, k)?.ok_or_else(|| missing(k))
 }
 
 pub fn date_arg(s: &str) -> Result<NaiveDate> {
@@ -290,7 +295,8 @@ pub fn date_arg(s: &str) -> Result<NaiveDate> {
         "ieri" | "yesterday" => return Ok(db::today().pred_opt().unwrap_or_default()),
         _ => {}
     }
-    parse_date(s).ok_or_else(|| anyhow!("data \"{s}\" non valida (usa AAAA-MM-GG o GG/MM/AAAA)"))
+    parse_date(s)
+        .ok_or_else(|| anyhow!(trf("\"{date}\" is not a valid date (use YYYY-MM-DD or DD/MM/YYYY)", &[("date", &s)])))
 }
 
 fn opt_date(a: &Value, k: &str) -> Result<Option<NaiveDate>> {
@@ -307,7 +313,7 @@ fn month_arg(s: &str) -> Result<NaiveDate> {
     }
     NaiveDate::parse_from_str(&format!("{t}-01"), "%Y-%m-%d")
         .or_else(|_| NaiveDate::parse_from_str(&format!("01/{t}"), "%d/%m/%Y"))
-        .map_err(|_| anyhow!("mese \"{s}\" non valido (usa AAAA-MM)"))
+        .map_err(|_| anyhow!(trf("\"{month}\" is not a valid month (use YYYY-MM)", &[("month", &s)])))
 }
 
 /// Converte ricorsivamente i campi in centesimi in euro.
@@ -354,8 +360,10 @@ fn mapping_overrides(t: &importer::Table, a: &Value) -> Result<importer::Mapping
             if v.trim().is_empty() || v.trim() == "-" {
                 *slot = None;
             } else {
-                *slot =
-                    Some(importer::column_index(t, &v).ok_or_else(|| anyhow!("colonna \"{v}\" non trovata nel file"))?);
+                *slot = Some(
+                    importer::column_index(t, &v)
+                        .ok_or_else(|| anyhow!(trf("column \"{name}\" is not in the file", &[("name", &v)])))?,
+                );
             }
         }
         Ok(())
@@ -387,35 +395,44 @@ pub struct Roots {
 
 impl Roots {
     pub fn new(read: &Path, write: &Path) -> Result<Self> {
-        let canon = |p: &Path, what: &str| -> Result<PathBuf> {
-            let c = p.canonicalize().map_err(|e| anyhow!("cartella {what} \"{}\" non valida: {e}", p.display()))?;
+        let canon = |p: &Path| -> Result<PathBuf> {
+            let c = p.canonicalize().map_err(|e| {
+                anyhow!(trf("the folder \"{path}\" cannot be used: {error}", &[("path", &p.display()), ("error", &e)]))
+            })?;
             if !c.is_dir() {
-                bail!("\"{}\" non è una cartella", p.display());
+                bail!(trf("\"{path}\" is not a folder", &[("path", &p.display())]));
             }
             Ok(c)
         };
-        Ok(Roots { read: canon(read, "di lettura")?, write: canon(write, "di scrittura")? })
+        Ok(Roots { read: canon(read)?, write: canon(write)? })
     }
 
     fn read_path(&self, p: &str) -> Result<PathBuf> {
         let full = self.read.join(p);
-        let c = full.canonicalize().map_err(|e| anyhow!("file \"{p}\" non leggibile: {e}"))?;
+        let c = full
+            .canonicalize()
+            .map_err(|e| anyhow!(trf("the file \"{path}\" cannot be read: {error}", &[("path", &p), ("error", &e)])))?;
         if !c.starts_with(&self.read) {
-            bail!("accesso negato: \"{p}\" è fuori dalla cartella di lettura consentita");
+            bail!(trf("access denied: \"{path}\" is outside the allowed read folder", &[("path", &p)]));
         }
         Ok(c)
     }
 
     fn write_path(&self, p: &str) -> Result<PathBuf> {
         let full = self.write.join(p);
-        let name = full.file_name().ok_or_else(|| anyhow!("percorso \"{p}\" senza nome di file"))?.to_owned();
-        let parent = full.parent().ok_or_else(|| anyhow!("percorso \"{p}\" non valido"))?;
-        let dir = parent.canonicalize().map_err(|e| anyhow!("cartella di \"{p}\" non valida: {e}"))?;
+        let name = full
+            .file_name()
+            .ok_or_else(|| anyhow!(trf("the path \"{path}\" has no file name", &[("path", &p)])))?
+            .to_owned();
+        let parent = full.parent().ok_or_else(|| anyhow!(trf("the path \"{path}\" is not valid", &[("path", &p)])))?;
+        let dir = parent.canonicalize().map_err(|e| {
+            anyhow!(trf("the folder of \"{path}\" cannot be used: {error}", &[("path", &p), ("error", &e)]))
+        })?;
         let target = dir.join(name);
         // Un collegamento già esistente non deve portare fuori dalla cartella.
         let resolved = if target.exists() { target.canonicalize()? } else { target.clone() };
         if !dir.starts_with(&self.write) || !resolved.starts_with(&self.write) {
-            bail!("accesso negato: \"{p}\" è fuori dalla cartella di scrittura consentita");
+            bail!(trf("access denied: \"{path}\" is outside the allowed write folder", &[("path", &p)]));
         }
         Ok(target)
     }
@@ -437,7 +454,8 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
         }
         "create_account" => {
             let kind = match opt_str(a, "kind") {
-                Some(k) => AccountKind::from_code(&k).ok_or_else(|| anyhow!("tipo di conto \"{k}\" sconosciuto"))?,
+                Some(k) => AccountKind::from_code(&k)
+                    .ok_or_else(|| anyhow!(trf("unknown account type \"{kind}\"", &[("kind", &k)])))?,
                 None => AccountKind::Bank,
             };
             let id = db.add_account(
@@ -447,12 +465,12 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 opt_amount(a, "opening_balance")?.unwrap_or(0),
                 &opt_str(a, "iban").unwrap_or_default(),
             )?;
-            json!({"id": id, "message": "conto creato"})
+            json!({"id": id, "message": tr("account created")})
         }
         "delete_account" => {
             let acc = db.find_account(&req_str(a, "account")?)?;
             db.delete_account(acc.id)?;
-            json!({"message": format!("conto \"{}\" eliminato", acc.name)})
+            json!({"message": trf("account \"{name}\" deleted", &[("name", &acc.name)])})
         }
         "list_transactions" => {
             let mut f = TxFilter {
@@ -488,7 +506,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 cleared: opt_bool(a, "cleared"),
                 import_hash: None,
             })?;
-            let id = id.ok_or_else(|| anyhow!("movimento non salvato"))?;
+            let id = id.ok_or_else(|| anyhow!(tr("the transaction was not saved")))?;
             json!({"id": id, "transaction": db.transaction(id)?})
         }
         "update_transaction" => {
@@ -515,7 +533,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
         "delete_transaction" => {
             let id = req_i64(a, "id")?;
             db.delete_transaction(id)?;
-            json!({"message": format!("movimento {id} eliminato")})
+            json!({"message": trf("transaction {id} deleted", &[("id", &id)])})
         }
         "add_transfer" => {
             let from = db.find_account(&req_str(a, "from")?)?;
@@ -527,7 +545,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 req_amount(a, "amount")?,
                 &opt_str(a, "memo").unwrap_or_default(),
             )?;
-            json!({"ids": [x, y], "message": "giroconto registrato"})
+            json!({"ids": [x, y], "message": tr("transfer recorded")})
         }
         "preview_csv" | "import_csv" => {
             let raw = req_str(a, "path")?;
@@ -539,10 +557,10 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             let t = importer::analyze(&text, enc)?;
             let m = mapping_overrides(&t, a)?;
             if m.date.is_none() {
-                bail!("non trovo la colonna della data: indicala con date_column");
+                bail!(tr("the date column was not found: give it with date_column"));
             }
             if m.amount.is_none() && m.credit.is_none() && m.debit.is_none() {
-                bail!("non trovo la colonna dell'importo: indicala con amount_column o credit_column/debit_column");
+                bail!(tr("the amount column was not found: give it with amount_column or credit_column/debit_column"));
             }
             let (rows, skipped) = importer::parse_rows(&t, &m, opt_bool(a, "invert"));
             let info = importer::describe(&t, &m);
@@ -556,7 +574,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 let acc = db.find_account(&req_str(a, "account")?)?;
                 let res = importer::import_rows(db, acc.id, &rows, skipped)?;
                 json!({"account": acc.name, "format": info, "result": res,
-                       "message": format!("{} movimenti importati, {} già presenti, {} categorizzati automaticamente", res.added, res.duplicates, res.categorized)})
+                       "message": trf("{added} imported, {present} already present, {categorized} categorized automatically", &[("added", &res.added), ("present", &res.duplicates), ("categorized", &res.categorized)])})
             }
         }
         "list_categories" => json!({"categories": db.categories()?}),
@@ -567,7 +585,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
         "delete_category" => {
             let c = db.find_category(&req_str(a, "category")?)?;
             db.delete_category(c.id)?;
-            json!({"message": format!("categoria \"{}\" eliminata", c.path)})
+            json!({"message": trf("category \"{name}\" deleted", &[("name", &c.path)])})
         }
         "spending_by_category" => {
             let (from, to) = match opt_str(a, "month") {
@@ -606,7 +624,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             let c = db.find_category(&req_str(a, "category")?)?;
             let amt = req_amount(a, "monthly_amount")?;
             db.set_budget(c.id, amt)?;
-            json!({"message": format!("budget di \"{}\": {} al mese", c.path, fmt_eur(amt.abs()))})
+            json!({"message": trf("budget of \"{category}\": {amount} a month", &[("category", &c.path), ("amount", &fmt_eur(amt.abs()))])})
         }
         "budget_status" => {
             let m = month_arg(&opt_str(a, "month").unwrap_or_default())?;
@@ -625,11 +643,11 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
         }
         "delete_rule" => {
             db.delete_rule(req_i64(a, "id")?)?;
-            json!({"message": "regola eliminata"})
+            json!({"message": tr("rule deleted")})
         }
         "apply_rules" => {
             let n = db.apply_rules()?;
-            json!({"categorized": n, "message": format!("{n} movimenti categorizzati")})
+            json!({"categorized": n, "message": trn(n, "{n} transaction categorized", "{n} transactions categorized")})
         }
         "list_scheduled" => json!({"scheduled": db.scheduled()?}),
         "add_scheduled" => {
@@ -657,12 +675,12 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
         }
         "delete_scheduled" => {
             db.delete_scheduled(req_i64(a, "id")?)?;
-            json!({"message": "pianificato eliminato"})
+            json!({"message": tr("scheduled transaction deleted")})
         }
         "post_scheduled" => {
             let until = opt_date(a, "until")?.unwrap_or_else(db::today);
             let n = db.post_scheduled(until)?;
-            json!({"posted": n, "message": format!("{n} movimenti registrati")})
+            json!({"posted": n, "message": trn(n, "{n} transaction recorded", "{n} transactions recorded")})
         }
         "export_csv" => {
             let mut f = TxFilter { from: opt_date(a, "from")?, to: opt_date(a, "to")?, ..Default::default() };
@@ -677,24 +695,30 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             let n = export_csv(db, &f, &path)?;
             json!({"exported": n, "path": path})
         }
-        other => bail!("operazione \"{other}\" sconosciuta"),
+        other => bail!(trf("unknown operation \"{name}\"", &[("name", &other)])),
     })
 }
 
+/// Writes transactions to a CSV file that follows the language: in Italian `;`, `1.234,56` and
+/// dd/mm/yyyy; in English `,`, `1234.56` and yyyy-mm-dd. README documents both.
 pub fn export_csv(db: &Db, f: &TxFilter, path: &std::path::Path) -> Result<usize> {
+    let (delimiter, amount): (u8, fn(Cents) -> String) = match lang() {
+        Lang::It => (b';', fmt_plain),
+        Lang::En => (b',', fmt_machine),
+    };
     let mut txs = db.transactions(f)?;
     txs.reverse();
-    let mut w = csv::WriterBuilder::new().delimiter(b';').from_path(path)?;
-    w.write_record(["Data", "Conto", "Beneficiario", "Categoria", "Note", "Importo", "Verificato"])?;
+    let mut w = csv::WriterBuilder::new().delimiter(delimiter).from_path(path)?;
+    w.write_record([tr("Date"), tr("Account"), tr("Payee"), tr("Category"), tr("Notes"), tr("Amount"), tr("Cleared")])?;
     for t in &txs {
         w.write_record([
-            t.date.format("%d/%m/%Y").to_string(),
+            fmt_date(t.date),
             t.account.clone(),
             t.payee.clone(),
             t.category.clone(),
             t.memo.clone(),
-            crate::money::fmt_plain(t.amount),
-            if t.cleared { "sì".into() } else { "no".into() },
+            amount(t.amount),
+            if t.cleared { tr("yes").into() } else { tr("no").into() },
         ])?;
     }
     w.flush()?;
@@ -713,6 +737,90 @@ pub fn year_start(d: NaiveDate) -> NaiveDate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::with_lang;
+
+    /// A fresh file in memory with one account, "A".
+    fn one_account() -> Db {
+        let db = Db::open_in_memory().unwrap();
+        db.add_account("A", AccountKind::Bank, "EUR", 0, "").unwrap();
+        db
+    }
+
+    #[test]
+    fn exports_follow_the_language_and_can_be_imported_back() {
+        let export = |l| {
+            with_lang(l, || {
+                let db = one_account();
+                for (amount, payee, cleared) in [(-123456, "Casa, dolce; casa", true), (100000, "Rossi \"SpA\"", false)]
+                {
+                    db.add_transaction(&NewTx {
+                        account_id: 1,
+                        date: NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
+                        amount,
+                        payee: payee.into(),
+                        cleared,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                }
+                let file = format!("cashcraft-export-{}-{}.csv", l.code(), std::process::id());
+                let path = std::env::temp_dir().join(file);
+                export_csv(&db, &TxFilter::default(), &path).unwrap();
+                let text = std::fs::read_to_string(&path).unwrap();
+                std::fs::remove_file(&path).unwrap();
+                text
+            })
+        };
+        let (it, en) = (export(Lang::It), export(Lang::En));
+        assert_eq!(
+            it,
+            "Data;Conto;Beneficiario;Categoria;Note;Importo;Verificato\n\
+             04/03/2026;A;\"Casa, dolce; casa\";;;-1.234,56;sì\n\
+             04/03/2026;A;\"Rossi \"\"SpA\"\"\";;;1.000,00;no\n"
+        );
+        assert_eq!(
+            en,
+            "Date,Account,Payee,Category,Notes,Amount,Cleared\n\
+             2026-03-04,A,\"Casa, dolce; casa\",,,-1234.56,yes\n\
+             2026-03-04,A,\"Rossi \"\"SpA\"\"\",,,1000.00,no\n"
+        );
+        for text in [it, en] {
+            let t = importer::analyze(&text, "UTF-8").unwrap();
+            let (rows, skipped) = importer::parse_rows(&t, &t.mapping, false);
+            let read: Vec<_> = rows.iter().map(|r| (r.amount, r.payee.as_str())).collect();
+            assert_eq!(read, [(-123456, "Casa, dolce; casa"), (100000, "Rossi \"SpA\"")]);
+            assert_eq!(skipped, 0);
+        }
+    }
+
+    /// JSON numbers mean the same in every language; text is read as a form would.
+    #[test]
+    fn amounts_of_operations() {
+        for (l, text, cents) in [
+            (Lang::It, json!(1.234), 123),
+            (Lang::En, json!(1.234), 123),
+            (Lang::It, json!("1.234"), 123400),
+            (Lang::En, json!("1.234"), 123),
+            (Lang::En, json!("1,234"), 123400),
+            (Lang::It, json!("-12,50"), -1250),
+            (Lang::En, json!("-12,50"), -1250),
+        ] {
+            assert_eq!(with_lang(l, || amount_of(&text)).unwrap(), cents, "{text} {l:?}");
+        }
+    }
+
+    #[test]
+    fn keys_do_not_change_with_the_language() {
+        let keys = |l| {
+            with_lang(l, || {
+                let v = call(&one_account(), "create_account", &json!({"name": "B"}), None).unwrap();
+                (v.as_object().unwrap().keys().cloned().collect::<Vec<_>>(), v["message"].to_string())
+            })
+        };
+        let (it, en) = (keys(Lang::It), keys(Lang::En));
+        assert_eq!(it.0, en.0);
+        assert_eq!((it.1.as_str(), en.1.as_str()), ("\"conto creato\"", "\"account created\""));
+    }
 
     #[test]
     fn roots_keep_agent_file_access_inside_the_allowed_folders() {
@@ -756,8 +864,11 @@ mod tests {
             json!({"a": [1]}),
         ];
         for tool in tools() {
-            let db = Db::open_in_memory().unwrap();
-            crate::demo::seed(&db).unwrap();
+            let db = with_lang(Lang::It, || {
+                let db = Db::open_in_memory().unwrap();
+                crate::demo::seed(&db).unwrap();
+                db
+            });
             let names: Vec<String> = tool
                 .schema
                 .get("properties")

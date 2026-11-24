@@ -1,9 +1,11 @@
-//! Interfaccia a riga di comando. Ogni comando si traduce in un'operazione di `ops`
-//! (le stesse del server MCP) e stampa una tabella leggibile, o JSON con `--json`.
+//! The command line. Each command becomes an operation of `ops` (the same as in the MCP server)
+//! and prints a readable table, or JSON with `--json`. The help is in English; what is printed is
+//! in the language in use.
 
 use anyhow::{Result, anyhow};
 use cashcraft_engine::db::Db;
-use cashcraft_engine::money::fmt_eur;
+use cashcraft_engine::i18n::{Lang, tr, trf, trn, with_lang};
+use cashcraft_engine::money::{fmt_date, fmt_eur, parse_date};
 use cashcraft_engine::ops;
 use clap::{Args, Subcommand};
 use serde_json::{Map, Value, json};
@@ -11,23 +13,23 @@ use std::path::PathBuf;
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// Avvia il server MCP su stdin/stdout. I file CSV si leggono solo dalla cartella
-    /// di lettura e le esportazioni si scrivono solo in quella di scrittura.
+    /// Start the MCP server on stdin/stdout. CSV files are read only from the read folder and
+    /// exports are written only in the write folder.
     Mcp {
-        /// Cartella da cui l'agente può leggere i CSV da importare
+        /// Folder the agent may read CSV files from
         #[arg(long)]
         automation_read_root: PathBuf,
-        /// Cartella in cui l'agente può scrivere le esportazioni
+        /// Folder the agent may write exports to
         #[arg(long)]
         automation_write_root: PathBuf,
     },
-    /// Conti
+    /// Accounts
     #[command(subcommand, visible_alias = "conti")]
     Accounts(AccountsCmd),
-    /// Movimenti
-    #[command(subcommand, visible_alias = "movimenti")]
+    /// Transactions
+    #[command(subcommand, visible_aliases = ["transactions", "movimenti"])]
     Tx(TxCmd),
-    /// Giroconto tra due conti
+    /// Transfer between two accounts
     #[command(visible_alias = "giroconto")]
     Transfer {
         #[arg(long)]
@@ -41,20 +43,20 @@ pub enum Cmd {
         #[arg(long)]
         memo: Option<String>,
     },
-    /// Importa un CSV bancario in un conto
+    /// Import a bank CSV into an account
     #[command(visible_alias = "importa")]
     Import {
         file: PathBuf,
-        /// Conto di destinazione (nome o id)
+        /// Account to import into (name or id)
         #[arg(long, short)]
         account: String,
-        /// Mostra cosa verrebbe importato senza salvare
+        /// Show what would be imported, without saving
         #[arg(long)]
         dry_run: bool,
         #[command(flatten)]
         cols: ColumnArgs,
     },
-    /// Analizza un CSV senza importarlo
+    /// Analyze a CSV without importing it
     #[command(visible_alias = "anteprima")]
     Preview {
         file: PathBuf,
@@ -63,22 +65,22 @@ pub enum Cmd {
         #[command(flatten)]
         cols: ColumnArgs,
     },
-    /// Categorie
+    /// Categories
     #[command(subcommand, visible_alias = "categorie")]
     Categories(CatCmd),
-    /// Budget mensili
+    /// Monthly budgets
     #[command(subcommand)]
     Budget(BudgetCmd),
-    /// Regole di categorizzazione automatica
+    /// Automatic categorization rules
     #[command(subcommand, visible_alias = "regole")]
     Rules(RulesCmd),
-    /// Report
+    /// Reports
     #[command(subcommand)]
     Report(ReportCmd),
-    /// Movimenti pianificati (ricorrenti)
+    /// Scheduled (recurring) transactions
     #[command(subcommand, visible_alias = "pianificati")]
     Scheduled(SchedCmd),
-    /// Esporta i movimenti in CSV
+    /// Export transactions to CSV, in the layout of the language in use
     #[command(visible_alias = "esporta")]
     Export {
         file: PathBuf,
@@ -89,33 +91,33 @@ pub enum Cmd {
         #[arg(long)]
         to: Option<String>,
     },
-    /// Elenca le operazioni disponibili (le stesse del server MCP)
+    /// List the available operations (the same as in the MCP server)
     Tools,
-    /// Esegue un'operazione con argomenti JSON, es.: call list_transactions '{"limit":5}'
+    /// Run an operation with JSON arguments, e.g.: call list_transactions '{"limit":5}'
     Call { tool: String, args: Option<String> },
 }
 
 #[derive(Args, Debug, Default)]
 pub struct ColumnArgs {
-    /// Inverte il segno degli importi (es. estratti carta con spese positive)
+    /// Invert the sign of the amounts (e.g. card statements with positive expenses)
     #[arg(long)]
     invert: bool,
-    /// Colonna della data (nome o numero da 1)
+    /// Date column (name, or number from 1)
     #[arg(long)]
     date_col: Option<String>,
-    /// Colonna dell'importo con segno
+    /// Signed amount column
     #[arg(long)]
     amount_col: Option<String>,
-    /// Colonna delle entrate
+    /// Money-in column
     #[arg(long)]
     credit_col: Option<String>,
-    /// Colonna delle uscite
+    /// Money-out column
     #[arg(long)]
     debit_col: Option<String>,
-    /// Colonna della descrizione
+    /// Description column
     #[arg(long)]
     desc_col: Option<String>,
-    /// Colonna del beneficiario
+    /// Payee column
     #[arg(long)]
     payee_col: Option<String>,
 }
@@ -140,12 +142,12 @@ impl ColumnArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum AccountsCmd {
-    /// Elenca i conti con i saldi
+    /// List the accounts with their balance
     List {
         #[arg(long)]
         all: bool,
     },
-    /// Crea un conto
+    /// Create an account
     Add {
         name: String,
         /// bank, cash, credit_card, savings, investment, loan
@@ -156,13 +158,13 @@ pub enum AccountsCmd {
         #[arg(long)]
         iban: Option<String>,
     },
-    /// Elimina un conto e i suoi movimenti
+    /// Delete an account and its transactions
     Delete { account: String },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum TxCmd {
-    /// Elenca i movimenti
+    /// List transactions
     List {
         #[arg(long, short)]
         account: Option<String>,
@@ -179,7 +181,7 @@ pub enum TxCmd {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
-    /// Registra un movimento (importo negativo = uscita)
+    /// Record a transaction (negative amount = money out)
     Add {
         #[arg(long, short)]
         account: String,
@@ -196,7 +198,7 @@ pub enum TxCmd {
         #[arg(long)]
         cleared: bool,
     },
-    /// Modifica un movimento
+    /// Change a transaction
     Edit {
         id: i64,
         #[arg(long, allow_hyphen_values = true)]
@@ -205,7 +207,7 @@ pub enum TxCmd {
         payee: Option<String>,
         #[arg(long)]
         date: Option<String>,
-        /// Categoria ("" per toglierla)
+        /// Category ("" removes it)
         #[arg(long)]
         category: Option<String>,
         #[arg(long)]
@@ -213,52 +215,52 @@ pub enum TxCmd {
         #[arg(long)]
         cleared: Option<bool>,
     },
-    /// Elimina un movimento
+    /// Delete a transaction
     Delete { id: i64 },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum CatCmd {
+    /// List the categories
     List,
-    /// Crea una categoria ("Padre:Figlio")
+    /// Create a category ("Parent:Child")
     Add {
         path: String,
         #[arg(long)]
         income: bool,
     },
-    Delete {
-        category: String,
-    },
+    /// Delete a category (its transactions stay)
+    Delete { category: String },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum BudgetCmd {
-    /// Stato del budget di un mese (AAAA-MM)
+    /// Budget of a month (YYYY-MM)
     Status { month: Option<String> },
-    /// Imposta il budget mensile di una categoria (0 per toglierlo)
+    /// Set the monthly budget of a category (0 removes it)
     Set { category: String, amount: String },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum RulesCmd {
+    /// List the rules
     List,
-    /// Aggiunge una regola: parole chiave separate da |
+    /// Add a rule: keywords separated by |
     Add {
         keywords: String,
         category: String,
         #[arg(long)]
         rename: Option<String>,
     },
-    Delete {
-        id: i64,
-    },
-    /// Applica le regole ai movimenti senza categoria
+    /// Delete a rule
+    Delete { id: i64 },
+    /// Apply the rules to transactions without a category
     Apply,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ReportCmd {
-    /// Totali per categoria (predefinito: mese corrente)
+    /// Totals by category (default: current month)
     Categories {
         #[arg(long)]
         month: Option<String>,
@@ -267,12 +269,12 @@ pub enum ReportCmd {
         #[arg(long)]
         to: Option<String>,
     },
-    /// Entrate e uscite per mese
+    /// Income and expenses by month
     Monthly {
         #[arg(long, default_value_t = 12)]
         months: u32,
     },
-    /// Patrimonio netto
+    /// Net worth
     Networth {
         #[arg(long, default_value_t = 12)]
         months: u32,
@@ -281,7 +283,9 @@ pub enum ReportCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum SchedCmd {
+    /// List the scheduled transactions
     List,
+    /// Add a recurring transaction, or a transfer with --to-account
     Add {
         #[arg(long, short)]
         account: String,
@@ -293,18 +297,17 @@ pub enum SchedCmd {
         next: String,
         #[arg(long, default_value_t = 1)]
         every: i64,
-        /// giorno, settimana, mese, anno
-        #[arg(long, default_value = "mese")]
+        /// day, week, month, year
+        #[arg(long, default_value = "month")]
         unit: String,
         #[arg(long, short)]
         category: Option<String>,
         #[arg(long)]
         to_account: Option<String>,
     },
-    Delete {
-        id: i64,
-    },
-    /// Registra i pianificati scaduti
+    /// Delete a scheduled transaction
+    Delete { id: i64 },
+    /// Record the scheduled transactions that are due
     Post {
         #[arg(long)]
         until: Option<String>,
@@ -337,8 +340,11 @@ fn v<T: serde::Serialize>(x: T) -> Option<Value> {
 pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
     let (tool, a): (&str, Value) = match cmd {
         Cmd::Mcp { automation_read_root, automation_write_root } => {
-            let roots = ops::Roots::new(&automation_read_root, &automation_write_root)?;
-            return crate::mcp::serve(db, &roots);
+            // Agents get English, whatever the language of the interface.
+            return with_lang(Lang::En, || {
+                let roots = ops::Roots::new(&automation_read_root, &automation_write_root)?;
+                crate::mcp::serve(db, &roots)
+            });
         }
         Cmd::Tools => {
             for t in ops::tools() {
@@ -348,7 +354,8 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
         }
         Cmd::Call { tool, args } => {
             let a: Value = match args {
-                Some(s) => serde_json::from_str(&s).map_err(|e| anyhow!("argomenti JSON non validi: {e}"))?,
+                Some(s) => serde_json::from_str(&s)
+                    .map_err(|e| anyhow!(trf("the JSON arguments are not valid: {error}", &[("error", &e)])))?,
                 None => json!({}),
             };
             let r = ops::call(db, &tool, &a, None)?;
@@ -491,19 +498,28 @@ fn st(v: &Value) -> String {
     }
 }
 
+/// A column heading.
+fn head(s: &str) -> String {
+    s.to_uppercase()
+}
+
+fn count(v: &Value) -> usize {
+    v.as_u64().and_then(|n| usize::try_from(n).ok()).unwrap_or(0)
+}
+
 fn cut(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n - 1).collect::<String>()) }
 }
 
-fn it_date(v: &Value) -> String {
-    cashcraft_engine::money::parse_date(&st(v)).map(cashcraft_engine::money::fmt_date).unwrap_or_else(|| st(v))
+fn date(v: &Value) -> String {
+    parse_date(&st(v)).map(fmt_date).unwrap_or_else(|| st(v))
 }
 
 fn print_human(tool: &str, r: &Value) {
     let arr = |k: &str| r.get(k).and_then(|x| x.as_array()).cloned().unwrap_or_default();
     match tool {
         "list_accounts" => {
-            println!("{:>4}  {:<28} {:<18} {:>16}", "ID", "CONTO", "TIPO", "SALDO");
+            println!("{:>4}  {:<28} {:<18} {:>16}", "ID", head(tr("Account")), head(tr("Type")), head(tr("Balance")));
             for a in arr("accounts") {
                 let kind = cashcraft_engine::db::AccountKind::from_code(&st(field(&a, "kind")))
                     .map(|k| k.label())
@@ -516,37 +532,52 @@ fn print_human(tool: &str, r: &Value) {
                     eur(field(&a, "balance"))
                 );
             }
-            println!("{:>69}", format!("Patrimonio netto: {}", eur(field(r, "net_worth"))));
+            println!("{:>69}", trf("Net worth: {amount}", &[("amount", &eur(field(r, "net_worth")))]));
         }
         "list_transactions" => {
             println!(
                 "{:>5}  {:<10}  {:<16} {:<30} {:<24} {:>13}",
-                "ID", "DATA", "CONTO", "BENEFICIARIO", "CATEGORIA", "IMPORTO"
+                "ID",
+                head(tr("Date")),
+                head(tr("Account")),
+                head(tr("Payee")),
+                head(tr("Category")),
+                head(tr("Amount"))
             );
             for t in arr("transactions") {
                 println!(
                     "{:>5}  {:<10}  {:<16} {:<30} {:<24} {:>13}",
                     st(field(&t, "id")),
-                    it_date(field(&t, "date")),
+                    date(field(&t, "date")),
                     cut(&st(field(&t, "account")), 16),
                     cut(&st(field(&t, "payee")), 30),
                     cut(&st(field(&t, "category")), 24),
                     eur(field(&t, "amount"))
                 );
             }
-            println!("{} movimenti", st(field(r, "count")));
+            let n = count(field(r, "count"));
+            println!("{}", trn(n, "{n} transaction", "{n} transactions"));
         }
         "spending_by_category" => {
-            println!("Dal {} al {}", it_date(field(r, "from")), it_date(field(r, "to")));
+            println!(
+                "{}",
+                trf("From {from} to {to}", &[("from", &date(field(r, "from"))), ("to", &date(field(r, "to")))])
+            );
             for c in arr("categories") {
                 println!("  {:<36} {:>14}", cut(&st(field(&c, "category")), 36), eur(field(&c, "total")));
             }
-            println!("  {:<36} {:>14}", "Entrate", eur(field(r, "income")));
-            println!("  {:<36} {:>14}", "Uscite", eur(field(r, "expense")));
-            println!("  {:<36} {:>14}", "Risparmio", eur(field(r, "net")));
+            println!("  {:<36} {:>14}", tr("Income"), eur(field(r, "income")));
+            println!("  {:<36} {:>14}", tr("Expenses"), eur(field(r, "expense")));
+            println!("  {:<36} {:>14}", tr("Saved"), eur(field(r, "net")));
         }
         "monthly_summary" => {
-            println!("{:<9} {:>14} {:>14} {:>14}", "MESE", "ENTRATE", "USCITE", "RISPARMIO");
+            println!(
+                "{:<9} {:>14} {:>14} {:>14}",
+                head(tr("Month")),
+                head(tr("Income")),
+                head(tr("Expenses")),
+                head(tr("Saved"))
+            );
             for m in arr("months") {
                 println!(
                     "{:<9} {:>14} {:>14} {:>14}",
@@ -561,11 +592,17 @@ fn print_human(tool: &str, r: &Value) {
             for m in arr("history") {
                 println!("{:<9} {:>16}", st(field(&m, "month")), eur(field(&m, "net_worth")));
             }
-            println!("Patrimonio netto attuale: {}", eur(field(r, "net_worth")));
+            println!("{}", trf("Current net worth: {amount}", &[("amount", &eur(field(r, "net_worth")))]));
         }
         "budget_status" => {
-            println!("Budget di {}", st(field(r, "month")));
-            println!("  {:<30} {:>12} {:>12} {:>12}", "CATEGORIA", "BUDGET", "SPESO", "RESTANO");
+            println!("{}", trf("Budget of {month}", &[("month", &st(field(r, "month")))]));
+            println!(
+                "  {:<30} {:>12} {:>12} {:>12}",
+                head(tr("Category")),
+                head(tr("Budget")),
+                head(tr("Spent")),
+                head(tr("Left"))
+            );
             for l in arr("lines") {
                 println!(
                     "  {:<30} {:>12} {:>12} {:>12}",
@@ -578,7 +615,7 @@ fn print_human(tool: &str, r: &Value) {
         }
         "list_categories" => {
             for c in arr("categories") {
-                let kind = if field(&c, "is_income").as_bool().unwrap_or(false) { "entrata" } else { "uscita" };
+                let kind = if field(&c, "is_income").as_bool().unwrap_or(false) { tr("income") } else { tr("expense") };
                 println!("{:>4}  {:<36} {}", st(field(&c, "id")), st(field(&c, "path")), kind);
             }
         }
@@ -597,7 +634,7 @@ fn print_human(tool: &str, r: &Value) {
                 println!(
                     "{:>4}  {}  {:<16} {:<28} {:>12}  {}",
                     st(field(&x, "id")),
-                    it_date(field(&x, "next_date")),
+                    date(field(&x, "next_date")),
                     cut(&st(field(&x, "account")), 16),
                     cut(&st(field(&x, "payee")), 28),
                     eur(field(&x, "amount")),
@@ -608,21 +645,26 @@ fn print_human(tool: &str, r: &Value) {
         "preview_csv" | "import_csv" => {
             let f = field(r, "format");
             println!(
-                "Formato: separatore '{}', codifica {}, decimali '{}', intestazione alla riga {}",
-                st(field(f, "delimiter")),
-                st(field(f, "encoding")),
-                st(field(f, "decimal_separator")),
-                st(field(f, "header_row"))
+                "{}",
+                trf(
+                    "Format: separator '{separator}', encoding {encoding}, decimals '{decimal}', header on row {row}",
+                    &[
+                        ("separator", &st(field(f, "delimiter"))),
+                        ("encoding", &st(field(f, "encoding"))),
+                        ("decimal", &st(field(f, "decimal_separator"))),
+                        ("row", &st(field(f, "header_row")))
+                    ]
+                )
             );
             let m = field(f, "mapping");
             for (k, label) in [
-                ("date", "Data"),
-                ("amount", "Importo"),
-                ("credit", "Entrate"),
-                ("debit", "Uscite"),
-                ("payee", "Beneficiario"),
-                ("description", "Descrizione"),
-                ("extra", "Dettagli"),
+                ("date", tr("Date")),
+                ("amount", tr("Amount")),
+                ("credit", tr("Income")),
+                ("debit", tr("Expenses")),
+                ("payee", tr("Payee")),
+                ("description", tr("Description")),
+                ("extra", tr("Details")),
             ] {
                 if !m[k].is_null() {
                     println!("  {:<13} ← \"{}\"", label, st(&m[k]));
@@ -632,17 +674,22 @@ fn print_human(tool: &str, r: &Value) {
                 println!("{}", st(msg));
             } else {
                 println!(
-                    "{} movimenti trovati ({} righe saltate), dal {} al {}, somma {}",
-                    st(field(r, "rows_found")),
-                    st(field(r, "rows_skipped")),
-                    it_date(field(r, "first_date")),
-                    it_date(field(r, "last_date")),
-                    eur(field(r, "sum"))
+                    "{}",
+                    trf(
+                        "Transactions found: {found} (rows skipped: {skipped}), from {from} to {to}, sum {sum}",
+                        &[
+                            ("found", &st(field(r, "rows_found"))),
+                            ("skipped", &st(field(r, "rows_skipped"))),
+                            ("from", &date(field(r, "first_date"))),
+                            ("to", &date(field(r, "last_date"))),
+                            ("sum", &eur(field(r, "sum")))
+                        ]
+                    )
                 );
                 for p in arr("preview") {
                     println!(
                         "  {}  {:<40} {:>12}",
-                        it_date(field(&p, "date")),
+                        date(field(&p, "date")),
                         cut(&st(field(&p, "payee")), 40),
                         eur(field(&p, "amount"))
                     );

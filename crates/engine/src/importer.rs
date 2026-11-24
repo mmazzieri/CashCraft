@@ -13,6 +13,7 @@
 //! Reimportare lo stesso file non crea doppioni.
 
 use crate::db::{Cents, Db, NewTx};
+use crate::i18n::{tr, trf};
 use crate::money::{parse_amount_with, parse_date};
 use anyhow::{Context, Result, bail};
 use chrono::NaiveDate;
@@ -66,12 +67,12 @@ pub struct ImportResult {
 
 /// Legge il file e lo converte in testo (UTF-8 o Windows-1252).
 pub fn read_text(path: &Path) -> Result<(String, &'static str)> {
-    let context = || format!("impossibile leggere {}", path.display());
+    let context = || trf("cannot read {path}", &[("path", &path.display())]);
     let mut bytes = Vec::new();
     let file = std::fs::File::open(path).with_context(context)?;
     file.take(MAX_FILE + 1).read_to_end(&mut bytes).with_context(context)?;
     if bytes.len() as u64 > MAX_FILE {
-        bail!("{}: il file supera i {} MB", path.display(), MAX_FILE >> 20);
+        bail!(trf("{path}: the file is larger than {mb} MB", &[("path", &path.display()), ("mb", &(MAX_FILE >> 20))]));
     }
     Ok(decode(&bytes))
 }
@@ -258,7 +259,7 @@ pub fn analyze(text: &str, encoding: &'static str) -> Result<Table> {
         }
     }
     if records.is_empty() {
-        bail!("il file è vuoto o non è un CSV");
+        bail!(tr("the file is empty or is not a CSV"));
     }
     let header_row = records.iter().take(60).position(|r| looks_like_header(r));
     let (headers, mapping) = match header_row {
@@ -280,7 +281,8 @@ pub fn analyze(text: &str, encoding: &'static str) -> Result<Table> {
         }
         None => {
             let width = records.iter().map(|r| r.len()).max().unwrap_or(0);
-            let headers = (1..=width).map(|i| format!("Colonna {i}")).collect();
+            // Unnamed: `column_label` numbers them in the language of whoever reads.
+            let headers = vec![String::new(); width];
             (headers, guess_by_content(&records))
         }
     };
@@ -505,15 +507,21 @@ pub fn import_rows(db: &Db, account_id: i64, rows: &[ParsedRow], skipped: usize)
     Ok(res)
 }
 
-/// Descrizione leggibile della mappatura, per CLI e MCP.
+/// The name of a column, or its number when it has none.
+pub fn column_label(headers: &[String], i: usize) -> Option<String> {
+    headers.get(i).map(|h| if h.is_empty() { trf("Column {n}", &[("n", &(i + 1))]) } else { h.clone() })
+}
+
+/// The mapping in readable form, for the command line and MCP.
 pub fn describe(t: &Table, m: &Mapping) -> serde_json::Value {
-    let name = |c: Option<usize>| c.and_then(|i| t.headers.get(i).cloned());
+    let name = |c: Option<usize>| c.and_then(|i| column_label(&t.headers, i));
+    let columns: Vec<_> = (0..t.headers.len()).filter_map(|i| column_label(&t.headers, i)).collect();
     serde_json::json!({
         "encoding": t.encoding,
         "delimiter": match t.delimiter { b'\t' => "tab".to_string(), d => (d as char).to_string() },
         "header_row": t.header_row.map(|h| h + 1),
         "decimal_separator": if t.decimal_comma { "," } else { "." },
-        "columns": t.headers,
+        "columns": columns,
         "mapping": {
             "date": name(m.date),
             "value_date": name(m.value_date),
@@ -527,7 +535,7 @@ pub fn describe(t: &Table, m: &Mapping) -> serde_json::Value {
     })
 }
 
-/// Trova una colonna per nome (senza distinguere maiuscole) o per numero (da 1).
+/// Finds a column by name (ignoring case) or by number (from 1).
 pub fn column_index(t: &Table, key: &str) -> Option<usize> {
     let k = key.trim();
     if let Ok(n) = k.parse::<usize>()
@@ -537,7 +545,12 @@ pub fn column_index(t: &Table, key: &str) -> Option<usize> {
         return Some(n - 1);
     }
     let nk = norm(k);
-    t.headers.iter().position(|h| norm(h) == nk)
+    if let Some(i) = t.headers.iter().position(|h| !nk.is_empty() && norm(h) == nk) {
+        return Some(i);
+    }
+    // The label of an unnamed column, in either language.
+    let n: usize = nk.strip_prefix("column ").or_else(|| nk.strip_prefix("colonna "))?.parse().ok()?;
+    n.checked_sub(1).filter(|i| t.headers.get(*i).is_some_and(String::is_empty))
 }
 
 #[cfg(test)]
@@ -573,6 +586,41 @@ mod tests {
         let (rows, _) = parse_rows(&t, &t.mapping, false);
         assert_eq!(rows[0].amount, -350);
         assert_eq!(rows[0].payee, "Bar Centrale");
+    }
+
+    /// Statements are read the same whatever the language of the interface.
+    #[test]
+    fn the_language_does_not_change_the_import() {
+        use crate::i18n::{Lang, with_lang};
+        let files = [
+            "Data;Descrizione;Importo\n01/02/2025;Auto;-1.234\n02/02/2025;Bar;-1,234\n03/02/2025;Bar;1.234,56\n",
+            "Date,Payee,Amount\n2025-03-01,Car,\"-1,234\"\n2025-03-02,Bar,-1.234\n2025-03-03,Bar,\"1,234.56\"\n",
+            "01/02/2025;1.234;Auto\n02/02/2025;1,20;Bar\n",
+        ];
+        for text in files {
+            let read = |l| {
+                with_lang(l, || {
+                    let t = analyze(text, "UTF-8").unwrap();
+                    let (rows, skipped) = parse_rows(&t, &t.mapping, false);
+                    (format!("{rows:?} {:?}", t.mapping), skipped)
+                })
+            };
+            assert_eq!(read(Lang::It), read(Lang::En));
+        }
+    }
+
+    #[test]
+    fn unnamed_columns_have_numbers() {
+        use crate::i18n::{Lang, with_lang};
+        let t = analyze("01/02/2025;1,20;Bar\n02/02/2025;3,20;Bar\n", "UTF-8").unwrap();
+        assert_eq!(with_lang(Lang::It, || column_label(&t.headers, 1)).as_deref(), Some("Colonna 2"));
+        assert_eq!(with_lang(Lang::En, || column_label(&t.headers, 1)).as_deref(), Some("Column 2"));
+        for key in ["2", "Colonna 2", "column 2"] {
+            assert_eq!(column_index(&t, key), Some(1), "{key}");
+        }
+        for key in ["", "!", "Column 0", "Column 4"] {
+            assert_eq!(column_index(&t, key), None, "{key}");
+        }
     }
 
     /// Every input that once could crash a reader, plus broken and oversized ones.

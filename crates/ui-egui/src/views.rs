@@ -2,13 +2,16 @@
 //! registro movimenti, report, budget, categorie, regole e pianificati.
 
 use crate::gui::{
-    ACCENT, ACCENT_SOFT, AMBER, AccountForm, App, BLUE, BORDER, CARD, Dialog, GREEN, MUTED, Period, RED, SIDEBAR,
-    SchedForm, TEXT, TRACK, TransferForm, View, ZEBRA, amount_color, bars_chart, budget_color, card, category_combo,
-    cut, donut, hbars, kind_icon, legend, line_chart, money, nav_item, or_report, palette, primary_button, progress,
-    section_title, small_caps,
+    ACCENT, ACCENT_SOFT, AMBER, AccountForm, App, BLUE, BORDER, CARD, Dialog, GREEN, LANGUAGES, MUTED, Period, RED,
+    SIDEBAR, SchedForm, TEXT, TRACK, TransferForm, View, ZEBRA, amount_color, bars_chart, budget_color, card,
+    category_combo, cut, donut, hbars, kind_icon, language_name, legend, line_chart, money, nav_item, or_report,
+    palette, primary_button, progress, section_title, small_caps,
 };
 use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Transaction};
-use cashcraft_engine::money::{fmt_date, fmt_eur, month_name, parse_amount};
+use cashcraft_engine::i18n::{tr, trf, trn};
+use cashcraft_engine::money::{
+    fmt_date, fmt_day, fmt_eur, fmt_number, fmt_plain, month_and_year, month_name, parse_amount,
+};
 use chrono::{Datelike, Months};
 use egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui,
@@ -32,17 +35,17 @@ impl App {
                     ui.label(RichText::new("CashCraft").size(19.0).strong().color(TEXT));
                 });
                 ui.add_space(12.0);
-                let list_h = (ui.available_height() - 74.0).max(100.0);
+                let list_h = (ui.available_height() - 112.0).max(100.0);
                 egui::ScrollArea::vertical()
                     .id_salt("sidebar_scroll")
                     .auto_shrink([false, false])
                     .max_height(list_h)
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        if nav_item(ui, self.view == View::Dashboard, "🏠", "Panoramica", None).clicked() {
+                        if nav_item(ui, self.view == View::Dashboard, "🏠", tr("Overview"), None).clicked() {
                             self.go(View::Dashboard);
                         }
-                        if nav_item(ui, self.view == View::Register(None), "📋", "Tutti i movimenti", None).clicked()
+                        if nav_item(ui, self.view == View::Register(None), "📋", tr("All transactions"), None).clicked()
                         {
                             self.go(View::Register(None));
                         }
@@ -74,22 +77,22 @@ impl App {
                                 }
                                 let a2 = a.clone();
                                 r.context_menu(|ui| {
-                                    if ui.button("✏ Modifica conto…").clicked() {
+                                    if ui.button(tr("✏ Edit account…")).clicked() {
                                         self.dialog = Some(Dialog::Account(AccountForm {
                                             id: Some(a2.id),
                                             name: a2.name.clone(),
                                             kind: a2.kind,
-                                            opening: cashcraft_engine::money::fmt_plain(a2.opening_balance),
+                                            opening: fmt_plain(a2.opening_balance),
                                             iban: a2.iban.clone(),
                                             archived: a2.archived,
                                             error: String::new(),
                                         }));
                                     }
-                                    if ui.button("⬇ Importa CSV in questo conto…").clicked() {
+                                    if ui.button(tr("⬇ Import CSV into this account…")).clicked() {
                                         self.go(View::Register(Some(a2.id)));
                                         self.open_import(None);
                                     }
-                                    if ui.button(RichText::new("🗑 Elimina conto…").color(RED)).clicked() {
+                                    if ui.button(RichText::new(tr("🗑 Delete account…")).color(RED)).clicked() {
                                         self.dialog = Some(Dialog::ConfirmDeleteAccount(a2.id, a2.name.clone()));
                                     }
                                 });
@@ -97,36 +100,36 @@ impl App {
                         }
                         ui.add_space(6.0);
                         if ui
-                            .add(egui::Button::new(RichText::new("+ Nuovo conto").color(ACCENT)).frame(false))
+                            .add(egui::Button::new(RichText::new(tr("+ New account")).color(ACCENT)).frame(false))
                             .clicked()
                         {
                             self.dialog = Some(Dialog::Account(AccountForm {
                                 id: None,
                                 name: String::new(),
                                 kind: AccountKind::Bank,
-                                opening: "0,00".into(),
+                                opening: fmt_plain(0),
                                 iban: String::new(),
                                 archived: false,
                                 error: String::new(),
                             }));
                         }
                         ui.add_space(12.0);
-                        small_caps(ui, "Analisi");
-                        if nav_item(ui, self.view == View::Reports, "📊", "Report", None).clicked() {
+                        small_caps(ui, tr("Analysis"));
+                        if nav_item(ui, self.view == View::Reports, "📊", tr("Reports"), None).clicked() {
                             self.go(View::Reports);
                         }
-                        if nav_item(ui, self.view == View::Budget, "🎯", "Budget", None).clicked() {
+                        if nav_item(ui, self.view == View::Budget, "🎯", tr("Budget"), None).clicked() {
                             self.go(View::Budget);
                         }
-                        if nav_item(ui, self.view == View::Scheduled, "📅", "Pianificati", None).clicked() {
+                        if nav_item(ui, self.view == View::Scheduled, "📅", tr("Scheduled"), None).clicked() {
                             self.go(View::Scheduled);
                         }
                         ui.add_space(12.0);
-                        small_caps(ui, "Organizza");
-                        if nav_item(ui, self.view == View::Categories, "🏷", "Categorie", None).clicked() {
+                        small_caps(ui, tr("Organize"));
+                        if nav_item(ui, self.view == View::Categories, "🏷", tr("Categories"), None).clicked() {
                             self.go(View::Categories);
                         }
-                        if nav_item(ui, self.view == View::Rules, "⚙", "Regole automatiche", None).clicked() {
+                        if nav_item(ui, self.view == View::Rules, "⚙", tr("Automatic rules"), None).clicked() {
                             self.go(View::Rules);
                         }
                     });
@@ -137,8 +140,21 @@ impl App {
                     } else {
                         TEXT
                     }));
-                    small_caps(ui, "Patrimonio netto");
+                    small_caps(ui, tr("Net worth"));
                     ui.separator();
+                    let mut chosen = self.language;
+                    egui::ComboBox::from_id_salt("language")
+                        .selected_text(format!("🌐 {}", language_name(chosen)))
+                        .show_ui(ui, |ui| {
+                            for l in LANGUAGES {
+                                ui.selectable_value(&mut chosen, l, language_name(l));
+                            }
+                        })
+                        .response
+                        .on_hover_text(tr("Language"));
+                    if chosen != self.language {
+                        self.choose_language(ui, chosen);
+                    }
                 });
             });
     }
@@ -147,9 +163,9 @@ impl App {
         match self.view {
             View::Dashboard => {
                 let t = db::today();
-                ("Panoramica".into(), format!("{} {}", month_name(t.month()), t.year()))
+                (tr("Overview").into(), month_and_year(t))
             }
-            View::Register(None) => ("Tutti i movimenti".into(), "Tutti i conti".into()),
+            View::Register(None) => (tr("All transactions").into(), tr("All accounts").into()),
             View::Register(Some(a)) => {
                 let acc = self.accounts.iter().find(|x| x.id == a);
                 (
@@ -164,11 +180,11 @@ impl App {
                     .unwrap_or_default(),
                 )
             }
-            View::Reports => ("Report".into(), "Dove vanno i tuoi soldi".into()),
-            View::Budget => ("Budget".into(), "Limiti di spesa mensili per categoria".into()),
-            View::Categories => ("Categorie".into(), "Come raggruppare entrate e uscite".into()),
-            View::Rules => ("Regole automatiche".into(), "Assegnano la categoria ai movimenti importati".into()),
-            View::Scheduled => ("Pianificati".into(), "Movimenti ricorrenti e scadenze".into()),
+            View::Reports => (tr("Reports").into(), tr("Where your money goes").into()),
+            View::Budget => (tr("Budget").into(), tr("Monthly spending limits by category").into()),
+            View::Categories => (tr("Categories").into(), tr("How income and expenses are grouped").into()),
+            View::Rules => (tr("Automatic rules").into(), tr("They categorize imported transactions").into()),
+            View::Scheduled => (tr("Scheduled").into(), tr("Recurring transactions and due dates").into()),
         }
     }
 
@@ -184,30 +200,39 @@ impl App {
                         ui.label(RichText::new(sub).size(12.5).color(MUTED));
                     });
                     if let View::Register(Some(a)) = self.view
-                        && let Some(acc) = self.accounts.iter().find(|x| x.id == a) {
-                            ui.add_space(24.0);
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing.y = 0.0;
-                                ui.label(RichText::new(fmt_eur(acc.balance)).size(22.0).strong().color(amount_color(acc.balance)));
-                                ui.label(RichText::new("Saldo attuale").size(12.5).color(MUTED));
-                            });
-                        }
+                        && let Some(acc) = self.accounts.iter().find(|x| x.id == a)
+                    {
+                        ui.add_space(24.0);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            ui.label(
+                                RichText::new(fmt_eur(acc.balance))
+                                    .size(22.0)
+                                    .strong()
+                                    .color(amount_color(acc.balance)),
+                            );
+                            ui.label(RichText::new(tr("Current balance")).size(12.5).color(MUTED));
+                        });
+                    }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .button("⬇ Importa CSV")
-                            .on_hover_text("Importa l'estratto conto della banca (⌘I). Puoi anche trascinare il file sulla finestra.")
+                            .button(tr("⬇ Import CSV"))
+                            .on_hover_text(tr(
+                                "Import a bank statement (⌘I). You can also drop the file on the window.",
+                            ))
                             .clicked()
                         {
                             self.open_import(None);
                         }
-                        if ui.button("🔁 Giroconto").clicked() {
+                        if ui.button(tr("🔁 Transfer")).clicked() {
                             self.dialog = Some(Dialog::Transfer(TransferForm {
                                 from: self.default_account(),
                                 date: fmt_date(db::today()),
                                 ..Default::default()
                             }));
                         }
-                        if primary_button(ui, "+ Movimento").on_hover_text("Nuovo movimento (⌘N)").clicked() {
+                        if primary_button(ui, tr("+ Transaction")).on_hover_text(tr("New transaction (⌘N)")).clicked()
+                        {
                             self.open_new_tx();
                         }
                     });
@@ -221,10 +246,10 @@ impl App {
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(
-                                    RichText::new("ℹ Stai guardando dati di esempio, per provare il programma.")
+                                    RichText::new(tr("ℹ You are looking at sample data, to try the app out."))
                                         .color(Color32::from_rgb(0x7A, 0x55, 0x10)),
                                 );
-                                if ui.link("Eliminali e inizia con i tuoi conti").clicked() {
+                                if ui.link(tr("Delete it and start with your own accounts")).clicked() {
                                     self.dialog = Some(Dialog::ConfirmClearDemo);
                                 }
                             });
@@ -243,13 +268,13 @@ impl App {
                         .path
                         .as_ref()
                         .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "archivio di prova in memoria".into());
-                    ui.label(RichText::new(format!("Archivio: {path}")).size(11.5).color(MUTED));
+                        .unwrap_or_else(|| tr("trial data in memory").into());
+                    ui.label(RichText::new(trf("Data file: {path}", &[("path", &path)])).size(11.5).color(MUTED));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
-                            RichText::new(
-                                "Pilotabile da terminale (cashcraft-cli --help) e da MCP (cashcraft-cli mcp)",
-                            )
+                            RichText::new(tr(
+                                "Works from the terminal (cashcraft-cli --help) and over MCP (cashcraft-cli mcp)",
+                            ))
                             .size(11.5)
                             .color(MUTED),
                         );
@@ -268,17 +293,20 @@ impl App {
             let saving = d.month_income - d.month_expense;
             let mname = month_name(db::today().month()).to_string();
             let cards = [
-                ("Patrimonio netto", fmt_eur(net), if net < 0 { RED } else { TEXT }, "tutti i conti".to_string()),
-                ("Entrate del mese", fmt_eur(d.month_income), GREEN, mname.clone()),
-                ("Uscite del mese", fmt_eur(d.month_expense), RED, mname),
+                (tr("Net worth"), fmt_eur(net), if net < 0 { RED } else { TEXT }, tr("all accounts").to_string()),
+                (tr("Income this month"), fmt_eur(d.month_income), GREEN, mname.clone()),
+                (tr("Expenses this month"), fmt_eur(d.month_expense), RED, mname),
                 (
-                    "Risparmio del mese",
+                    tr("Saved this month"),
                     fmt_eur(saving),
                     amount_color(saving),
                     if saving < 0 {
-                        "uscite oltre le entrate".into()
+                        tr("expenses above income").into()
                     } else if d.month_income > 0 {
-                        format!("{:.0}% delle entrate", saving as f64 * 100.0 / d.month_income as f64)
+                        {
+                            let percent = fmt_number(saving as f64 * 100.0 / d.month_income as f64, 0);
+                            trf("{percent}% of income", &[("percent", &percent)])
+                        }
                     } else {
                         "—".into()
                     },
@@ -307,12 +335,12 @@ impl App {
                     card(ui, |ui| {
                         ui.set_width(half - 30.0);
                         ui.horizontal(|ui| {
-                            section_title(ui, "Entrate e uscite");
+                            section_title(ui, tr("Income and expenses"));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                legend(ui, &[("Uscite", RED), ("Entrate", GREEN)]);
+                                legend(ui, &[(tr("Expenses"), RED), (tr("Income"), GREEN)]);
                             });
                         });
-                        ui.label(RichText::new("Ultimi 6 mesi, giroconti esclusi").size(12.0).color(MUTED));
+                        ui.label(RichText::new(tr("Last 6 months, transfers excluded")).size(12.0).color(MUTED));
                         ui.add_space(6.0);
                         bars_chart(ui, &d.monthly, 216.0);
                     });
@@ -321,11 +349,11 @@ impl App {
                     card(ui, |ui| {
                         ui.set_width(half - 30.0);
                         ui.set_min_height(266.0);
-                        section_title(ui, "Spese per categoria");
-                        ui.label(RichText::new("Questo mese").size(12.0).color(MUTED));
+                        section_title(ui, tr("Expenses by category"));
+                        ui.label(RichText::new(tr("This month")).size(12.0).color(MUTED));
                         ui.add_space(6.0);
                         if d.top_expenses.is_empty() {
-                            ui.label(RichText::new("Nessuna spesa questo mese.").color(MUTED));
+                            ui.label(RichText::new(tr("No expenses this month.")).color(MUTED));
                         } else {
                             hbars(ui, &d.top_expenses);
                         }
@@ -339,9 +367,9 @@ impl App {
                     card(ui, |ui| {
                         ui.set_width(half - 30.0);
                         ui.horizontal(|ui| {
-                            section_title(ui, "Ultimi movimenti");
+                            section_title(ui, tr("Latest transactions"));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.link("Vedi tutti").clicked() {
+                                if ui.link(tr("See all")).clicked() {
                                     self.go(View::Register(None));
                                 }
                             });
@@ -349,11 +377,15 @@ impl App {
                         if d.uncategorized > 0 {
                             ui.horizontal(|ui| {
                                 ui.label(
-                                    RichText::new(format!("⚫ {} movimenti senza categoria", d.uncategorized))
-                                        .size(12.5)
-                                        .color(AMBER),
+                                    RichText::new(trn(
+                                        d.uncategorized,
+                                        "⚫ {n} uncategorized transaction",
+                                        "⚫ {n} uncategorized transactions",
+                                    ))
+                                    .size(12.5)
+                                    .color(AMBER),
                                 );
-                                if ui.link("Sistemali").clicked() {
+                                if ui.link(tr("Sort them out")).clicked() {
                                     self.only_uncategorized = true;
                                     self.period = Period::All;
                                     self.go(View::Register(None));
@@ -364,12 +396,12 @@ impl App {
                         ui.add_space(4.0);
                         for t in &d.recent {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(t.date.format("%d/%m").to_string()).size(12.5).color(MUTED));
+                                ui.label(RichText::new(fmt_day(t.date)).size(12.5).color(MUTED));
                                 ui.vertical(|ui| {
                                     ui.spacing_mut().item_spacing.y = 0.0;
                                     ui.label(RichText::new(&t.payee).size(13.5).color(TEXT));
                                     let sub = if t.category.is_empty() {
-                                        "da categorizzare".to_string()
+                                        tr("to categorize").to_string()
                                     } else {
                                         t.category.clone()
                                     };
@@ -387,15 +419,15 @@ impl App {
                         card(ui, |ui| {
                             ui.set_width(half - 30.0);
                             ui.horizontal(|ui| {
-                                section_title(ui, "Budget del mese");
+                                section_title(ui, tr("Budget this month"));
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui.link("Gestisci").clicked() {
+                                    if ui.link(tr("Manage")).clicked() {
                                         self.go(View::Budget);
                                     }
                                 });
                             });
                             if d.budgets.is_empty() {
-                                ui.label(RichText::new("Nessun budget impostato.").color(MUTED));
+                                ui.label(RichText::new(tr("No budget set.")).color(MUTED));
                             }
                             for b in d.budgets.iter().take(5) {
                                 ui.horizontal(|ui| {
@@ -415,9 +447,9 @@ impl App {
                         ui.add_space(gap);
                         card(ui, |ui| {
                             ui.set_width(half - 30.0);
-                            section_title(ui, "Prossime scadenze");
+                            section_title(ui, tr("Upcoming"));
                             if d.upcoming.is_empty() {
-                                ui.label(RichText::new("Nessun movimento pianificato.").color(MUTED));
+                                ui.label(RichText::new(tr("No scheduled transactions.")).color(MUTED));
                             }
                             for s in &d.upcoming {
                                 ui.horizontal(|ui| {
@@ -452,22 +484,22 @@ impl App {
                 }
             });
             let cats = self.categories.clone();
-            if category_combo(ui, "catfilter", &cats, &mut self.cat_filter, "Tutte le categorie") {
+            if category_combo(ui, "catfilter", &cats, &mut self.cat_filter, tr("All categories")) {
                 changed = true;
             }
-            if ui.checkbox(&mut self.only_uncategorized, "Solo senza categoria").changed() {
+            if ui.checkbox(&mut self.only_uncategorized, tr("Only uncategorized")).changed() {
                 changed = true;
             }
             let r = ui.add(
                 egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("🔍 Cerca beneficiario, note, importo…")
-                    .desired_width(240.0),
+                    .hint_text(tr("🔍 Search payee, notes, amount…"))
+                    .desired_width(270.0),
             );
             if r.changed() {
                 changed = true;
             }
             if (!self.search.is_empty() || self.cat_filter.is_some() || self.only_uncategorized)
-                && ui.button("✖ Azzera filtri").clicked()
+                && ui.button(tr("✖ Clear filters")).clicked()
             {
                 self.search.clear();
                 self.cat_filter = None;
@@ -485,12 +517,12 @@ impl App {
         let expense: Cents =
             self.txs.iter().filter(|t| t.amount < 0 && t.transfer_peer.is_none()).map(|t| t.amount).sum();
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{} movimenti", self.txs.len())).color(MUTED));
-            ui.label(RichText::new("· Entrate").color(MUTED));
+            ui.label(RichText::new(trn(self.txs.len(), "{n} transaction", "{n} transactions")).color(MUTED));
+            ui.label(RichText::new(tr("· Income")).color(MUTED));
             ui.label(money(income));
-            ui.label(RichText::new("· Uscite").color(MUTED));
+            ui.label(RichText::new(tr("· Expenses")).color(MUTED));
             ui.label(money(expense));
-            ui.label(RichText::new("· Differenza").color(MUTED));
+            ui.label(RichText::new(tr("· Difference")).color(MUTED));
             ui.label(money(income + expense));
         });
         ui.add_space(6.0);
@@ -518,13 +550,13 @@ impl App {
             let fixed_acc = if show_account { 140.0 } else { 0.0 };
             let flex = (w - fixed_date - fixed_amt - fixed_bal - fixed_chk - fixed_acc - 16.0).max(240.0);
             let cols = [
-                ("Data", fixed_date, false),
-                ("Beneficiario", flex * 0.36, false),
-                ("Categoria", flex * 0.30, false),
-                ("Note", flex * 0.34, false),
-                ("Conto", fixed_acc, false),
-                ("Importo", fixed_amt, true),
-                ("Saldo", fixed_bal, true),
+                (tr("Date"), fixed_date, false),
+                (tr("Payee"), flex * 0.36, false),
+                (tr("Category"), flex * 0.30, false),
+                (tr("Notes"), flex * 0.34, false),
+                (tr("Account"), fixed_acc, false),
+                (tr("Amount"), fixed_amt, true),
+                (tr("Balance"), fixed_bal, true),
                 ("✔", fixed_chk, true),
             ];
             let (hrect, _) = ui.allocate_exact_size(Vec2::new(w, 32.0), Sense::hover());
@@ -547,9 +579,9 @@ impl App {
             if self.txs.is_empty() {
                 ui.add_space(40.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("Nessun movimento in questo periodo.").color(MUTED).size(15.0));
+                    ui.label(RichText::new(tr("No transactions in this period.")).color(MUTED).size(15.0));
                     ui.add_space(8.0);
-                    if ui.button("⬇ Importa un estratto conto CSV").clicked() {
+                    if ui.button(tr("⬇ Import a CSV statement")).clicked() {
                         want_import = true;
                     }
                 });
@@ -595,7 +627,7 @@ impl App {
                         cell(cols[0].1, &fmt_date(t.date), MUTED, false, 13.0);
                         cell(cols[1].1, &t.payee, TEXT, false, 13.5);
                         if t.category.is_empty() {
-                            cell(cols[2].1, "— da categorizzare —", AMBER, false, 12.5);
+                            cell(cols[2].1, tr("— to categorize —"), AMBER, false, 12.5);
                         } else {
                             cell(
                                 cols[2].1,
@@ -630,18 +662,17 @@ impl App {
                         }
                         let tc = t.clone();
                         resp.context_menu(|ui| {
-                            if ui.button("✏ Modifica…").clicked() {
+                            if ui.button(tr("✏ Edit…")).clicked() {
                                 open_edit = Some(tc.clone());
                             }
-                            let lbl =
-                                if tc.cleared { "Segna come non verificato" } else { "✔ Segna come verificato" };
+                            let lbl = if tc.cleared { tr("Mark as not cleared") } else { tr("✔ Mark as cleared") };
                             if ui.button(lbl).clicked() {
                                 toggle_cleared = Some((tc.id, !tc.cleared));
                             }
                             if tc.transfer_peer.is_none() {
-                                ui.menu_button("🏷 Categoria", |ui| {
+                                ui.menu_button(tr("🏷 Category"), |ui| {
                                     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                                        if ui.button("Nessuna").clicked() {
+                                        if ui.button(tr("None")).clicked() {
                                             set_cat = Some((tc.id, None));
                                         }
                                         for c in &cats {
@@ -653,7 +684,7 @@ impl App {
                                 });
                             }
                             ui.separator();
-                            if ui.button(RichText::new("🗑 Elimina").color(RED)).clicked() {
+                            if ui.button(RichText::new(tr("🗑 Delete")).color(RED)).clicked() {
                                 delete = Some(tc.id);
                             }
                         });
@@ -672,14 +703,14 @@ impl App {
                 ui.label(money(t.amount));
                 if t.transfer_peer.is_none() {
                     let mut c = t.category_id;
-                    if category_combo(ui, "selcat", &cats, &mut c, "Senza categoria") {
+                    if category_combo(ui, "selcat", &cats, &mut c, tr("Uncategorized")) {
                         set_cat = Some((t.id, c));
                     }
                 }
-                if ui.button("✏ Modifica").clicked() {
+                if ui.button(tr("✏ Edit")).clicked() {
                     open_edit = Some(t.clone());
                 }
-                if ui.button(RichText::new("🗑 Elimina").color(RED)).clicked() {
+                if ui.button(RichText::new(tr("🗑 Delete")).color(RED)).clicked() {
                     delete = Some(t.id);
                 }
             });
@@ -696,11 +727,11 @@ impl App {
             self.act(ui, r);
         }
         if let Some((id, c)) = set_cat {
-            let r = self.db.set_category(id, c).map(|_| "Categoria aggiornata".to_string());
+            let r = self.db.set_category(id, c).map(|_| tr("Category updated").to_string());
             self.act(ui, r);
         }
         if let Some(id) = delete {
-            let r = self.db.delete_transaction(id).map(|_| "Movimento eliminato".to_string());
+            let r = self.db.delete_transaction(id).map(|_| tr("Transaction deleted").to_string());
             self.selected = None;
             self.act(ui, r);
         }
@@ -732,15 +763,15 @@ impl App {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 let rate = if income > 0 {
-                    format!("{:.1}%", net as f64 * 100.0 / income as f64).replace('.', ",")
+                    format!("{}%", fmt_number(net as f64 * 100.0 / income as f64, 1))
                 } else {
                     "—".into()
                 };
                 for (t, v, c) in [
-                    ("Entrate", fmt_eur(income), GREEN),
-                    ("Uscite", fmt_eur(expense), RED),
-                    ("Risparmio", fmt_eur(net), amount_color(net)),
-                    ("Tasso di risparmio", rate, ACCENT),
+                    (tr("Income"), fmt_eur(income), GREEN),
+                    (tr("Expenses"), fmt_eur(expense), RED),
+                    (tr("Saved"), fmt_eur(net), amount_color(net)),
+                    (tr("Savings rate"), rate, ACCENT),
                 ] {
                     ui.allocate_ui(Vec2::new(cw, 80.0), |ui| {
                         card(ui, |ui| {
@@ -759,7 +790,7 @@ impl App {
             let mut top: Vec<(String, Cents)> = exp.iter().take(8).cloned().collect();
             let rest: Cents = exp.iter().skip(8).map(|x| x.1).sum();
             if rest > 0 {
-                top.push(("Altro".into(), rest));
+                top.push((tr("Other").into(), rest));
             }
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
@@ -767,7 +798,7 @@ impl App {
                     card(ui, |ui| {
                         ui.set_width(half - 30.0);
                         ui.set_min_height(290.0);
-                        section_title(ui, "Spese per categoria");
+                        section_title(ui, tr("Expenses by category"));
                         ui.add_space(6.0);
                         ui.horizontal_top(|ui| {
                             donut(ui, &top, 220.0);
@@ -794,9 +825,9 @@ impl App {
                         ui.set_width(half - 30.0);
                         ui.set_min_height(290.0);
                         ui.horizontal(|ui| {
-                            section_title(ui, "Entrate e uscite per mese");
+                            section_title(ui, tr("Income and expenses by month"));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                legend(ui, &[("Uscite", RED), ("Entrate", GREEN)]);
+                                legend(ui, &[(tr("Expenses"), RED), (tr("Income"), GREEN)]);
                             });
                         });
                         ui.add_space(6.0);
@@ -807,28 +838,28 @@ impl App {
             ui.add_space(gap);
             card(ui, |ui| {
                 ui.set_width(ui.available_width());
-                section_title(ui, "Andamento del patrimonio netto (12 mesi)");
+                section_title(ui, tr("Net worth over time (12 months)"));
                 ui.add_space(6.0);
                 line_chart(ui, &r.net_worth, 200.0);
             });
             ui.add_space(gap);
             card(ui, |ui| {
                 ui.set_width(ui.available_width());
-                section_title(ui, "Dettaglio per categoria");
+                section_title(ui, tr("Details by category"));
                 ui.add_space(6.0);
                 egui::Grid::new("cat_totals").striped(true).num_columns(4).min_col_width(140.0).show(ui, |ui| {
-                    for h in ["CATEGORIA", "TIPO", "TOTALE", "% SUL TOTALE"] {
-                        ui.label(RichText::new(h).size(11.0).color(MUTED));
+                    for h in [tr("Category"), tr("Type"), tr("Total"), tr("% of total")] {
+                        ui.label(RichText::new(h.to_uppercase()).size(11.0).color(MUTED));
                     }
                     ui.end_row();
                     for c in &r.totals {
                         ui.label(&c.category);
-                        ui.label(RichText::new(if c.total > 0 { "Entrata" } else { "Uscita" }).color(MUTED));
+                        ui.label(
+                            RichText::new(if c.total > 0 { tr("Money in") } else { tr("Money out") }).color(MUTED),
+                        );
                         ui.label(money(c.total));
                         let base = if c.total > 0 { income } else { expense };
-                        ui.label(
-                            format!("{:.1}%", c.total.abs() as f64 * 100.0 / base.max(1) as f64).replace('.', ","),
-                        );
+                        ui.label(format!("{}%", fmt_number(c.total.abs() as f64 * 100.0 / base.max(1) as f64, 1)));
                         ui.end_row();
                     }
                 });
@@ -846,15 +877,11 @@ impl App {
             if ui.button("◀").clicked() {
                 self.budget_month = self.budget_month.checked_sub_months(Months::new(1)).unwrap_or(self.budget_month);
             }
-            ui.label(
-                RichText::new(format!("{} {}", month_name(self.budget_month.month()), self.budget_month.year()))
-                    .size(17.0)
-                    .strong(),
-            );
+            ui.label(RichText::new(month_and_year(self.budget_month)).size(17.0).strong());
             if ui.button("▶").clicked() {
                 self.budget_month = self.budget_month.checked_add_months(Months::new(1)).unwrap_or(self.budget_month);
             }
-            if self.budget_month != db::first_of_month(db::today()) && ui.link("Mese corrente").clicked() {
+            if self.budget_month != db::first_of_month(db::today()) && ui.link(tr("Current month")).clicked() {
                 self.budget_month = db::first_of_month(db::today());
             }
         });
@@ -868,19 +895,23 @@ impl App {
             card(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    section_title(ui, "Totale");
+                    section_title(ui, tr("Total"));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let rem = total_b - total_s;
                         ui.label(
                             RichText::new(if rem >= 0 {
-                                format!("restano {}", fmt_eur(rem))
+                                trf("{amount} left", &[("amount", &fmt_eur(rem))])
                             } else {
-                                format!("sforato di {}", fmt_eur(-rem))
+                                trf("{amount} over budget", &[("amount", &fmt_eur(-rem))])
                             })
                             .color(amount_color(rem)),
                         );
                         ui.label(
-                            RichText::new(format!("{} spesi su {}", fmt_eur(total_s), fmt_eur(total_b))).color(MUTED),
+                            RichText::new(trf(
+                                "{spent} spent of {budget}",
+                                &[("spent", &fmt_eur(total_s)), ("budget", &fmt_eur(total_b))],
+                            ))
+                            .color(MUTED),
                         );
                     });
                 });
@@ -890,13 +921,13 @@ impl App {
             card(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if lines.is_empty() {
-                    ui.label(RichText::new("Nessun budget: aggiungine uno qui sotto.").color(MUTED));
+                    ui.label(RichText::new(tr("No budgets: add one below.")).color(MUTED));
                 }
                 for l in &lines {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(&l.category).size(14.5).strong());
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.small_button("🗑").on_hover_text("Rimuovi budget").clicked() {
+                            if ui.small_button("🗑").on_hover_text(tr("Remove budget")).clicked() {
                                 remove = Some(l.category_id);
                             }
                             match &mut self.budget_edit {
@@ -909,18 +940,17 @@ impl App {
                                     ui.add(egui::TextEdit::singleline(text).desired_width(90.0));
                                 }
                                 _ => {
-                                    if ui.small_button("✏").on_hover_text("Modifica importo").clicked() {
-                                        self.budget_edit =
-                                            Some((l.category_id, cashcraft_engine::money::fmt_plain(l.budget)));
+                                    if ui.small_button("✏").on_hover_text(tr("Edit amount")).clicked() {
+                                        self.budget_edit = Some((l.category_id, fmt_plain(l.budget)));
                                     }
                                 }
                             }
                             let rem = l.budget - l.spent;
                             ui.label(
                                 RichText::new(if rem >= 0 {
-                                    format!("restano {}", fmt_eur(rem))
+                                    trf("{amount} left", &[("amount", &fmt_eur(rem))])
                                 } else {
-                                    format!("{} oltre", fmt_eur(-rem))
+                                    trf("{amount} over", &[("amount", &fmt_eur(-rem))])
                                 })
                                 .color(if rem >= 0 { MUTED } else { RED }),
                             );
@@ -932,15 +962,15 @@ impl App {
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("Nuovo budget:");
+                    ui.label(tr("New budget:"));
                     let cats: Vec<Category> = self.categories.iter().filter(|c| !c.is_income).cloned().collect();
-                    category_combo(ui, "newbudget", &cats, &mut self.new_budget.0, "Scegli categoria…");
+                    category_combo(ui, "newbudget", &cats, &mut self.new_budget.0, tr("Choose a category…"));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.new_budget.1)
-                            .hint_text("importo al mese")
-                            .desired_width(110.0),
+                            .hint_text(tr("amount a month"))
+                            .desired_width(150.0),
                     );
-                    if primary_button(ui, "Aggiungi").clicked()
+                    if primary_button(ui, tr("Add")).clicked()
                         && let (Some(c), Ok(v)) = (self.new_budget.0, parse_amount(&self.new_budget.1))
                     {
                         save = Some((c, v));
@@ -951,11 +981,11 @@ impl App {
         });
         if let Some((c, v)) = save {
             self.budget_edit = None;
-            let r = self.db.set_budget(c, v).map(|_| "Budget salvato".to_string());
+            let r = self.db.set_budget(c, v).map(|_| tr("Budget saved").to_string());
             self.act(ui, r);
         }
         if let Some(c) = remove {
-            let r = self.db.set_budget(c, 0).map(|_| "Budget rimosso".to_string());
+            let r = self.db.set_budget(c, 0).map(|_| tr("Budget removed").to_string());
             self.act(ui, r);
         }
     }
@@ -972,13 +1002,13 @@ impl App {
             card(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label("Nuova categoria:");
-                    ui.add(egui::TextEdit::singleline(&mut self.new_cat.0).hint_text("nome").desired_width(180.0));
-                    ui.label("dentro");
+                    ui.label(tr("New category:"));
+                    ui.add(egui::TextEdit::singleline(&mut self.new_cat.0).hint_text(tr("name")).desired_width(180.0));
+                    ui.label(tr("inside"));
                     let parents: Vec<Category> = cats.iter().filter(|c| c.parent_id.is_none()).cloned().collect();
-                    category_combo(ui, "newcatparent", &parents, &mut self.new_cat.2, "(nessuna: principale)");
-                    ui.checkbox(&mut self.new_cat.1, "è un'entrata");
-                    if primary_button(ui, "Aggiungi").clicked() && !self.new_cat.0.trim().is_empty() {
+                    category_combo(ui, "newcatparent", &parents, &mut self.new_cat.2, tr("(none: top level)"));
+                    ui.checkbox(&mut self.new_cat.1, tr("is income"));
+                    if primary_button(ui, tr("Add")).clicked() && !self.new_cat.0.trim().is_empty() {
                         let parent = self.new_cat.2.and_then(|p| cats.iter().find(|c| c.id == p));
                         let path = match parent {
                             Some(p) => format!("{}:{}", p.path, self.new_cat.0.trim()),
@@ -998,7 +1028,7 @@ impl App {
                     ui.allocate_ui(Vec2::new(half, 10.0), |ui| {
                         card(ui, |ui| {
                             ui.set_width(half - 30.0);
-                            section_title(ui, if income { "Entrate" } else { "Uscite" });
+                            section_title(ui, if income { tr("Income") } else { tr("Expenses") });
                             ui.add_space(4.0);
                             for c in cats.iter().filter(|c| c.is_income == income) {
                                 let depth = c.path.matches(':').count();
@@ -1023,15 +1053,15 @@ impl App {
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if ui
                                             .small_button("🗑")
-                                            .on_hover_text("Elimina (i movimenti restano senza categoria)")
+                                            .on_hover_text(tr("Delete (its transactions stay, uncategorized)"))
                                             .clicked()
                                         {
                                             del = Some(c.id);
                                         }
-                                        if ui.small_button("✏").on_hover_text("Rinomina").clicked() {
+                                        if ui.small_button("✏").on_hover_text(tr("Rename")).clicked() {
                                             self.rename_cat = Some((c.id, c.name.clone()));
                                         }
-                                        if ui.small_button("📋").on_hover_text("Vedi i movimenti").clicked() {
+                                        if ui.small_button("📋").on_hover_text(tr("See the transactions")).clicked() {
                                             show = Some(c.id);
                                         }
                                     });
@@ -1043,17 +1073,17 @@ impl App {
             });
         });
         if let Some((path, income)) = create {
-            let r = self.db.category_by_path(&path, income, true).map(|_| "Categoria creata".to_string());
+            let r = self.db.category_by_path(&path, income, true).map(|_| tr("Category created").to_string());
             self.new_cat = (String::new(), false, None);
             self.act(ui, r);
         }
         if let Some((id, name)) = rename {
             self.rename_cat = None;
-            let r = self.db.rename_category(id, &name).map(|_| "Categoria rinominata".to_string());
+            let r = self.db.rename_category(id, &name).map(|_| tr("Category renamed").to_string());
             self.act(ui, r);
         }
         if let Some(id) = del {
-            let r = self.db.delete_category(id).map(|_| "Categoria eliminata".to_string());
+            let r = self.db.delete_category(id).map(|_| tr("Category deleted").to_string());
             self.act(ui, r);
         }
         if let Some(id) = show {
@@ -1077,28 +1107,28 @@ impl App {
                 ui.set_width(ui.available_width());
                 ui.label(
                     RichText::new(
-                        "Quando il beneficiario o la descrizione contengono una delle parole chiave (separate da | ), \
-                         il movimento riceve la categoria indicata. Le regole valgono per ogni movimento nuovo o importato senza categoria.",
+                        tr("When the payee or the description contains one of the keywords (separated by | ), \
+                         the transaction gets that category. Rules apply to every new or imported transaction without a category."),
                     )
                     .color(MUTED),
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.new_rule.0).hint_text("parole chiave, es. panificio|forno").desired_width(240.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.new_rule.0).hint_text(tr("keywords, e.g. bakery|pastry shop")).desired_width(240.0));
                     ui.label("➡");
                     let cats = self.categories.clone();
-                    category_combo(ui, "rulecat", &cats, &mut self.new_rule.1, "Scegli categoria…");
+                    category_combo(ui, "rulecat", &cats, &mut self.new_rule.1, tr("Choose a category…"));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.new_rule.2)
-                            .hint_text("rinomina beneficiario (facoltativo)")
-                            .desired_width(220.0),
+                            .hint_text(tr("rename payee (optional)"))
+                            .desired_width(260.0),
                     );
-                    if primary_button(ui, "Aggiungi regola").clicked() {
+                    if primary_button(ui, tr("Add rule")).clicked() {
                         add = true;
                     }
                 });
                 ui.add_space(6.0);
-                if ui.button("▶ Applica ora ai movimenti senza categoria").clicked() {
+                if ui.button(tr("▶ Apply now to uncategorized transactions")).clicked() {
                     apply = true;
                 }
             });
@@ -1106,8 +1136,8 @@ impl App {
             card(ui, |ui| {
                 ui.set_width(ui.available_width());
                 egui::Grid::new("rules").striped(true).num_columns(4).min_col_width(80.0).spacing([16.0, 8.0]).show(ui, |ui| {
-                    for h in ["PAROLE CHIAVE", "CATEGORIA", "RINOMINA IN", ""] {
-                        ui.label(RichText::new(h).size(11.0).color(MUTED));
+                    for h in [tr("Keywords"), tr("Category"), tr("Rename to"), ""] {
+                        ui.label(RichText::new(h.to_uppercase()).size(11.0).color(MUTED));
                     }
                     ui.end_row();
                     for r in &rules {
@@ -1124,21 +1154,22 @@ impl App {
         });
         if add {
             if let Some(c) = self.new_rule.1 {
-                let r = self.db.add_rule(&self.new_rule.0, c, &self.new_rule.2).map(|_| "Regola aggiunta".to_string());
+                let r = self.db.add_rule(&self.new_rule.0, c, &self.new_rule.2).map(|_| tr("Rule added").to_string());
                 if r.is_ok() {
                     self.new_rule = (String::new(), None, String::new());
                 }
                 self.act(ui, r);
             } else {
-                self.notify(ui, "Scegli la categoria della regola");
+                self.notify(ui, tr("Choose the category of the rule"));
             }
         }
         if apply {
-            let r = self.db.apply_rules().map(|n| format!("{n} movimenti categorizzati"));
+            let r =
+                self.db.apply_rules().map(|n| trn(n, "{n} transaction categorized", "{n} transactions categorized"));
             self.act(ui, r);
         }
         if let Some(id) = del {
-            let r = self.db.delete_rule(id).map(|_| "Regola eliminata".to_string());
+            let r = self.db.delete_rule(id).map(|_| tr("Rule deleted").to_string());
             self.act(ui, r);
         }
     }
@@ -1150,7 +1181,7 @@ impl App {
         let mut del: Option<i64> = None;
         let mut post = false;
         ui.horizontal(|ui| {
-            if primary_button(ui, "+ Nuovo pianificato").clicked() {
+            if primary_button(ui, tr("+ New scheduled transaction")).clicked() {
                 self.dialog = Some(Dialog::Scheduled(SchedForm {
                     account: self.default_account(),
                     expense: true,
@@ -1162,7 +1193,7 @@ impl App {
             }
             let due = items.iter().filter(|s| s.next_date <= db::today()).count();
             if ui
-                .add_enabled(due > 0, egui::Button::new(format!("✔ Registra le scadenze fino a oggi ({due})")))
+                .add_enabled(due > 0, egui::Button::new(trf("✔ Record what is due up to today ({n})", &[("n", &due)])))
                 .clicked()
             {
                 post = true;
@@ -1172,12 +1203,14 @@ impl App {
         card(ui, |ui| {
             ui.set_width(ui.available_width());
             if items.is_empty() {
-                ui.label(RichText::new("Nessun movimento pianificato.").color(MUTED));
+                ui.label(RichText::new(tr("No scheduled transactions.")).color(MUTED));
                 return;
             }
             egui::Grid::new("sched").striped(true).num_columns(7).spacing([18.0, 8.0]).show(ui, |ui| {
-                for h in ["PROSSIMA", "CONTO", "DESCRIZIONE", "CATEGORIA", "IMPORTO", "RIPETIZIONE", ""] {
-                    ui.label(RichText::new(h).size(11.0).color(MUTED));
+                for h in
+                    [tr("Next"), tr("Account"), tr("Description"), tr("Category"), tr("Amount"), tr("Repetition"), ""]
+                {
+                    ui.label(RichText::new(h.to_uppercase()).size(11.0).color(MUTED));
                 }
                 ui.end_row();
                 for s in &items {
@@ -1186,7 +1219,7 @@ impl App {
                     ui.label(&s.account);
                     ui.label(&s.payee);
                     let cat = match s.to_account_id {
-                        Some(to) => format!("[Giroconto] {}", self.account_name(to)),
+                        Some(to) => trf("[Transfer] {account}", &[("account", &self.account_name(to))]),
                         None => s.category.clone(),
                     };
                     ui.label(RichText::new(cat).color(MUTED));
@@ -1201,11 +1234,14 @@ impl App {
             });
         });
         if post {
-            let r = self.db.post_scheduled(db::today()).map(|n| format!("{n} movimenti registrati"));
+            let r = self
+                .db
+                .post_scheduled(db::today())
+                .map(|n| trn(n, "{n} transaction recorded", "{n} transactions recorded"));
             self.act(ui, r);
         }
         if let Some(id) = del {
-            let r = self.db.delete_scheduled(id).map(|_| "Pianificato eliminato".to_string());
+            let r = self.db.delete_scheduled(id).map(|_| tr("Scheduled transaction deleted").to_string());
             self.act(ui, r);
         }
     }

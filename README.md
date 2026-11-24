@@ -42,7 +42,16 @@
 - **Command line and MCP**: every operation also works without the window, from
   `cashcraft-cli` or an AI agent. The window refreshes when they change the data.
 
-The interface is in Italian. Data stays on your computer in a single SQLite file.
+The interface and the command line are in English and Italian: CashCraft follows the system,
+and **System / English / Italiano** at the bottom of the sidebar chooses another language for the
+data file. `CASHCRAFT_LANG=en` or `it` wins over both. Categories, rules and sample data of a new
+file are created in the language in use and are not translated afterwards. Amounts and dates are
+shown as `1.234,56 €` and dd/mm/yyyy in Italian, `€1,234.56` and yyyy-mm-dd in English; both
+styles can be typed in either language. Only one separator before exactly three digits depends on
+it: `1.234` is 1234 in Italian, `1,234` is 1234 in English. Bank statements are read the same in
+every language.
+
+Data stays on your computer in a single SQLite file.
 
 ## Install
 
@@ -68,23 +77,38 @@ On macOS, drag CashCraft to Applications. Until a release is signed with a Devel
     cashcraft-cli import statement.csv --account "Main account" --dry-run
     cashcraft-cli import statement.csv --account "Main account"
     cashcraft-cli tx list --account "Main account" --from 2026-01-01
-    cashcraft-cli tx add -a "Main account" --amount -12,50 -p "Bar" -c "Ristoranti e bar"
+    cashcraft-cli tx add -a "Main account" --amount -12,50 -p "Bar" -c "Restaurants and bars"
     cashcraft-cli report categories --month 2026-10
-    cashcraft-cli budget set Alimentari 400
-    cashcraft-cli rules add "conad|coop" Alimentari
+    cashcraft-cli budget set Groceries 400
+    cashcraft-cli rules add "panificio|forno" Groceries
     cashcraft-cli tools                     # every operation, as in MCP
     cashcraft-cli call list_accounts '{}'   # any operation with JSON arguments
 
-Italian aliases work too (`conti`, `movimenti`, `importa`, `regole`…). Add `--json` for
+Commands have Italian names too (`conti`, `movimenti`, `importa`, `regole`…); the help is in
+English. Category names above are those of a data file created in English. Add `--json` for
 machine-readable output. The data file is `CashCraft/cashcraft.db` in your user data folder;
 use `--db <file>` or `CASHCRAFT_DB` to pick another.
+
+### CSV export
+
+The layout follows the language:
+
+| | Italian | English |
+|---|---|---|
+| Separator | `;` | `,` |
+| Columns | Data, Conto, Beneficiario, Categoria, Note, Importo, Verificato | Date, Account, Payee, Category, Notes, Amount, Cleared |
+| Amounts | `-1.234,56` | `-1234.56` |
+| Dates | dd/mm/yyyy | yyyy-mm-dd |
+| Cleared | `sì`, `no` | `yes`, `no` |
+
+Files are UTF-8. Choose a layout with, for example, `CASHCRAFT_LANG=en cashcraft-cli export out.csv`.
 
 ## MCP server
 
     cashcraft-cli mcp --automation-read-root <folder> --automation-write-root <folder>
 
 Both folders are required: the agent may only import CSV files from the read folder and only
-write exports into the write folder. See [docs/mcp.md](docs/mcp.md).
+write exports into the write folder. The server always speaks English. See [docs/mcp.md](docs/mcp.md).
 
 ## Building
 
@@ -107,7 +131,7 @@ MIT OR Apache-2.0, at your option: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](
 
 ## Italiano
 
-CashCraft è un programma libero per gestire le finanze personali: conti, movimenti, categorie,
+CashCraft, in italiano e in inglese, è un programma libero per gestire le finanze personali: conti, movimenti, categorie,
 budget, report, movimenti ricorrenti e importazione dei CSV delle banche italiane. Funziona su
 macOS, Windows e Linux, anche da terminale (`cashcraft-cli`) e con gli assistenti AI tramite MCP.
 Scarica il file per il tuo computer dalla [pagina delle release](https://github.com/mmazzieri/CashCraft/releases/latest).

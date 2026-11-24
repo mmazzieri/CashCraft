@@ -2,12 +2,13 @@
 
 use crate::gui::{
     ACCENT, App, Dialog, GREEN, ImportState, MUTED, Period, RED, TxForm, View, ZEBRA, account_combo, card,
-    category_combo, column_combo, cut, expense_toggle, form_row, kind_icon, money, primary_button,
+    category_combo, column_combo, cut, error_text, expense_toggle, form_row, kind_icon, money, primary_button,
 };
 use anyhow::Result;
 use cashcraft_engine::db::{Account, AccountKind, Cents, NewScheduled, NewTx, TxEdit};
+use cashcraft_engine::i18n::{tr, trf, trn};
 use cashcraft_engine::importer::{self, ImportResult};
-use cashcraft_engine::money::{fmt_date, fmt_eur, parse_amount, parse_date};
+use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount, parse_date};
 use egui::{self, Color32, CornerRadius, Frame, Id, Margin, RichText, Ui};
 
 impl App {
@@ -23,15 +24,15 @@ impl App {
             ui.set_min_width(480.0);
             match &mut dialog {
                 Dialog::Tx(f) => {
-                    ui.heading(if f.id.is_some() { "Modifica movimento" } else { "Nuovo movimento" });
+                    ui.heading(if f.id.is_some() { tr("Edit transaction") } else { tr("New transaction") });
                     ui.add_space(8.0);
                     if f.is_transfer {
-                        ui.label(RichText::new("Giroconto: le modifiche valgono per entrambi i conti.").color(MUTED));
+                        ui.label(RichText::new(tr("Transfer: changes apply to both accounts.")).color(MUTED));
                     } else {
                         expense_toggle(ui, &mut f.expense);
                         ui.add_space(6.0);
                     }
-                    form_row(ui, "Conto", |ui| {
+                    form_row(ui, tr("Account"), |ui| {
                         if f.id.is_some() {
                             ui.label(
                                 accounts
@@ -44,32 +45,34 @@ impl App {
                             account_combo(ui, "txacc", &accounts, &mut f.account);
                         }
                     });
-                    form_row(ui, "Data", |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.date).hint_text("gg/mm/aaaa").desired_width(120.0));
+                    form_row(ui, tr("Date"), |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut f.date).hint_text(tr("yyyy-mm-dd")).desired_width(120.0),
+                        );
                     });
-                    form_row(ui, "Importo €", |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.amount).hint_text("0,00").desired_width(120.0));
+                    form_row(ui, tr("Amount €"), |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut f.amount).hint_text(fmt_plain(0)).desired_width(120.0));
                     });
-                    form_row(ui, "Beneficiario", |ui| {
+                    form_row(ui, tr("Payee"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.payee).desired_width(280.0));
                     });
                     if !f.is_transfer {
-                        form_row(ui, "Categoria", |ui| {
-                            category_combo(ui, "txcat", &cats, &mut f.category, "Automatica (regole)");
+                        form_row(ui, tr("Category"), |ui| {
+                            category_combo(ui, "txcat", &cats, &mut f.category, tr("Automatic (rules)"));
                         });
                     }
-                    form_row(ui, "Note", |ui| {
+                    form_row(ui, tr("Notes"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.memo).desired_width(280.0));
                     });
                     form_row(ui, "", |ui| {
-                        ui.checkbox(&mut f.cleared, "Verificato sull'estratto conto");
+                        ui.checkbox(&mut f.cleared, tr("Checked against the bank statement"));
                     });
                     if !f.error.is_empty() {
                         ui.label(RichText::new(&f.error).color(RED));
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if primary_button(ui, "Salva").clicked() {
+                        if primary_button(ui, tr("Save")).clicked() {
                             match self.save_tx(f) {
                                 Ok(m) => {
                                     message = Some(Ok(m));
@@ -78,28 +81,31 @@ impl App {
                                 Err(e) => f.error = format!("{e:#}"),
                             }
                         }
-                        if ui.button("Annulla").clicked() {
+                        if ui.button(tr("Cancel")).clicked() {
                             keep = false;
                         }
                     });
                 }
                 Dialog::Transfer(f) => {
-                    ui.heading("Giroconto");
-                    ui.label(RichText::new("Sposta denaro tra due tuoi conti (non conta come spesa).").color(MUTED));
+                    ui.heading(tr("Transfer"));
+                    ui.label(
+                        RichText::new(tr("Move money between two of your accounts (it does not count as an expense)."))
+                            .color(MUTED),
+                    );
                     ui.add_space(8.0);
-                    form_row(ui, "Da", |ui| {
+                    form_row(ui, tr("From"), |ui| {
                         account_combo(ui, "trfrom", &accounts, &mut f.from);
                     });
-                    form_row(ui, "A", |ui| {
+                    form_row(ui, tr("To"), |ui| {
                         account_combo(ui, "trto", &accounts, &mut f.to);
                     });
-                    form_row(ui, "Data", |ui| {
+                    form_row(ui, tr("Date"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.date).desired_width(120.0));
                     });
-                    form_row(ui, "Importo €", |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.amount).hint_text("0,00").desired_width(120.0));
+                    form_row(ui, tr("Amount €"), |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut f.amount).hint_text(fmt_plain(0)).desired_width(120.0));
                     });
-                    form_row(ui, "Note", |ui| {
+                    form_row(ui, tr("Notes"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.memo).desired_width(280.0));
                     });
                     if !f.error.is_empty() {
@@ -107,17 +113,20 @@ impl App {
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if primary_button(ui, "Registra").clicked() {
+                        if primary_button(ui, tr("Record")).clicked() {
                             let r = (|| -> Result<String> {
-                                let from = f.from.ok_or_else(|| anyhow::anyhow!("scegli il conto di origine"))?;
-                                let to = f.to.ok_or_else(|| anyhow::anyhow!("scegli il conto di destinazione"))?;
-                                let d = parse_date(&f.date).ok_or_else(|| anyhow::anyhow!("data non valida"))?;
+                                let from =
+                                    f.from.ok_or_else(|| anyhow::anyhow!(tr("choose the account to transfer from")))?;
+                                let to =
+                                    f.to.ok_or_else(|| anyhow::anyhow!(tr("choose the account to transfer to")))?;
+                                let d =
+                                    parse_date(&f.date).ok_or_else(|| anyhow::anyhow!(tr("the date is not valid")))?;
                                 let a = parse_amount(&f.amount)?;
                                 if a == 0 {
-                                    anyhow::bail!("inserisci un importo");
+                                    anyhow::bail!(tr("enter an amount"));
                                 }
                                 self.db.add_transfer(from, to, d, a, &f.memo)?;
-                                Ok("Giroconto registrato".into())
+                                Ok(tr("Transfer recorded").into())
                             })();
                             match r {
                                 Ok(m) => {
@@ -127,22 +136,22 @@ impl App {
                                 Err(e) => f.error = format!("{e:#}"),
                             }
                         }
-                        if ui.button("Annulla").clicked() {
+                        if ui.button(tr("Cancel")).clicked() {
                             keep = false;
                         }
                     });
                 }
                 Dialog::Account(f) => {
-                    ui.heading(if f.id.is_some() { "Modifica conto" } else { "Nuovo conto" });
+                    ui.heading(if f.id.is_some() { tr("Edit account") } else { tr("New account") });
                     ui.add_space(8.0);
-                    form_row(ui, "Nome", |ui| {
+                    form_row(ui, tr("Name"), |ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut f.name)
-                                .hint_text("es. Conto principale")
+                                .hint_text(tr("e.g. Main account"))
                                 .desired_width(260.0),
                         );
                     });
-                    form_row(ui, "Tipo", |ui| {
+                    form_row(ui, tr("Type"), |ui| {
                         egui::ComboBox::from_id_salt("acckind")
                             .selected_text(format!("{} {}", kind_icon(f.kind), f.kind.label()))
                             .width(200.0)
@@ -152,15 +161,15 @@ impl App {
                                 }
                             });
                     });
-                    form_row(ui, "Saldo iniziale €", |ui| {
+                    form_row(ui, tr("Opening balance €"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.opening).desired_width(120.0));
                     });
                     form_row(ui, "IBAN", |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.iban).hint_text("facoltativo").desired_width(260.0));
+                        ui.add(egui::TextEdit::singleline(&mut f.iban).hint_text(tr("optional")).desired_width(260.0));
                     });
                     if f.id.is_some() {
                         form_row(ui, "", |ui| {
-                            ui.checkbox(&mut f.archived, "Archiviato (nascosto dalla barra laterale)");
+                            ui.checkbox(&mut f.archived, tr("Archived (hidden from the sidebar)"));
                         });
                     }
                     if !f.error.is_empty() {
@@ -168,18 +177,18 @@ impl App {
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if primary_button(ui, "Salva").clicked() {
+                        if primary_button(ui, tr("Save")).clicked() {
                             let r = (|| -> Result<String> {
                                 let opening = if f.opening.trim().is_empty() { 0 } else { parse_amount(&f.opening)? };
                                 match f.id {
                                     Some(id) => {
                                         self.db.update_account(id, &f.name, f.kind, opening, &f.iban, f.archived)?;
-                                        Ok("Conto aggiornato".into())
+                                        Ok(tr("Account updated").into())
                                     }
                                     None => {
                                         let id = self.db.add_account(&f.name, f.kind, "EUR", opening, &f.iban)?;
                                         self.view = View::Register(Some(id));
-                                        Ok("Conto creato".into())
+                                        Ok(tr("Account created").into())
                                     }
                                 }
                             })();
@@ -191,56 +200,56 @@ impl App {
                                 Err(e) => f.error = format!("{e:#}"),
                             }
                         }
-                        if ui.button("Annulla").clicked() {
+                        if ui.button(tr("Cancel")).clicked() {
                             keep = false;
                         }
                     });
                 }
                 Dialog::Scheduled(f) => {
-                    ui.heading("Nuovo movimento pianificato");
+                    ui.heading(tr("New scheduled transaction"));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut f.transfer, false, "Movimento");
-                        ui.radio_value(&mut f.transfer, true, "Giroconto");
+                        ui.radio_value(&mut f.transfer, false, tr("Transaction"));
+                        ui.radio_value(&mut f.transfer, true, tr("Transfer"));
                     });
                     if !f.transfer {
                         expense_toggle(ui, &mut f.expense);
                     }
-                    form_row(ui, if f.transfer { "Da" } else { "Conto" }, |ui| {
+                    form_row(ui, if f.transfer { tr("From") } else { tr("Account") }, |ui| {
                         account_combo(ui, "schacc", &accounts, &mut f.account);
                     });
                     if f.transfer {
-                        form_row(ui, "A", |ui| {
+                        form_row(ui, tr("To"), |ui| {
                             account_combo(ui, "schto", &accounts, &mut f.to_account);
                         });
                     }
-                    form_row(ui, "Importo €", |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.amount).hint_text("0,00").desired_width(120.0));
+                    form_row(ui, tr("Amount €"), |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut f.amount).hint_text(fmt_plain(0)).desired_width(120.0));
                     });
-                    form_row(ui, "Descrizione", |ui| {
+                    form_row(ui, tr("Description"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.payee).desired_width(260.0));
                     });
                     if !f.transfer {
-                        form_row(ui, "Categoria", |ui| {
-                            category_combo(ui, "schcat", &cats, &mut f.category, "Nessuna");
+                        form_row(ui, tr("Category"), |ui| {
+                            category_combo(ui, "schcat", &cats, &mut f.category, tr("None"));
                         });
                     }
-                    form_row(ui, "Prima scadenza", |ui| {
+                    form_row(ui, tr("First due date"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.date).desired_width(120.0));
                     });
-                    form_row(ui, "Ripeti ogni", |ui| {
+                    form_row(ui, tr("Repeat every"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.every).desired_width(40.0));
                         let unit_label = match f.unit.as_str() {
-                            "day" => "giorni",
-                            "week" => "settimane",
-                            "year" => "anni",
-                            _ => "mesi",
+                            "day" => tr("days"),
+                            "week" => tr("weeks"),
+                            "year" => tr("years"),
+                            _ => tr("months"),
                         };
                         egui::ComboBox::from_id_salt("schunit").selected_text(unit_label).show_ui(ui, |ui| {
-                            ui.selectable_value(&mut f.unit, "day".to_string(), "giorni");
-                            ui.selectable_value(&mut f.unit, "week".to_string(), "settimane");
-                            ui.selectable_value(&mut f.unit, "month".to_string(), "mesi");
-                            ui.selectable_value(&mut f.unit, "year".to_string(), "anni");
+                            ui.selectable_value(&mut f.unit, "day".to_string(), tr("days"));
+                            ui.selectable_value(&mut f.unit, "week".to_string(), tr("weeks"));
+                            ui.selectable_value(&mut f.unit, "month".to_string(), tr("months"));
+                            ui.selectable_value(&mut f.unit, "year".to_string(), tr("years"));
                         });
                     });
                     if !f.error.is_empty() {
@@ -248,15 +257,16 @@ impl App {
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if primary_button(ui, "Salva").clicked() {
+                        if primary_button(ui, tr("Save")).clicked() {
                             let r = (|| -> Result<String> {
-                                let acc = f.account.ok_or_else(|| anyhow::anyhow!("scegli il conto"))?;
-                                let d = parse_date(&f.date).ok_or_else(|| anyhow::anyhow!("data non valida"))?;
+                                let acc = f.account.ok_or_else(|| anyhow::anyhow!(tr("choose the account")))?;
+                                let d =
+                                    parse_date(&f.date).ok_or_else(|| anyhow::anyhow!(tr("the date is not valid")))?;
                                 let a = parse_amount(&f.amount)?.abs();
                                 let to = if f.transfer {
                                     Some(
                                         f.to_account
-                                            .ok_or_else(|| anyhow::anyhow!("scegli il conto di destinazione"))?,
+                                            .ok_or_else(|| anyhow::anyhow!(tr("choose the account to transfer to")))?,
                                     )
                                 } else {
                                     None
@@ -264,7 +274,7 @@ impl App {
                                 let amt = if f.transfer || !f.expense { a } else { -a };
                                 let every: i64 = f.every.trim().parse().unwrap_or(1);
                                 if f.payee.trim().is_empty() {
-                                    anyhow::bail!("scrivi una descrizione");
+                                    anyhow::bail!(tr("write a description"));
                                 }
                                 let memo = if f.transfer { f.payee.clone() } else { String::new() };
                                 let cat = if f.transfer { None } else { f.category };
@@ -279,7 +289,7 @@ impl App {
                                     every,
                                     unit: f.unit.clone(),
                                 })?;
-                                Ok("Pianificato aggiunto".into())
+                                Ok(tr("Scheduled transaction added").into())
                             })();
                             match r {
                                 Ok(m) => {
@@ -289,7 +299,7 @@ impl App {
                                 Err(e) => f.error = format!("{e:#}"),
                             }
                         }
-                        if ui.button("Annulla").clicked() {
+                        if ui.button(tr("Cancel")).clicked() {
                             keep = false;
                         }
                     });
@@ -302,41 +312,42 @@ impl App {
                     }
                 }
                 Dialog::ConfirmDeleteAccount(id, name) => {
-                    ui.heading("Eliminare il conto?");
-                    ui.label(format!(
-                        "Il conto \"{name}\" e tutti i suoi movimenti saranno eliminati. Non si può annullare."
+                    ui.heading(tr("Delete the account?"));
+                    ui.label(trf(
+                        "The account \"{name}\" and all its transactions will be deleted. This cannot be undone.",
+                        &[("name", name)],
                     ));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.add(egui::Button::new(RichText::new("Elimina").color(Color32::WHITE)).fill(RED)).clicked()
+                        if ui
+                            .add(egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(RED))
+                            .clicked()
                         {
-                            message = Some(self.db.delete_account(*id).map(|_| "Conto eliminato".to_string()));
+                            message = Some(self.db.delete_account(*id).map(|_| tr("Account deleted").to_string()));
                             self.view = View::Dashboard;
                             keep = false;
                         }
-                        if ui.button("Annulla").clicked() {
+                        if ui.button(tr("Cancel")).clicked() {
                             keep = false;
                         }
                     });
                 }
                 Dialog::ConfirmClearDemo => {
-                    ui.heading("Eliminare i dati di esempio?");
-                    ui.label(
-                        "Conti, movimenti, budget e pianificati di esempio saranno eliminati.\n\
-                         Categorie e regole restano, così puoi iniziare subito.",
-                    );
+                    ui.heading(tr("Delete the sample data?"));
+                    ui.label(tr("Sample accounts, transactions, budgets and scheduled transactions will be deleted."));
+                    ui.label(tr("Categories and rules stay, so you can start right away."));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if primary_button(ui, "Elimina e inizia").clicked() {
+                        if primary_button(ui, tr("Delete and start")).clicked() {
                             message = Some(
                                 self.db
                                     .clear_accounts()
-                                    .map(|_| "Pronto: crea il tuo primo conto o importa un CSV".to_string()),
+                                    .map(|_| tr("Ready: create your first account or import a CSV").to_string()),
                             );
                             self.view = View::Dashboard;
                             keep = false;
                         }
-                        if ui.button("Annulla").clicked() {
+                        if ui.button(tr("Cancel")).clicked() {
                             keep = false;
                         }
                     });
@@ -354,22 +365,22 @@ impl App {
             let time = ctx.input(|i| i.time);
             match m {
                 Ok(s) => self.toast = Some((s, time + 4.0)),
-                Err(e) => self.toast = Some((format!("Errore: {e:#}"), time + 6.0)),
+                Err(e) => self.toast = Some((error_text(&e), time + 6.0)),
             }
             self.reload();
         }
     }
 
     fn save_tx(&mut self, f: &TxForm) -> Result<String> {
-        let account = f.account.ok_or_else(|| anyhow::anyhow!("scegli un conto"))?;
-        let date = parse_date(&f.date).ok_or_else(|| anyhow::anyhow!("data non valida (gg/mm/aaaa)"))?;
+        let account = f.account.ok_or_else(|| anyhow::anyhow!(tr("choose an account")))?;
+        let date = parse_date(&f.date).ok_or_else(|| anyhow::anyhow!(tr("the date is not valid (yyyy-mm-dd)")))?;
         let a = parse_amount(&f.amount)?.abs();
         if a == 0 {
-            anyhow::bail!("inserisci un importo");
+            anyhow::bail!(tr("enter an amount"));
         }
         let amount = if f.expense { -a } else { a };
         if f.payee.trim().is_empty() {
-            anyhow::bail!("scrivi il beneficiario o una descrizione");
+            anyhow::bail!(tr("write the payee or a description"));
         }
         match f.id {
             Some(id) => {
@@ -384,7 +395,7 @@ impl App {
                         cleared: f.cleared,
                     },
                 )?;
-                Ok("Movimento aggiornato".into())
+                Ok(tr("Transaction updated").into())
             }
             None => {
                 self.db.add_transaction(&NewTx {
@@ -397,7 +408,7 @@ impl App {
                     cleared: f.cleared,
                     import_hash: None,
                 })?;
-                Ok("Movimento registrato".into())
+                Ok(tr("Transaction recorded").into())
             }
         }
     }
@@ -411,17 +422,17 @@ impl App {
         let mut keep = true;
         let mut msg = None;
         ui.set_min_width(780.0);
-        ui.heading("Importa estratto conto CSV");
+        ui.heading(tr("Import a CSV statement"));
         ui.label(
-            RichText::new(
-                "Funziona con i CSV esportati dall'home banking: colonne, separatore, date e importi all'italiana \
-                 vengono riconosciuti da soli. I movimenti già importati vengono saltati.",
-            )
+            RichText::new(tr(
+                "It works with CSV files exported from online banking: columns, separator, dates and Italian amounts \
+                 are recognized. Transactions already imported are skipped.",
+            ))
             .color(MUTED),
         );
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button("📂 Scegli file…").clicked()
+            if ui.button(tr("📂 Choose file…")).clicked()
                 && let Some(p) = rfd::FileDialog::new().add_filter("CSV", &["csv", "CSV", "txt"]).pick_file()
             {
                 st.path_text = p.display().to_string();
@@ -429,10 +440,10 @@ impl App {
             }
             let r = ui.add(
                 egui::TextEdit::singleline(&mut st.path_text)
-                    .hint_text("…oppure incolla il percorso del file")
+                    .hint_text(tr("…or paste the path of the file"))
                     .desired_width(440.0),
             );
-            if ui.button("Analizza").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+            if ui.button(tr("Analyze")).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                 st.load();
             }
         });
@@ -442,20 +453,24 @@ impl App {
         if let Some(res) = &st.result {
             ui.add_space(10.0);
             card(ui, |ui| {
-                ui.label(RichText::new("✔ Importazione completata").size(16.0).strong().color(GREEN));
-                ui.label(format!("{} movimenti importati", res.added));
-                ui.label(format!("{} già presenti (saltati)", res.duplicates));
-                ui.label(format!("{} categorizzati automaticamente dalle regole", res.categorized));
+                ui.label(RichText::new(tr("✔ Import completed")).size(16.0).strong().color(GREEN));
+                ui.label(trn(res.added, "{n} transaction imported", "{n} transactions imported"));
+                ui.label(trf("{n} already present (skipped)", &[("n", &res.duplicates)]));
+                ui.label(trf("{n} categorized automatically by the rules", &[("n", &res.categorized)]));
                 if res.skipped > 0 {
                     ui.label(
-                        RichText::new(format!("{} righe non erano movimenti (saldi, totali…)", res.skipped))
-                            .color(MUTED),
+                        RichText::new(trn(
+                            res.skipped,
+                            "{n} row was not a transaction (balances, totals…)",
+                            "{n} rows were not transactions (balances, totals…)",
+                        ))
+                        .color(MUTED),
                     );
                 }
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if primary_button(ui, "Vai al conto").clicked() {
+                if primary_button(ui, tr("Go to the account")).clicked() {
                     if let Some(a) = st.account {
                         self.view = View::Register(Some(a));
                         self.period = Period::All;
@@ -464,7 +479,7 @@ impl App {
                     keep = false;
                     msg = Some(Ok(String::new()));
                 }
-                if ui.button("Chiudi").clicked() {
+                if ui.button(tr("Close")).clicked() {
                     keep = false;
                     msg = Some(Ok(String::new()));
                 }
@@ -474,12 +489,21 @@ impl App {
         if let Some(t) = &st.table {
             ui.add_space(8.0);
             ui.label(
-                RichText::new(format!(
-                    "Codifica {} · separatore «{}» · decimali con «{}» · intestazione {}",
-                    t.encoding,
-                    if t.delimiter == b'\t' { "tab".to_string() } else { (t.delimiter as char).to_string() },
-                    if t.decimal_comma { "," } else { "." },
-                    t.header_row.map(|h| format!("alla riga {}", h + 1)).unwrap_or_else(|| "assente".into())
+                RichText::new(trf(
+                    "Encoding {encoding} · separator «{separator}» · decimals with «{decimal}» · header {header}",
+                    &[
+                        ("encoding", &t.encoding),
+                        (
+                            "separator",
+                            &if t.delimiter == b'\t' { "tab".to_string() } else { (t.delimiter as char).to_string() },
+                        ),
+                        ("decimal", &if t.decimal_comma { "," } else { "." }),
+                        (
+                            "header",
+                            &t.header_row
+                                .map_or_else(|| tr("missing").to_string(), |h| trf("on row {n}", &[("n", &(h + 1))])),
+                        ),
+                    ],
                 ))
                 .color(MUTED)
                 .size(12.5),
@@ -488,25 +512,25 @@ impl App {
             let headers = t.headers.clone();
             let mut changed = false;
             egui::Grid::new("mapping").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
-                ui.label("Data");
+                ui.label(tr("Date"));
                 changed |= column_combo(ui, "m_date", &headers, &mut st.mapping.date);
-                ui.label("Importo (con segno)");
+                ui.label(tr("Amount (signed)"));
                 changed |= column_combo(ui, "m_amount", &headers, &mut st.mapping.amount);
                 ui.end_row();
-                ui.label("Descrizione");
+                ui.label(tr("Description"));
                 changed |= column_combo(ui, "m_desc", &headers, &mut st.mapping.description);
-                ui.label("Entrate / Accrediti");
+                ui.label(tr("Income / credits"));
                 changed |= column_combo(ui, "m_credit", &headers, &mut st.mapping.credit);
                 ui.end_row();
-                ui.label("Beneficiario");
+                ui.label(tr("Payee"));
                 changed |= column_combo(ui, "m_payee", &headers, &mut st.mapping.payee);
-                ui.label("Uscite / Addebiti");
+                ui.label(tr("Expenses / debits"));
                 changed |= column_combo(ui, "m_debit", &headers, &mut st.mapping.debit);
                 ui.end_row();
-                ui.label("Dettagli");
+                ui.label(tr("Details"));
                 changed |= column_combo(ui, "m_extra", &headers, &mut st.mapping.extra);
                 ui.label("");
-                changed |= ui.checkbox(&mut st.invert, "Inverti segno (carte di credito)").changed();
+                changed |= ui.checkbox(&mut st.invert, tr("Invert the sign (credit cards)")).changed();
                 ui.end_row();
             });
             if changed {
@@ -514,19 +538,19 @@ impl App {
             }
             ui.add_space(8.0);
             let total: Cents = st.rows.iter().map(|r| r.amount).sum();
-            ui.label(
-                RichText::new(format!(
-                    "{} movimenti trovati{} · somma {}{}",
-                    st.rows.len(),
-                    if st.skipped > 0 { format!(" ({} righe saltate)", st.skipped) } else { String::new() },
-                    fmt_eur(total),
-                    match (st.rows.first(), st.rows.last()) {
-                        (Some(a), Some(b)) => format!(" · dal {} al {}", fmt_date(a.date), fmt_date(b.date)),
-                        _ => String::new(),
-                    }
-                ))
-                .strong(),
-            );
+            let mut summary = trn(st.rows.len(), "{n} transaction found", "{n} transactions found");
+            if st.skipped > 0 {
+                summary.push(' ');
+                summary.push_str(&trn(st.skipped, "({n} row skipped)", "({n} rows skipped)"));
+            }
+            summary.push_str(" · ");
+            summary.push_str(&trf("sum {amount}", &[("amount", &fmt_eur(total))]));
+            if let (Some(a), Some(b)) = (st.rows.first(), st.rows.last()) {
+                summary.push_str(" · ");
+                summary
+                    .push_str(&trf("from {from} to {to}", &[("from", &fmt_date(a.date)), ("to", &fmt_date(b.date))]));
+            }
+            ui.label(RichText::new(summary).strong());
             Frame::new().fill(ZEBRA).corner_radius(CornerRadius::same(6)).inner_margin(Margin::same(8)).show(
                 ui,
                 |ui| {
@@ -552,17 +576,19 @@ impl App {
             );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label("Importa nel conto:");
+                ui.label(tr("Import into the account:"));
                 account_combo(ui, "impacc", accounts, &mut st.account);
-                ui.label("oppure in un nuovo conto:");
-                ui.add(egui::TextEdit::singleline(&mut st.new_account).hint_text("nome").desired_width(150.0));
+                ui.label(tr("or into a new account:"));
+                ui.add(egui::TextEdit::singleline(&mut st.new_account).hint_text(tr("name")).desired_width(150.0));
             });
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             let can = !st.rows.is_empty() && (st.account.is_some() || !st.new_account.trim().is_empty());
             let btn = egui::Button::new(
-                RichText::new(format!("Importa {} movimenti", st.rows.len())).color(Color32::WHITE).strong(),
+                RichText::new(trn(st.rows.len(), "Import {n} transaction", "Import {n} transactions"))
+                    .color(Color32::WHITE)
+                    .strong(),
             )
             .fill(ACCENT);
             if ui.add_enabled(can, btn).clicked() {
@@ -570,7 +596,7 @@ impl App {
                     let acc = if !st.new_account.trim().is_empty() {
                         self.db.add_account(st.new_account.trim(), AccountKind::Bank, "EUR", 0, "")?
                     } else {
-                        st.account.ok_or_else(|| anyhow::anyhow!("scegli un conto"))?
+                        st.account.ok_or_else(|| anyhow::anyhow!(tr("choose an account")))?
                     };
                     st.account = Some(acc);
                     importer::import_rows(&self.db, acc, &st.rows, st.skipped)
@@ -584,7 +610,7 @@ impl App {
                     Err(e) => st.error = format!("{e:#}"),
                 }
             }
-            if ui.button("Annulla").clicked() {
+            if ui.button(tr("Cancel")).clicked() {
                 keep = false;
             }
         });

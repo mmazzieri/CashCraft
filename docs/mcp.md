@@ -37,5 +37,10 @@ On Windows the program is `C:\Program Files\CashCraft\cashcraft-cli.exe`; on Lin
 ## Conventions
 
 Amounts are in euros; negative means money going out. Accounts and categories can be named
-by id or by name (`"Casa:Bollette"` for a subcategory). Errors come back as tool results with
+by id or by name (`"Home:Utilities"` for a subcategory, or whatever its name is in the data
+file). Amounts are best given as numbers; in text, `"1,234"` is 1234 and `"1.234"` is 1.23.
+
+The server is in English whatever the language of the app: descriptions, messages, errors,
+the CSV layout of `export_csv` and the payee of new transfers ("Transfer to …"). A data file it
+creates gets categories in the user's language. Errors come back as tool results with
 `isError: true` and a message, never as a crash.

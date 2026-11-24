@@ -1,11 +1,12 @@
-//! Server MCP (Model Context Protocol) su stdin/stdout: JSON-RPC 2.0,
-//! un messaggio per riga. Espone le stesse operazioni della CLI come "tools".
+//! MCP (Model Context Protocol) server on stdin/stdout: JSON-RPC 2.0, one message per line. Its
+//! tools are the operations of the command line. Always in English.
 //!
-//! Esempio di configurazione per un client MCP:
+//! Example of configuration for an MCP client:
 //! { "mcpServers": { "cashcraft": { "command": "cashcraft-cli", "args": ["mcp", "--automation-read-root", "…", "--automation-write-root", "…"] } } }
 
 use anyhow::Result;
 use cashcraft_engine::db::Db;
+use cashcraft_engine::i18n::{Lang, with_lang};
 use cashcraft_engine::ops;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -23,7 +24,7 @@ pub fn serve(db: &Db, roots: &ops::Roots) -> Result<()> {
         let msg: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
-                let err = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("JSON non valido: {e}")}});
+                let err = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("invalid JSON: {e}")}});
                 writeln!(out, "{err}")?;
                 out.flush()?;
                 continue;
@@ -41,8 +42,12 @@ pub fn serve(db: &Db, roots: &ops::Roots) -> Result<()> {
     Ok(())
 }
 
-/// Gestisce un messaggio; le notifiche (senza id) non hanno risposta.
+/// Handles a message; notifications (without an id) get no reply.
 pub fn handle(db: &Db, msg: &Value, roots: &ops::Roots) -> Option<Value> {
+    with_lang(Lang::En, || reply(db, msg, roots))
+}
+
+fn reply(db: &Db, msg: &Value, roots: &ops::Roots) -> Option<Value> {
     let id = msg.get("id").cloned();
     let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
     let params = msg.get("params").cloned().unwrap_or(json!({}));
@@ -54,7 +59,7 @@ pub fn handle(db: &Db, msg: &Value, roots: &ops::Roots) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "cashcraft", "title": "CashCraft", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "CashCraft gestisce le finanze personali: conti, movimenti, categorie, budget, regole e import dei CSV delle banche italiane. Gli importi sono in euro; negativo = uscita. Conti e categorie si indicano per nome o id."
+                "instructions": "CashCraft manages personal finances: accounts, transactions, categories, budgets, rules and import of Italian bank CSV files. Amounts are in euros; negative = money out. Accounts and categories are given by name or id."
             }))
         }
         "ping" => Ok(json!({})),
@@ -69,7 +74,7 @@ pub fn handle(db: &Db, msg: &Value, roots: &ops::Roots) -> Option<Value> {
             let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
             if !ops::tools().iter().any(|t| t.name == name) {
-                Err((-32602, format!("tool \"{name}\" sconosciuto")))
+                Err((-32602, format!("unknown tool \"{name}\"")))
             } else {
                 Ok(match ops::call(db, name, &args, Some(roots)) {
                     Ok(v) => json!({
@@ -78,7 +83,7 @@ pub fn handle(db: &Db, msg: &Value, roots: &ops::Roots) -> Option<Value> {
                         "isError": false
                     }),
                     Err(e) => json!({
-                        "content": [{"type": "text", "text": format!("Errore: {e:#}")}],
+                        "content": [{"type": "text", "text": format!("Error: {e:#}")}],
                         "isError": true
                     }),
                 })
@@ -86,7 +91,7 @@ pub fn handle(db: &Db, msg: &Value, roots: &ops::Roots) -> Option<Value> {
         }
         "resources/list" => Ok(json!({"resources": []})),
         "prompts/list" => Ok(json!({"prompts": []})),
-        other => Err((-32601, format!("metodo \"{other}\" non supportato"))),
+        other => Err((-32601, format!("method \"{other}\" is not supported"))),
     };
     Some(match result {
         Ok(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}),
@@ -94,4 +99,37 @@ pub fn handle(db: &Db, msg: &Value, roots: &ops::Roots) -> Option<Value> {
             json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agents_get_english_in_every_language() {
+        let dir = std::env::temp_dir();
+        let roots = ops::Roots::new(&dir, &dir).unwrap();
+        let ask = |l, method: &str, params: Value| {
+            with_lang(l, || {
+                let db = with_lang(Lang::It, Db::open_in_memory).unwrap();
+                let msg = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+                handle(&db, &msg, &roots).unwrap()
+            })
+        };
+        let calls = [
+            ("initialize", json!({})),
+            ("tools/list", json!({})),
+            ("nonsense", json!({})),
+            ("tools/call", json!({"name": "nonsense"})),
+            ("tools/call", json!({"name": "find", "arguments": {}})),
+            ("tools/call", json!({"name": "delete_account", "arguments": {"account": "Nessuno"}})),
+            ("tools/call", json!({"name": "create_account", "arguments": {"name": "A", "opening_balance": "1,234"}})),
+            ("tools/call", json!({"name": "create_account", "arguments": {"name": "A", "opening_balance": "x"}})),
+        ];
+        for (method, params) in calls {
+            assert_eq!(ask(Lang::It, method, params.clone()), ask(Lang::En, method, params));
+        }
+        let error = ask(Lang::It, "tools/call", json!({"name": "delete_account", "arguments": {"account": "x"}}));
+        assert_eq!(error["result"]["content"][0]["text"], "Error: account \"x\" not found");
+    }
 }

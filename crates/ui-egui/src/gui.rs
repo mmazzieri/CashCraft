@@ -3,8 +3,9 @@
 
 use anyhow::Result;
 use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Db, Scheduled, Transaction, TxFilter};
+use cashcraft_engine::i18n::{self, Lang, lang, tr, trf};
 use cashcraft_engine::importer::{self, ImportResult, Mapping, ParsedRow, Table};
-use cashcraft_engine::money::{fmt_date, fmt_eur, month_short};
+use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_number, month_short};
 use cashcraft_engine::{demo, ops};
 use chrono::{Datelike, NaiveDate};
 use egui::{self, Align2, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
@@ -41,6 +42,21 @@ pub const PALETTE: [Color32; 10] = [
     Color32::from_rgb(0x8C, 0x6A, 0x4F),
     Color32::from_rgb(0x9A, 0xA3, 0xA1),
 ];
+
+/// The languages to choose from: the system's when `None`. Languages have their own names.
+pub const LANGUAGES: [Option<Lang>; 3] = [None, Some(Lang::En), Some(Lang::It)];
+
+pub fn language_name(l: Option<Lang>) -> &'static str {
+    match l {
+        None => tr("System"),
+        Some(Lang::En) => "English",
+        Some(Lang::It) => "Italiano",
+    }
+}
+
+pub fn error_text(e: &anyhow::Error) -> String {
+    trf("Error: {error}", &[("error", &format_args!("{e:#}"))])
+}
 
 /// The value, or an empty one with the error shown: a failed read must not look like "no data".
 pub fn or_report<T: Default>(r: Result<T>, toast: &mut Option<(String, f64)>) -> T {
@@ -104,12 +120,12 @@ impl Period {
         [Period::ThisMonth, Period::LastMonth, Period::Last3, Period::ThisYear, Period::Last12, Period::All];
     pub fn label(self) -> &'static str {
         match self {
-            Period::ThisMonth => "Questo mese",
-            Period::LastMonth => "Mese scorso",
-            Period::Last3 => "Ultimi 3 mesi",
-            Period::ThisYear => "Quest'anno",
-            Period::Last12 => "Ultimi 12 mesi",
-            Period::All => "Tutto",
+            Period::ThisMonth => tr("This month"),
+            Period::LastMonth => tr("Last month"),
+            Period::Last3 => tr("Last 3 months"),
+            Period::ThisYear => tr("This year"),
+            Period::Last12 => tr("Last 12 months"),
+            Period::All => tr("All"),
         }
     }
     pub fn range(self) -> (Option<NaiveDate>, Option<NaiveDate>) {
@@ -267,6 +283,8 @@ pub struct App {
     pub rename_cat: Option<(i64, String)>,
     pub dash: Option<Dash>,
     pub report: Option<ReportData>,
+    /// The language chosen in the window, `None` for the system's.
+    pub language: Option<Lang>,
     data_version: i64,
     last_check: f64,
     pub demo: bool,
@@ -279,8 +297,10 @@ pub struct App {
 // ------------------------------------------------------------------ avvio
 
 pub fn run(path: PathBuf, screenshot: Option<PathBuf>) -> Result<()> {
+    // The language of a new file and of the errors while opening; then the one the file asks for.
+    i18n::set_lang(Lang::at_start(None));
     let db = if screenshot.is_some() && !path.exists() {
-        // Per la foto di controllo: dati di esempio in memoria, senza creare file.
+        // For a screenshot: sample data in memory, no file created.
         let d = Db::open_in_memory()?;
         demo::seed(&d)?;
         d
@@ -291,6 +311,7 @@ pub fn run(path: PathBuf, screenshot: Option<PathBuf>) -> Result<()> {
         }
         d
     };
+    i18n::set_lang(Lang::at_start(db.meta(i18n::META_KEY).as_deref()));
     let shooting = screenshot.is_some();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("CashCraft")
@@ -316,7 +337,7 @@ pub fn run(path: PathBuf, screenshot: Option<PathBuf>) -> Result<()> {
             Ok(Box::new(App::new(db, screenshot)))
         }),
     )
-    .map_err(|e| anyhow::anyhow!("impossibile aprire la finestra: {e}"))
+    .map_err(|e| anyhow::anyhow!(trf("the window cannot be opened: {error}", &[("error", &e)])))
 }
 
 fn setup_style(ctx: &egui::Context) {
@@ -364,8 +385,8 @@ fn save_png(path: &std::path::Path, img: &egui::ColorImage) -> Result<()> {
     for p in &img.pixels {
         bytes.extend_from_slice(&[p.r(), p.g(), p.b(), 255]);
     }
-    let buf =
-        image::RgbaImage::from_raw(w as u32, h as u32, bytes).ok_or_else(|| anyhow::anyhow!("immagine non valida"))?;
+    let buf = image::RgbaImage::from_raw(w as u32, h as u32, bytes)
+        .ok_or_else(|| anyhow::anyhow!(tr("the picture is not valid")))?;
     buf.save(path)?;
     Ok(())
 }
@@ -373,8 +394,9 @@ fn save_png(path: &std::path::Path, img: &egui::ColorImage) -> Result<()> {
 // ------------------------------------------------------------------ App
 
 impl App {
-    fn new(db: Db, screenshot: Option<PathBuf>) -> Self {
+    pub fn new(db: Db, screenshot: Option<PathBuf>) -> Self {
         let demo = db.meta("demo").as_deref() == Some("1");
+        let language = Lang::from_setting(db.meta(i18n::META_KEY).as_deref());
         let mut app = App {
             db,
             view: View::Dashboard,
@@ -397,6 +419,7 @@ impl App {
             rename_cat: None,
             dash: None,
             report: None,
+            language,
             data_version: 0,
             last_check: 0.0,
             demo,
@@ -407,25 +430,38 @@ impl App {
         };
         app.data_version = app.db.data_version();
         app.reload();
-        // Schermata iniziale facoltativa (utile per le foto di controllo).
+        // Optional first screen, for screenshots: anything else ("overview") is the overview.
         if let Ok(v) = std::env::var("CASHCRAFT_START_VIEW") {
             let first = app.accounts.first().map(|a| a.id);
             app.view = match v.as_str() {
-                "movimenti" => View::Register(first),
-                "tutti" => View::Register(None),
-                "report" => View::Reports,
+                "register" | "movimenti" => View::Register(first),
+                "all" | "tutti" => View::Register(None),
+                "reports" | "report" => View::Reports,
                 "budget" => View::Budget,
-                "categorie" => View::Categories,
-                "regole" => View::Rules,
-                "pianificati" => View::Scheduled,
+                "categories" | "categorie" => View::Categories,
+                "rules" | "regole" => View::Rules,
+                "scheduled" | "pianificati" => View::Scheduled,
                 _ => View::Dashboard,
             };
             app.reload_txs();
-            if v == "importa" {
+            if v == "import" || v == "importa" {
                 app.open_import(None);
             }
         }
         app
+    }
+
+    /// Changes the language of the window, and of the command line on this data file.
+    pub fn choose_language(&mut self, ui: &Ui, l: Option<Lang>) {
+        let r = self.db.set_meta(i18n::META_KEY, l.map_or("system", Lang::code));
+        if r.is_ok() {
+            self.language = l;
+            i18n::set_lang(l.unwrap_or_else(Lang::from_system));
+            // An amount being typed could mean something else in the new language.
+            self.budget_edit = None;
+            self.new_budget.1.clear();
+        }
+        self.act(ui, r.map(|_| String::new()));
     }
 
     pub fn reload(&mut self) {
@@ -467,7 +503,7 @@ impl App {
                     self.notify(ui, m);
                 }
             }
-            Err(e) => self.notify(ui, format!("Errore: {e:#}")),
+            Err(e) => self.notify(ui, error_text(&e)),
         }
         self.reload();
     }
@@ -591,7 +627,10 @@ impl eframe::App for App {
                 let done = self.shot_done.clone();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |img| {
                     if let Err(e) = save_png(&path, &img) {
-                        eprintln!("Errore nel salvare l'immagine: {e:#}");
+                        eprintln!(
+                            "{}",
+                            trf("The picture cannot be saved: {error}", &[("error", &format_args!("{e:#}"))])
+                        );
                     }
                     done.store(true, Ordering::SeqCst);
                 })));
@@ -741,7 +780,7 @@ pub fn category_combo(ui: &mut Ui, id: &str, cats: &[Category], value: &mut Opti
         for c in cats {
             if last_income != Some(c.is_income) {
                 last_income = Some(c.is_income);
-                ui.label(RichText::new(if c.is_income { "Entrate" } else { "Uscite" }).small().color(MUTED));
+                ui.label(RichText::new(if c.is_income { tr("Income") } else { tr("Expenses") }).small().color(MUTED));
             }
             let depth = c.path.matches(':').count();
             let label = format!("{}{}", "    ".repeat(depth), c.name);
@@ -759,7 +798,7 @@ pub fn account_combo(ui: &mut Ui, id: &str, accounts: &[Account], value: &mut Op
     let text = value
         .and_then(|v| accounts.iter().find(|a| a.id == v))
         .map(|a| a.name.clone())
-        .unwrap_or_else(|| "Scegli un conto…".into());
+        .unwrap_or_else(|| tr("Choose an account…").into());
     egui::ComboBox::from_id_salt(id).selected_text(text).width(220.0).show_ui(ui, |ui| {
         for a in accounts.iter().filter(|a| !a.archived) {
             if ui.selectable_label(*value == Some(a.id), format!("{} {}", kind_icon(a.kind), a.name)).clicked() {
@@ -773,14 +812,14 @@ pub fn account_combo(ui: &mut Ui, id: &str, accounts: &[Account], value: &mut Op
 
 pub fn column_combo(ui: &mut Ui, id: &str, headers: &[String], value: &mut Option<usize>) -> bool {
     let mut changed = false;
-    let text = value.and_then(|i| headers.get(i).cloned()).unwrap_or_else(|| "—".into());
+    let text = value.and_then(|i| importer::column_label(headers, i)).unwrap_or_else(|| "—".into());
     egui::ComboBox::from_id_salt(id).selected_text(text).width(190.0).show_ui(ui, |ui| {
         if ui.selectable_label(value.is_none(), "—").clicked() {
             *value = None;
             changed = true;
         }
-        for (i, h) in headers.iter().enumerate() {
-            let label = if h.is_empty() { format!("Colonna {}", i + 1) } else { h.clone() };
+        for i in 0..headers.len() {
+            let Some(label) = importer::column_label(headers, i) else { continue };
             if ui.selectable_label(*value == Some(i), label).clicked() {
                 *value = Some(i);
                 changed = true;
@@ -800,10 +839,10 @@ pub fn expense_toggle(ui: &mut Ui, expense: &mut bool) {
                     .min_size(Vec2::new(96.0, 28.0)),
             )
         };
-        if seg(ui, *expense, "− Uscita", RED).clicked() {
+        if seg(ui, *expense, tr("− Expense"), RED).clicked() {
             *expense = true;
         }
-        if seg(ui, !*expense, "+ Entrata", GREEN).clicked() {
+        if seg(ui, !*expense, tr("+ Income"), GREEN).clicked() {
             *expense = false;
         }
     });
@@ -828,7 +867,13 @@ pub fn cut(s: &str, n: usize) -> String {
 
 pub fn short_eur(c: Cents) -> String {
     let e = c as f64 / 100.0;
-    if e.abs() >= 1000.0 { format!("{:.1}k €", e / 1000.0).replace('.', ",") } else { format!("{:.0} €", e) }
+    let (n, unit) =
+        if e.abs() >= 1000.0 { (fmt_number(e.abs() / 1000.0, 1), "k") } else { (fmt_number(e.abs(), 0), "") };
+    let sign = if e < 0.0 && n != "0" { "-" } else { "" };
+    match lang() {
+        Lang::It => format!("{sign}{n}{unit} €"),
+        Lang::En => format!("{sign}€{n}{unit}"),
+    }
 }
 
 fn month_label(m: &str) -> String {
@@ -944,7 +989,7 @@ pub fn donut(ui: &mut Ui, items: &[(String, Cents)], size: f32) {
             a0 += sweep;
         }
     }
-    p.text(c - Vec2::new(0.0, 10.0), Align2::CENTER_CENTER, "Totale", FontId::proportional(12.0), MUTED);
+    p.text(c - Vec2::new(0.0, 10.0), Align2::CENTER_CENTER, tr("Total"), FontId::proportional(12.0), MUTED);
     p.text(c + Vec2::new(0.0, 9.0), Align2::CENTER_CENTER, fmt_eur(total), FontId::proportional(15.0), TEXT);
 }
 
