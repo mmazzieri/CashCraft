@@ -3,14 +3,16 @@
 
 use crate::db::Cents;
 use crate::i18n::tr;
-use crate::importer::ParsedRow;
 use crate::money::{checked_total, fmt_machine, parse_amount_with, parse_date};
-use crate::pdf::{Line, Page, Word};
-use anyhow::{Result, bail};
+use crate::pdf::{Failure, Line, Page, Word};
 use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
 
 /// Lines of one row are at most this far from its date, in points.
 const ROW_REACH: f64 = 10.0;
+/// Far more than a month has.
+const MAX_ROWS: usize = 5000;
+const MAX_TEXT: usize = 1000;
 /// What ends a list of movements.
 const SECTIONS: [&str; 7] = [
     "PERRENDERE",
@@ -22,7 +24,7 @@ const SECTIONS: [&str; 7] = [
     "DETTAGLIODEISUOI",
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CheckKind {
     Purchases,
     Instalments,
@@ -31,7 +33,7 @@ pub enum CheckKind {
 }
 
 /// A total of the statement against what was read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Check {
     pub kind: CheckKind,
     /// `None` when the statement does not say it.
@@ -63,7 +65,19 @@ impl Check {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+/// A row as it is imported.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CardRow {
+    pub date: NaiveDate,
+    /// Negative for a purchase.
+    pub amount: Cents,
+    pub payee: String,
+    pub memo: String,
+    /// What tells it from the other rows of the account.
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Statement {
     /// Last day of the statement.
     pub closing: Option<NaiveDate>,
@@ -72,20 +86,27 @@ pub struct Statement {
     pub debit: Option<Cents>,
     /// Last digits of the cards.
     pub cards: Vec<String>,
-    pub rows: Vec<ParsedRow>,
+    /// A heading of a card whose number could not be read.
+    pub unread_card: bool,
+    pub rows: Vec<CardRow>,
     /// Rows that look like movements but could not be read.
     pub unread: usize,
     pub checks: Vec<Check>,
 }
 
 impl Statement {
+    /// Everything was read and adds up.
     pub fn is_sound(&self) -> bool {
-        self.unread == 0 && self.checks.iter().all(Check::ok)
+        self.is_identified() && self.debit_date.is_some() && self.unread == 0 && self.checks.iter().all(Check::ok)
     }
 
-    /// The date that tells this statement from the others.
-    pub fn date(&self) -> Option<NaiveDate> {
-        self.closing.or(self.debit_date)
+    /// Whether what tells it from the other statements was read.
+    pub fn is_identified(&self) -> bool {
+        self.closing.is_some() && !self.cards.is_empty() && !self.unread_card
+    }
+
+    pub(crate) fn key(&self, closing: NaiveDate) -> String {
+        format!("{closing}|{}", self.cards.join(","))
     }
 
     pub fn json(&self) -> serde_json::Value {
@@ -99,7 +120,7 @@ impl Statement {
             .collect();
         serde_json::json!({"closing_date": self.closing, "debit_date": self.debit_date,
             "debit": self.debit.map(fmt_machine), "cards": self.cards, "unread_rows": self.unread,
-            "checks": checks, "sound": self.is_sound()})
+            "checks": checks, "identified": self.is_identified(), "sound": self.is_sound()})
     }
 }
 
@@ -116,8 +137,13 @@ fn line_text(words: &[Word]) -> String {
 fn find_label(words: &[Word], label: &str) -> Option<(usize, usize)> {
     for start in 0..words.len() {
         let mut text = String::new();
-        for (i, w) in words.iter().enumerate().skip(start) {
-            text.push_str(&compact(&w.text));
+        // No label has more words than letters.
+        for (i, w) in words.iter().enumerate().skip(start).take(label.len()) {
+            let part = compact(&w.text);
+            if i == start && part.is_empty() {
+                break;
+            }
+            text.push_str(&part);
             if text.starts_with(label) {
                 return Some((start, i + 1));
             }
@@ -350,9 +376,28 @@ fn debit_date(page: &Page) -> Option<NaiveDate> {
     best.map(|b| b.1)
 }
 
-pub fn parse(pages: &[Page]) -> Result<Statement> {
-    let unknown = || tr("the PDF is not a card statement of a kind that can be read");
-    let sum = |v: &[Cents]| checked_total(v.iter().copied()).ok_or_else(crate::ledger::too_big);
+/// On the first page, the amount under the heading of the debit, or beside it.
+fn headed_figure(page: &Page) -> Option<Cents> {
+    let (y, x0, x1) = page.iter().find_map(|l| {
+        let (from, to) = find_label(&l.words, "QUESTOMESELESARANNOADDEBITATI")?;
+        Some((l.y, l.words.get(from)?.x0, l.words.get(to - 1)?.x1))
+    })?;
+    let mut best: Option<(f64, Cents)> = None;
+    for l in page.iter().filter(|l| l.y > y - 4.0 && l.y < y + 120.0) {
+        for (w, v) in amounts(&l.words) {
+            let beside = (l.y - y).abs() < 4.0 && w.x0 > x1;
+            let below = l.y >= y + 4.0 && w.x1 > x0 - 20.0 && w.x0 < x1 + 20.0;
+            let distance = (l.y - y).abs() + if beside { w.x0 - x1 } else { 0.0 };
+            if (beside || below) && best.is_none_or(|b| distance < b.0) {
+                best = Some((distance, v));
+            }
+        }
+    }
+    best.map(|b| b.1)
+}
+
+pub fn parse(pages: &[Page]) -> Result<Statement, Failure> {
+    let sum = |v: &[Cents]| checked_total(v.iter().copied()).ok_or(Failure::Unknown);
     let mut s = Statement::default();
     // The summary ends where the list of the movements starts.
     let mut summary: Vec<&Line> = Vec::new();
@@ -370,7 +415,7 @@ pub fn parse(pages: &[Page]) -> Result<Statement> {
     }
     let detailed = pages.iter().flatten().any(|l| has(l, "DETTAGLIODEISUOIMOVIMENTI"));
     if !found_summary || !detailed {
-        bail!(unknown());
+        return Err(Failure::Unknown);
     }
     for l in &summary {
         // The date can be glued to the word before it.
@@ -387,7 +432,7 @@ pub fn parse(pages: &[Page]) -> Result<Statement> {
     let residual = closing_label.and_then(|l| figure(&summary, &l)).unwrap_or(0);
     let duty = figure(&summary, "IMPOSTADIBOLLO").unwrap_or(0);
     s.debit = figure(&summary, "TOTALEADDEBITO");
-    let first = pages.first().map(Vec::as_slice).unwrap_or_default();
+    let first = pages.first();
     s.debit_date = pages.first().and_then(debit_date).filter(|d| {
         let Some(closing) = s.closing else { return true };
         (-5..=70).contains(&(*d - closing).num_days())
@@ -396,11 +441,21 @@ pub fn parse(pages: &[Page]) -> Result<Statement> {
     let (mut purchases, mut instalments, mut totals) = (Vec::new(), Vec::new(), Vec::new());
     for page in pages {
         for (i, l) in page.iter().enumerate() {
-            if let Some((_, next)) = find_label(&l.words, "CARTANUMERO") {
-                let digits: String = l.words.get(next).map(|w| compact(&w.text)).unwrap_or_default();
-                let last: String = digits.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
-                if last.len() == 4 && last.chars().all(|c| c.is_ascii_digit()) && !s.cards.contains(&last) {
-                    s.cards.push(last);
+            if let Some((_, next)) = find_label(&l.words, "CARTANUMERO")
+                && l.words.iter().any(|w| w.text.contains('*') || compact(&w.text).starts_with("SCADENZA"))
+            {
+                // The stars may be words of their own.
+                let rest = l.words.get(next - 1..).unwrap_or_default().iter();
+                let text: String = rest
+                    .map(|w| compact(&w.text))
+                    .take_while(|w| !w.starts_with("ASALDO") && w != "A" && !w.starts_with("SCADENZA"))
+                    .collect();
+                let number: String = text.chars().skip_while(|c| !c.is_ascii_digit()).collect();
+                let digits = number.chars().take_while(char::is_ascii_digit).count();
+                match number.get(digits.saturating_sub(4)..digits).filter(|n| n.len() == 4) {
+                    Some(n) if s.cards.iter().any(|c| c == n) => {}
+                    Some(n) => s.cards.push(n.into()),
+                    None => s.unread_card = true,
                 }
             }
             if has(l, "DETTAGLIODEISUOIMOVIMENTI")
@@ -445,24 +500,28 @@ pub fn parse(pages: &[Page]) -> Result<Statement> {
     }
     let found = sum(&[spent, financed, duty, previous, residual.saturating_neg()])?;
     s.checks.push(Check { kind: CheckKind::Debit, expected: s.debit, found });
-    if first.iter().any(|l| has(l, "QUESTOMESELESARANNOADDEBITATI")) && s.debit.is_some() {
-        let all: Vec<Cents> = first.iter().flat_map(|l| amounts(&l.words)).map(|a| a.1).collect();
-        let same = all.iter().find(|v| Some(**v) == s.debit).or(all.first()).copied().unwrap_or(0);
-        s.checks.push(Check { kind: CheckKind::FirstPage, expected: s.debit, found: same });
+    if let (Some(said), Some(debit)) = (first.and_then(headed_figure), s.debit) {
+        s.checks.push(Check { kind: CheckKind::FirstPage, expected: Some(debit), found: said });
     }
-    let Some(date) = s.date() else { bail!(tr("the date of the card statement was not found")) };
+    // Without a date nothing is imported: this one only lets the rows be shown.
+    let date = s.closing.or(s.debit_date).unwrap_or_default();
     if duty != 0 {
         purchases.push(Row { date, amount: duty, description: "Imposta di bollo".into(), note: String::new() });
     }
+    if purchases.len() + instalments.len() > MAX_ROWS {
+        return Err(Failure::TooLarge);
+    }
     let of = format!("card|{date}|{}", s.cards.join(","));
+    let short = |t: &str| t.chars().take(MAX_TEXT).collect::<String>();
     for r in purchases.into_iter().chain(instalments) {
         // Without spaces, so that reading them better one day does not change the key.
-        let key = format!("{of}|{}|{}|{}", r.date, r.amount, compact(&r.description).to_lowercase());
+        let key = short(&format!("{of}|{}|{}|{}", r.date, r.amount, compact(&r.description).to_lowercase()));
         let amount = r.amount.saturating_neg();
-        s.rows.push(ParsedRow { date: r.date, amount, payee: r.description, memo: r.note, key: Some(key) });
+        let (payee, memo) = (short(&r.description), short(&r.note));
+        s.rows.push(CardRow { date: r.date, amount, payee, memo, key });
     }
     if s.rows.is_empty() && s.debit.is_none() {
-        bail!(unknown());
+        return Err(Failure::Unknown);
     }
     s.rows.sort_by_key(|r| r.date);
     Ok(s)

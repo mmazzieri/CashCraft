@@ -47,7 +47,7 @@ are unique in each account.
 `turn_into_transfer` gives the other posting of a transaction to another account of the user. When the
 other account has its own transaction for the same money (opposite amount, at most 10 days apart) the two
 entries become one, with the postings of both: ids, texts, cleared marks and import hashes stay, so either
-statement can be imported again. Several that match are listed and none is chosen. Transactions on a
+statement can be imported again. Which one it is, or none, is always the user's choice. Transactions on a
 category, on *Uncategorized* or on *Opening balances* (half a transfer of an older file) can be turned;
 splits, transfers and those on accounts added by hand cannot.
 
@@ -56,18 +56,19 @@ turned; a side that was joined keeps its own in `postings.date`. Registers, thei
 exports use the date of the side, so they go on agreeing with each bank's statement. The trial balance, the
 net worth over time and the journal use the date of the entry, so that debits equal credits on every date:
 for them both sides happen on that day. Editing the date of a side that has its own changes that
-one alone.
+one alone, and so does editing its texts: only a note that both sides take from the entry changes for both.
+When a side is left alone, because the other account was deleted or the transfer separated, its date becomes
+that of the entry.
+
+A side that was added, and not joined, is marked (`postings.origin = 'added'`), as are both sides of a
+transfer made by hand. A line imported later on its account, of the same amount and at most 10 days apart,
+takes its place: the date, text and import hash of the line move onto it and no row is added. That is done
+only when the line fits one added side and the side fits one new line, and the result of the import says
+so; otherwise the line is added, and listed for the user to join. The migration marks the sides of transfers
+that were never imported.
 
 `separate_transfer` gives each side an entry of its own, uncategorized, with its date and texts; the
-categories of before are not brought back. With `keep_other` false the other side goes instead, for one that
-was only added by mistake. An other side that was added, and not joined, has no import hash: the statement
-of its account, imported later, will add its own line.
-
-An entry with more than two postings shows as **Split**. Its date, payee, notes and cleared mark can be
-edited from the register; its amount and category cannot. Reports and the category filter see each of
-its postings. A posting on a category can be moved to another one from the entry (`set_posting_category`);
-the uncategorized filter lists the splits that need it. Deleting any transaction deletes its whole entry:
-the window asks first when it is a split, and says how many lines it has.
+categories of before are not brought back. With `keep_other` false the other side goes instead.
 
 ## Reports
 
@@ -113,14 +114,12 @@ was opened. It is read and changed as `opening_balance` of the account.
 `trial_balance` (up to a date) lists every balance with equal totals of debits and credits.
 `verify_ledger` checks each entry, posting and account and reports what is wrong; it changes nothing.
 
-## Migration from format 3
+## Migration from formats 2 to 5
 
-The table `card_statements` ([cards.md](cards.md)) is added, after a copy as `cashcraft.v3-backup.db` with the
-rules below.
-
-## Migration from format 2
-
-The column `postings.date` is added, and the table of format 4, after a copy as `cashcraft.v2-backup.db` with the rules below.
+The columns `postings.date` and `postings.origin` and the table `card_statements` ([cards.md](cards.md)) are
+added where they are missing, and the dates of sides left alone put right, after a copy as
+`cashcraft.v2-backup.db` (or `v3`, `v4`, `v5`) with the rules below. Lines with an import hash on a card with
+statements of format 4 are taken as rows of those statements.
 
 ## Migration from formats 0 and 1
 

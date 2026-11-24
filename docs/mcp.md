@@ -23,8 +23,9 @@ account of the chart) or `split`. The amount and category of a split one cannot 
 Transfers between accounts of different currencies are refused.
 
 `transfer_candidates`, `turn_into_transfer` and `separate_transfer` make a transfer of an imported line and
-back. With several transactions that may be the other side, `turn_into_transfer` is refused and lists them:
-pass `match` with the id of one, or `"none"`.
+back. When transactions may be the other side, `turn_into_transfer` is refused and lists them: ask the user,
+then pass `match` with the id of one, or `"none"`. An import reports the lines that took the place of an
+added side of a transfer (`adopted`) and those that may (`maybe_transfers`). Booleans must be booleans.
 
 An account of the chart is named by its path or name, or as `ledger:5` (its `ledger_account_id`), `code:3010`
 or `system:uncategorized`; a bare number is refused. `post_scheduled` posts what it can: `failed` lists the
@@ -34,9 +35,11 @@ rest, with the reason.
 
 `preview_csv` and `import_csv` read the PDF statement of a credit card too: `statement` has its dates and
 `checks`, the totals it states against what was read, in exact decimal text. When they differ
-(`sound: false`) the import is refused, unless `allow_mismatch` is true: ask the user first.
+(`sound: false`) the import is refused, unless `allow_mismatch` is true: ask the user first. It is also refused
+when it is not `identified`, and into an account that is not a credit card without `any_account`.
 `propose_card_payments` (also `card_payments` in the answer of an import) lists the bank transactions that
-may pay each statement, `link_card_payment` makes one the transfer to the card, `unlink_card_payment` undoes
+may pay each statement, with the `card_lines` that may be the same; `link_card_payment` makes one the transfer
+to the card (`join`: the card line, only if the user says it is the same), `unlink_card_payment` undoes
 it, `list_card_statements` shows them all. See [cards.md](cards.md).
 
 ## Allowed folders

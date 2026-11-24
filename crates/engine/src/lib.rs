@@ -14,5 +14,7 @@ pub mod money;
 pub mod ops;
 mod paths;
 pub mod pdf;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 pub mod transfers;
 mod xls;

@@ -105,7 +105,7 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "transfer_candidates",
-            description: "Lists the transactions of another account that may be the other side of a transaction: opposite amount, within 10 days, nearest first.",
+            description: "Lists the transactions of another account that may be the other side of a transaction (opposite amount, within 10 days, nearest first). One of kind transfer is a transfer whose other side this transaction would confirm.",
             schema: obj(
                 json!({"id": n("Id of the transaction."), "account": s("The other account: numeric id or name.")}),
                 &["id", "account"],
@@ -113,7 +113,7 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "turn_into_transfer",
-            description: "Turns a transaction into a transfer with another account. If the other side is there already as a transaction, the two are joined; with several that match, the call is refused and lists them. Ids, texts, dates and import keys are kept.",
+            description: "Turns a transaction into a transfer with another account. If transactions there may be the other side already, the call is refused and lists them: ask the user, then pass one as match, or none. Ids, texts, dates and import keys are kept.",
             schema: obj(
                 json!({"id": n("Id of the transaction."), "account": s("The other account: numeric id or name."),
                 "match": s("\"auto\" (default), \"none\" to add the other side anyway, or the id of the transaction to join.")}),
@@ -146,7 +146,8 @@ pub fn tools() -> Vec<ToolDef> {
                 "dry_run": b("Trial run: saves nothing."), "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."),
                 "credit_column": s("Money-in column."), "debit_column": s("Money-out column."), "description_column": s("Description column."),
                 "payee_column": s("Payee column."),
-                "allow_mismatch": b("Import a card statement even if its rows do not add up to its totals; only after the user agreed.")}),
+                "allow_mismatch": b("Import a card statement even if its rows do not add up to its totals; only after the user agreed."),
+                "any_account": b("Import a card statement into an account that is not a credit card; only after the user agreed.")}),
                 &["path", "account"],
             ),
         },
@@ -164,7 +165,8 @@ pub fn tools() -> Vec<ToolDef> {
             name: "link_card_payment",
             description: "Makes a bank transaction the payment of a card statement: it becomes a transfer to the card, no longer an expense. The bank's line keeps its id, date, text and import key.",
             schema: obj(
-                json!({"statement_id": n("Id of the card statement."), "transaction_id": n("Id of the bank transaction, one of those proposed.")}),
+                json!({"statement_id": n("Id of the card statement."), "transaction_id": n("Id of the bank transaction, one of those proposed."),
+                "join": n("Id of the card's own line of the payment, one of its card_lines, if the user says it is the same (default: the side of the card is added).")}),
                 &["statement_id", "transaction_id"],
             ),
         },
@@ -387,12 +389,16 @@ fn req_str(a: &Value, k: &str) -> Result<String> {
     opt_str(a, k).filter(|s| !s.trim().is_empty()).ok_or_else(|| missing(k))
 }
 
-fn opt_bool(a: &Value, k: &str) -> bool {
+/// `false` when it is not given; anything but a boolean is an error.
+fn opt_bool(a: &Value, k: &str) -> Result<bool> {
+    Ok(given_bool(a, k)?.unwrap_or(false))
+}
+
+fn given_bool(a: &Value, k: &str) -> Result<Option<bool>> {
     match a.get(k) {
-        Some(Value::Bool(b)) => *b,
-        Some(Value::String(s)) => matches!(s.to_lowercase().as_str(), "true" | "1" | "si" | "sì" | "yes"),
-        Some(Value::Number(n)) => n.as_i64().unwrap_or(0) != 0,
-        _ => false,
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => bail!(trf("the parameter \"{name}\" must be true or false", &[("name", &k)])),
     }
 }
 
@@ -401,6 +407,14 @@ fn opt_i64(a: &Value, k: &str) -> Option<i64> {
         Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
         Value::String(s) => s.trim().parse().ok(),
         _ => None,
+    }
+}
+
+/// `None` when it is not given; anything but a whole number is an error.
+fn opt_i64_strict(a: &Value, k: &str) -> Result<Option<i64>> {
+    match a.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => req_i64(a, k).map(Some),
     }
 }
 
@@ -640,7 +654,7 @@ pub fn call(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
 fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Value> {
     Ok(match name {
         "list_accounts" => {
-            let accts = db.accounts(opt_bool(a, "include_archived"))?;
+            let accts = db.accounts(opt_bool(a, "include_archived")?)?;
             json!({"accounts": accts, "net_worth": db.net_worth(None)?})
         }
         "create_account" => {
@@ -668,7 +682,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 from: opt_date(a, "from")?,
                 to: opt_date(a, "to")?,
                 search: opt_str(a, "search").unwrap_or_default(),
-                uncategorized: opt_bool(a, "uncategorized"),
+                uncategorized: opt_bool(a, "uncategorized")?,
                 limit: Some(opt_i64(a, "limit").unwrap_or(100).max(1) as usize),
                 ..Default::default()
             };
@@ -694,8 +708,9 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 payee: req_str(a, "payee")?,
                 memo: opt_str(a, "memo").unwrap_or_default(),
                 category_id,
-                cleared: opt_bool(a, "cleared"),
+                cleared: opt_bool(a, "cleared")?,
                 import_hash: None,
+                card_row: false,
             };
             db.atomically(|| {
                 let id = db.add_transaction(&tx)?.ok_or_else(|| anyhow!(tr("the transaction was not saved")))?;
@@ -723,7 +738,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                         payee: opt_str(a, "payee").unwrap_or(t.payee),
                         memo: opt_str(a, "memo").unwrap_or(t.memo),
                         category_id,
-                        cleared: if a.get("cleared").is_some() { opt_bool(a, "cleared") } else { t.cleared },
+                        cleared: given_bool(a, "cleared")?.unwrap_or(t.cleared),
                     },
                 )?;
                 Ok(json!({"transaction": db.transaction(id)?}))
@@ -774,7 +789,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
         }
         "separate_transfer" => {
             let id = req_i64(a, "id")?;
-            let keep = a.get("keep_other").is_none_or(Value::is_null) || opt_bool(a, "keep_other");
+            let keep = given_bool(a, "keep_other")?.unwrap_or(true);
             let other = db.separate_transfer(id, keep)?;
             json!({"id": id, "other_id": other, "message": tr("transfer separated")})
         }
@@ -786,7 +801,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             };
             let t = importer::load(&path)?;
             let m = mapping_overrides(&t, a)?;
-            if t.statement.is_some() && (m != t.mapping || opt_bool(a, "invert")) {
+            if t.statement.is_some() && (m != t.mapping || opt_bool(a, "invert")?) {
                 bail!(tr("the columns and the sign of a card statement cannot be changed"));
             }
             if m.date.is_none() && t.statement.is_none() {
@@ -795,9 +810,9 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             if m.amount.is_none() && m.credit.is_none() && m.debit.is_none() && t.statement.is_none() {
                 bail!(tr("the amount column was not found: give it with amount_column or credit_column/debit_column"));
             }
-            let (rows, skipped) = importer::parse_rows(&t, &m, opt_bool(a, "invert"));
+            let (rows, skipped) = importer::parse_rows(&t, &m, opt_bool(a, "invert")?);
             let info = importer::describe(&t, &m);
-            if name == "preview_csv" || opt_bool(a, "dry_run") {
+            if name == "preview_csv" || opt_bool(a, "dry_run")? {
                 let limit = opt_i64(a, "limit").unwrap_or(10).max(1) as usize;
                 let total = checked_total(rows.iter().map(|r| r.amount)).ok_or_else(too_big)?;
                 json!({"format": info, "rows_found": rows.len(), "rows_skipped": skipped, "sum": total,
@@ -806,13 +821,17 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                        "statement": t.statement.as_ref().map(importer::Statement::json)})
             } else {
                 let acc = db.find_account(&req_str(a, "account")?)?;
-                let res = importer::import(db, acc.id, &t, &rows, skipped, opt_bool(a, "allow_mismatch"))?;
+                if t.statement.is_some() && acc.kind != AccountKind::CreditCard && !opt_bool(a, "any_account")? {
+                    bail!(trf(
+                        "\"{name}\" is not a credit card: nothing was imported (any_account to import all the same)",
+                        &[("name", &acc.name)]
+                    ));
+                }
+                let res = importer::import(db, acc.id, &t, &rows, skipped, opt_bool(a, "allow_mismatch")?)?;
                 let proposals: Vec<_> =
                     db.propose_card_payments()?.into_iter().filter(|p| !p.candidates.is_empty()).collect();
-                let warning = (t.statement.is_some() && acc.kind != AccountKind::CreditCard)
-                    .then(|| tr("the account is not a credit card"));
                 json!({"account": acc.name, "format": info, "result": res, "card_payments": proposals,
-                       "statement": t.statement.as_ref().map(importer::Statement::json), "warning": warning,
+                       "statement": t.statement.as_ref().map(importer::Statement::json),
                        "message": trf("{added} imported, {present} already present, {categorized} categorized automatically", &[("added", &res.added), ("present", &res.duplicates), ("categorized", &res.categorized)])})
             }
         }
@@ -820,7 +839,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
         "propose_card_payments" => json!({"card_payments": db.propose_card_payments()?}),
         "link_card_payment" => {
             let (statement, transaction) = (req_i64(a, "statement_id")?, req_i64(a, "transaction_id")?);
-            db.link_card_payment(statement, transaction)?;
+            db.link_card_payment(statement, transaction, opt_i64_strict(a, "join")?)?;
             json!({"statement_id": statement, "transaction": db.transaction(transaction)?,
                    "message": tr("the bank's line is now the transfer that pays the card statement")})
         }
@@ -831,7 +850,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
         }
         "list_categories" => json!({"categories": db.categories()?}),
         "create_category" => {
-            let id = db.category_by_path(&req_str(a, "path")?, opt_bool(a, "income"), true)?;
+            let id = db.category_by_path(&req_str(a, "path")?, opt_bool(a, "income")?, true)?;
             json!({"id": id})
         }
         "delete_category" => {

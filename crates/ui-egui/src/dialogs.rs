@@ -7,7 +7,7 @@ use crate::gui::{
 };
 use anyhow::Result;
 use cashcraft_engine::cards::{CardStatement, PaymentProposal};
-use cashcraft_engine::db::{Account, AccountKind, NewScheduled, NewTx, TxEdit};
+use cashcraft_engine::db::{Account, AccountKind, NewScheduled, NewTx, Transaction, TxEdit};
 use cashcraft_engine::i18n::{tr, trf, trn};
 use cashcraft_engine::importer::{self, ImportResult, Statement};
 use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount, parse_date, total};
@@ -30,7 +30,7 @@ impl App {
                     ui.heading(if f.id.is_some() { tr("Edit transaction") } else { tr("New transaction") });
                     ui.add_space(8.0);
                     if f.is_transfer {
-                        ui.label(RichText::new(tr("Transfer: changes apply to both accounts.")).color(MUTED));
+                        ui.label(RichText::new(tr("Transfer: the amount changes in both accounts.")).color(MUTED));
                     } else {
                         expense_toggle(ui, &mut f.expense);
                         ui.add_space(6.0);
@@ -544,7 +544,14 @@ impl App {
                 ui.label(tr("The other side is already in that account?"));
                 egui::ScrollArea::vertical().id_salt("turn_candidates").max_height(220.0).show(ui, |ui| {
                     for c in &f.candidates {
-                        let text = format!("{} · {} · {}", fmt_date(c.date), cut(&c.payee, 48), fmt_eur(c.amount));
+                        let category = if c.category.is_empty() { tr("Uncategorized") } else { &c.category };
+                        let text = format!(
+                            "{} · {} · {} · {}",
+                            fmt_date(c.date),
+                            cut(&c.payee, 44),
+                            fmt_eur(c.amount),
+                            cut(category, 30)
+                        );
                         ui.radio_value(&mut f.other, OtherSide::Join(c.id), text);
                     }
                 });
@@ -617,6 +624,7 @@ impl App {
                     category_id: f.category,
                     cleared: f.cleared,
                     import_hash: None,
+                    card_row: false,
                 })?;
                 Ok(tr("Transaction recorded").into())
             }
@@ -648,7 +656,7 @@ impl App {
                     .pick_file()
             {
                 st.path_text = p.display().to_string();
-                self.load_import(st);
+                st.load();
             }
             let r = ui.add(
                 egui::TextEdit::singleline(&mut st.path_text)
@@ -656,9 +664,22 @@ impl App {
                     .desired_width(440.0),
             );
             if ui.button(tr("Analyze")).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
-                self.load_import(st);
+                st.load();
             }
         });
+        if st.poll() {
+            self.card_account(st);
+        }
+        if st.loading.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(tr("Reading the file…"));
+                if ui.button(tr("Stop")).clicked() {
+                    st.loading = None;
+                }
+            });
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
         if !st.error.is_empty() {
             ui.label(RichText::new(&st.error).color(RED));
         }
@@ -679,8 +700,13 @@ impl App {
                         .color(MUTED),
                     );
                 }
+                for a in &res.adopted {
+                    let line = format!("{} · {} · {}", fmt_date(a.date), cut(&a.payee, 44), fmt_eur(a.amount));
+                    ui.label(trf("Side of a transfer that was there: {line}", &[("line", &line)]));
+                }
             });
             self.card_payments(ui, &mut st.cards);
+            self.maybe_transfers(ui, st);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if primary_button(ui, tr("Go to the account")).clicked() {
@@ -699,7 +725,7 @@ impl App {
             });
             return (keep, msg);
         }
-        if st.table.is_none() {
+        if st.table.is_none() && st.loading.is_none() {
             self.card_payments(ui, &mut st.cards);
         }
         let statement = st.table.as_ref().and_then(|t| t.statement.clone());
@@ -849,10 +875,44 @@ impl App {
         (keep, msg)
     }
 
+    /// Imported lines that may be the side of a transfer that is there.
+    fn maybe_transfers(&mut self, ui: &mut Ui, st: &mut ImportState) {
+        let Some(res) = st.result.as_mut().filter(|r| !r.maybe_transfers.is_empty()) else { return };
+        let mut joined: Option<(usize, Result<()>)> = None;
+        ui.add_space(8.0);
+        card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(tr("Sides of transfers that are there already?")).strong());
+            egui::ScrollArea::vertical().id_salt("maybe_transfers").max_height(160.0).show(ui, |ui| {
+                for (i, m) in res.maybe_transfers.iter().enumerate() {
+                    let t = &m.transaction;
+                    ui.label(format!("{} · {} · {}", fmt_date(t.date), cut(&t.payee, 44), fmt_eur(t.amount)));
+                    for c in &m.candidates {
+                        ui.horizontal(|ui| {
+                            if ui.button(tr("Join")).clicked() {
+                                let done = self.db.turn_into_transfer(t.id, c.account_id, OtherSide::Join(c.id));
+                                joined = Some((i, done.map(|_| ())));
+                            }
+                            ui.label(format!("{} · {} · {}", fmt_date(c.date), c.account, cut(&c.payee, 40)));
+                        });
+                    }
+                }
+            });
+        });
+        match joined {
+            Some((i, Ok(()))) => {
+                res.maybe_transfers.remove(i);
+                self.reload();
+            }
+            Some((_, Err(e))) => st.error = format!("{e:#}"),
+            None => {}
+        }
+    }
+
     /// The card statements without a payment, with what may pay them, and the latest ones that have it.
     fn card_payments(&mut self, ui: &mut Ui, cards: &mut CardPayments) {
         let pending: Vec<&PaymentProposal> = cards.proposals.iter().filter(|p| !p.candidates.is_empty()).collect();
-        let linked: Vec<&CardStatement> = cards.statements.iter().filter(|s| s.payment_id.is_some()).take(3).collect();
+        let linked: Vec<&CardStatement> = cards.statements.iter().filter(|s| s.payment_id.is_some()).collect();
         if pending.is_empty() && linked.is_empty() && cards.error.is_empty() {
             return;
         }
@@ -872,21 +932,55 @@ impl App {
                         .size(12.5),
                     );
                     for c in &p.candidates {
+                        let t = &c.transaction;
                         ui.horizontal(|ui| {
                             if ui.button(tr("Link")).clicked() {
-                                done = Some(self.db.link_card_payment(p.statement.id, c.id));
+                                let join = cards.join.get(&t.id).copied();
+                                done = Some(self.db.link_card_payment(p.statement.id, t.id, join));
                             }
-                            ui.label(format!("{} · {} · {}", fmt_date(c.date), c.account, cut(&c.payee, 44)));
-                            ui.label(money(c.amount));
+                            ui.label(format!("{} · {} · {}", fmt_date(t.date), t.account, cut(&t.payee, 44)));
+                            ui.label(money(t.amount));
                         });
+                        if c.card_lines.is_empty() {
+                            continue;
+                        }
+                        let mut chosen = cards.join.get(&t.id).copied();
+                        ui.indent(("card_lines", t.id), |ui| {
+                            ui.radio_value(&mut chosen, None, tr("Add the side of the card"));
+                            for l in &c.card_lines {
+                                ui.radio_value(&mut chosen, Some(l.id), join_text(l));
+                            }
+                        });
+                        match chosen {
+                            Some(l) => cards.join.insert(t.id, l),
+                            None => cards.join.remove(&t.id),
+                        };
                     }
                 }
                 for s in linked {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("✔").color(GREEN));
+                        if s.matches {
+                            ui.label(RichText::new("✔").color(GREEN));
+                        } else {
+                            ui.label(RichText::new("⚠").color(AMBER))
+                                .on_hover_text(tr("The payment has another amount"));
+                        }
                         ui.label(statement_text(s));
-                        if ui.button(tr("Unlink")).clicked() {
+                        if !s.matches {
+                            ui.label(RichText::new(tr("The payment has another amount")).color(AMBER));
+                        }
+                        if cards.unlinking != Some(s.id) {
+                            if ui.button(tr("Unlink")).clicked() {
+                                cards.unlinking = Some(s.id);
+                            }
+                            return;
+                        }
+                        ui.label(tr("The bank's line becomes an uncategorized expense."));
+                        if ui.button(RichText::new(tr("Unlink")).color(RED)).clicked() {
                             done = Some(self.db.unlink_card_payment(s.id));
+                        }
+                        if ui.button(tr("Cancel")).clicked() {
+                            cards.unlinking = None;
                         }
                     });
                 }
@@ -903,6 +997,13 @@ impl App {
             self.reload();
         }
     }
+}
+
+/// A line of the card that may be the payment.
+fn join_text(t: &Transaction) -> String {
+    let category = if t.category.is_empty() { tr("Uncategorized") } else { &t.category };
+    let line = format!("{} · {} · {} · {category}", fmt_date(t.date), cut(&t.payee, 40), fmt_eur(t.amount));
+    trf("It is this one: {line}", &[("line", &line)])
 }
 
 fn statement_text(s: &CardStatement) -> String {
@@ -945,7 +1046,10 @@ fn statement_summary(ui: &mut Ui, s: &Statement, allow_mismatch: &mut bool) {
     if s.debit_date.is_none() || s.debit.is_none() {
         ui.label(RichText::new(tr("The debit was not found: its payment will not be proposed.")).color(AMBER));
     }
-    if !s.is_sound() {
+    if !s.is_identified() {
+        let text = tr("The date of the statement or the number of the card was not read: it cannot be imported.");
+        ui.label(RichText::new(text).color(RED));
+    } else if !s.is_sound() {
         ui.checkbox(allow_mismatch, tr("The totals do not match: import the rows all the same"));
     }
 }

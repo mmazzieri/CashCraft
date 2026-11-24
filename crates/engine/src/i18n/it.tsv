@@ -285,7 +285,6 @@ Transfer	Giroconto
 Transfer from {account}	Giroconto da {account}
 Transfer recorded	Giroconto registrato
 Transfer to {account}	Giroconto verso {account}
-Transfer: changes apply to both accounts.	Giroconto: le modifiche valgono per entrambi i conti.
 Transport:Car	Trasporti:Auto
 Transport:Fuel	Trasporti:Carburante
 Transport:Public transport	Trasporti:Mezzi pubblici
@@ -525,7 +524,6 @@ the transaction is a transfer already	il movimento è già un giroconto
 the transaction is split over several accounts: it cannot become a transfer	il movimento è suddiviso su più conti: non può diventare un giroconto
 the transaction is on an account added to the chart by hand: it cannot become a transfer	il movimento è su un conto aggiunto a mano al piano dei conti: non può diventare un giroconto
 transaction {id} is not the other side of this transfer: it needs the opposite amount, within {days} days, in the other account	il movimento {id} non è l'altro lato di questo giroconto: servono l'importo opposto, entro {days} giorni, nell'altro conto
-several transactions may be the other side, choose one of them or none: {which}	più movimenti possono essere l'altro lato, occorre sceglierne uno o nessuno: {which}
 the transaction is not a transfer	il movimento non è un giroconto
 What was changed here is not saved.	Le modifiche fatte qui non vengono salvate.
 the PDF is damaged and cannot be read	il PDF è danneggiato e non si può leggere
@@ -533,21 +531,17 @@ the PDF is protected by a password: save a copy without it	il PDF è protetto da
 the PDF has no text that can be read: it may be a scan	il PDF non ha testo leggibile: forse è una scansione
 the PDF is too large for a statement	il PDF è troppo grande per un estratto conto
 the PDF takes too long to read	la lettura del PDF richiede troppo tempo
-the program that reads PDF files could not start	il programma che legge i PDF non si è avviato
 Purchases	Acquisti
 Instalments	Rate
 Amount debited	Addebito
 Amount debited, on the first page	Addebito, in prima pagina
 the PDF is not a card statement of a kind that can be read	il PDF non è un estratto conto di carta di un tipo leggibile
-the date of the card statement was not found	la data dell'estratto conto della carta non è stata trovata
 card statement {id} not found	estratto conto {id} della carta non trovato
 the card statement has a payment already: unlink it first	l'estratto conto della carta ha già un pagamento: prima va scollegato
 transaction {id} cannot be the payment of this statement: it must be of a bank account, for the amount debited, near the debit date, and not a transfer or split	il movimento {id} non può essere il pagamento di questo estratto conto: deve essere di un conto corrente, dell'importo addebitato, vicino alla data di addebito, e non un giroconto o un movimento suddiviso
-the card has several payments of this amount: turn the bank's line into a transfer with one of them by hand: {which}	la carta ha più pagamenti di questo importo: il movimento della banca va trasformato a mano in giroconto con uno di essi: {which}
 the rows read do not add up to the totals of the card statement: nothing was imported	le righe lette non danno i totali dell'estratto conto della carta: non è stato importato nulla
 the card statement is in euros and the account is not	l'estratto conto della carta è in euro e il conto no
 the columns and the sign of a card statement cannot be changed	le colonne e il segno di un estratto conto di carta non si possono cambiare
-the account is not a credit card	il conto non è una carta di credito
 the bank's line is now the transfer that pays the card statement	il movimento della banca è ora il giroconto che paga l'estratto conto della carta
 card payment unlinked	pagamento della carta scollegato
 Import a statement	Importa un estratto conto
@@ -568,6 +562,25 @@ The debit was not found: its payment will not be proposed.	L'addebito non è sta
 The totals do not match: import the rows all the same	I totali non corrispondono: importa comunque le righe
 not linked	non collegato
 paid by transaction {id}	pagato dal movimento {id}
-Warning: {text}	Attenzione: {text}
 Card statement {line}	Estratto conto carta {line}
 no bank transaction matches	nessun movimento della banca corrisponde
+these transactions may be the other side, choose one of them or none: {which}	questi movimenti possono essere l'altro lato, occorre sceglierne uno o nessuno: {which}
+the side of the transfer is on a statement already	il lato del giroconto è già su un estratto conto
+the parameter "{name}" must be true or false	il parametro «{name}» deve essere true o false
+Transfer: the amount changes in both accounts.	Giroconto: l'importo cambia in entrambi i conti.
+Side of a transfer that was there: {line}	Lato di un giroconto già presente: {line}
+It may be the side of a transfer (tx to-transfer --join): {line}	Può essere il lato di un giroconto (tx to-transfer --join): {line}
+Sides of transfers that are there already?	Lati di giroconti già presenti?
+Join	Unisci
+the program that reads PDF files could not start: close CashCraft, open it again and retry	il programma che legge i PDF non si è avviato: occorre chiudere CashCraft, riaprirlo e riprovare
+the date or the card number of the statement was not read: nothing was imported	la data o il numero della carta dell'estratto conto non sono stati letti: non è stato importato nulla
+"{name}" is not a credit card: nothing was imported (any_account to import all the same)	«{name}» non è una carta di credito: non è stato importato nulla (any_account per importare comunque)
+transaction {id} pays another amount	il movimento {id} paga un altro importo
+on the card, perhaps the same (--join): {line}	sulla carta, forse lo stesso (--join): {line}
+Reading the file…	Lettura del file…
+Stop	Ferma
+Add the side of the card	Aggiungi il lato della carta
+It is this one: {line}	È questo: {line}
+The payment has another amount	Il pagamento ha un altro importo
+The bank's line becomes an uncategorized expense.	Il movimento della banca diventa una spesa senza categoria.
+The date of the statement or the number of the card was not read: it cannot be imported.	La data dell'estratto conto o il numero della carta non sono stati letti: non si può importare.

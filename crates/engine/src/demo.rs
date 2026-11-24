@@ -37,6 +37,7 @@ pub fn seed(db: &Db) -> Result<()> {
                 category_id: c,
                 cleared: d < today - Duration::days(4),
                 import_hash: None,
+                card_row: false,
             })?;
         }
         Ok(())

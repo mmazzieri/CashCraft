@@ -11,12 +11,17 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# PDF files for the tests of other crates.
+test-support = ["dep:flate2"]
+
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
 craft-xls.workspace = true
 csv.workspace = true
 encoding_rs.workspace = true
+flate2 = { workspace = true, optional = true }
 hayro-interpret.workspace = true
 hayro-syntax.workspace = true
 kurbo.workspace = true
@@ -28,4 +33,4 @@ sys-locale.workspace = true
 [dev-dependencies]
 craft-xls = { workspace = true, features = ["test-support"] }
 epaint_default_fonts = "0.37"
-flate2 = "1"
+flate2.workspace = true

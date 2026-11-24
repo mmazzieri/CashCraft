@@ -1,7 +1,8 @@
-//! The text of a PDF with its positions. The PDF library runs in another process, this program started
+//! A card statement from a PDF: the text with its positions, then its meaning. All of it runs in another process, this program started
 //! again with [`CHILD`]: on hostile files it can overflow the stack, which would end the program whatever
-//! the thread, or go on for ever, and a thread cannot be stopped.
+//! the thread, or go on for ever, and a thread cannot be stopped. Only the statement comes back.
 
+use crate::card_pdf::{self, Statement};
 use crate::i18n::tr;
 use anyhow::{Result, anyhow};
 use hayro_interpret::font::Glyph;
@@ -15,12 +16,13 @@ use kurbo::{Affine, BezPath, Rect, Vec2};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// The only argument of the process that reads.
+/// The first argument of the process that reads; the second is how much memory it may use.
 pub const CHILD: &str = "--read-pdf-from-stdin";
 /// Set once the program is known to answer to [`CHILD`].
 static CHILD_READY: AtomicBool = AtomicBool::new(false);
@@ -30,8 +32,22 @@ const STACK: usize = 64 << 20;
 const MAX_PAGES: usize = 100;
 const MAX_GLYPHS: usize = 200_000;
 /// Most bytes the process that reads may answer, and (where the system tells) use.
-const MAX_ANSWER: u64 = 64 << 20;
+const MAX_ANSWER: u64 = 16 << 20;
 const MAX_MEMORY: u64 = 1 << 30;
+
+/// What the process that reads may take.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub time: Duration,
+    /// Bytes, where the system tells them (Linux).
+    pub memory: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits { time: TIME_LIMIT, memory: MAX_MEMORY }
+    }
+}
 
 /// Characters on baselines closer than this are on one line, in points.
 const SAME_LINE: f64 = 2.0;
@@ -62,6 +78,8 @@ pub enum Failure {
     TooLarge,
     TimeOut,
     NoProcess,
+    /// Not a statement of a known kind.
+    Unknown,
 }
 
 impl Failure {
@@ -72,12 +90,15 @@ impl Failure {
             Failure::NoText => tr("the PDF has no text that can be read: it may be a scan"),
             Failure::TooLarge => tr("the PDF is too large for a statement"),
             Failure::TimeOut => tr("the PDF takes too long to read"),
-            Failure::NoProcess => tr("the program that reads PDF files could not start"),
+            Failure::NoProcess => {
+                tr("the program that reads PDF files could not start: close CashCraft, open it again and retry")
+            }
+            Failure::Unknown => tr("the PDF is not a card statement of a kind that can be read"),
         }
     }
 }
 
-type Outcome = std::result::Result<Vec<Page>, Failure>;
+pub type Outcome = std::result::Result<Statement, Failure>;
 
 pub fn is_pdf(bytes: &[u8]) -> bool {
     let start = bytes.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(0);
@@ -87,15 +108,16 @@ pub fn is_pdf(bytes: &[u8]) -> bool {
 /// The first thing a program does: whether it was started only to read a PDF, which is done.
 pub fn answer_if_child() -> bool {
     let mut args = std::env::args_os().skip(1);
-    if args.next().is_none_or(|a| a != CHILD) || args.next().is_some() {
+    if args.next().is_none_or(|a| a != CHILD) {
         CHILD_READY.store(true, Ordering::Relaxed);
         return false;
     }
+    let most = args.next().and_then(|a| a.to_str()?.parse().ok()).unwrap_or(MAX_MEMORY);
     let start = Instant::now();
     std::thread::spawn(move || {
         // The parent may be gone.
-        while start.elapsed() < TIME_LIMIT * 2 && memory().is_none_or(|m| m < MAX_MEMORY) {
-            std::thread::sleep(Duration::from_millis(20));
+        while start.elapsed() < TIME_LIMIT * 2 && memory().is_none_or(|m| m < most) {
+            std::thread::sleep(Duration::from_millis(10));
         }
         std::process::exit(3);
     });
@@ -110,15 +132,16 @@ pub fn answer_if_child() -> bool {
 
 /// Bytes of memory this process uses.
 fn memory() -> Option<u64> {
-    let text = std::fs::read_to_string("/proc/self/statm").ok()?;
-    text.split(' ').nth(1)?.parse::<u64>().ok()?.checked_mul(4096)
+    let text = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = text.lines().find_map(|l| l.strip_prefix("VmRSS:"))?;
+    line.split_whitespace().next()?.parse::<u64>().ok()?.checked_mul(1024)
 }
 
-/// The lines of each page.
-pub fn pages(bytes: &[u8]) -> Result<Vec<Page>> {
+/// The card statement in a PDF.
+pub fn statement(bytes: &[u8]) -> Result<Statement> {
     let outcome = if CHILD_READY.load(Ordering::Relaxed) {
         match std::env::current_exe() {
-            Ok(exe) => in_process(Command::new(exe).arg(CHILD), bytes, TIME_LIMIT),
+            Ok(exe) => statement_with(&exe, bytes, Limits::default()),
             Err(_) => Err(Failure::NoProcess),
         }
     } else {
@@ -128,9 +151,11 @@ pub fn pages(bytes: &[u8]) -> Result<Vec<Page>> {
     outcome.map_err(|f| anyhow!(f.message()))
 }
 
-fn in_process(command: &mut Command, bytes: &[u8], limit: Duration) -> Outcome {
-    let deadline = Instant::now() + limit;
-    let mut child = command
+/// [`statement`], read by a program that answers to [`CHILD`].
+pub fn statement_with(program: &Path, bytes: &[u8], limits: Limits) -> Outcome {
+    let deadline = Instant::now() + limits.time;
+    let mut child = Command::new(program)
+        .args([CHILD, &limits.memory.to_string()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -161,11 +186,12 @@ fn in_process(command: &mut Command, bytes: &[u8], limit: Duration) -> Outcome {
 
 /// With enough stack for any sound file; a panic is a damaged file.
 fn in_thread(bytes: Vec<u8>) -> Outcome {
-    let thread = std::thread::Builder::new().stack_size(STACK).spawn(move || read(bytes));
+    let thread = std::thread::Builder::new().stack_size(STACK).spawn(move || card_pdf::parse(&pages(bytes)?));
     thread.map_err(|_| Failure::NoProcess)?.join().unwrap_or(Err(Failure::Damaged))
 }
 
-fn read(bytes: Vec<u8>) -> Outcome {
+/// The lines of each page.
+pub(crate) fn pages(bytes: Vec<u8>) -> std::result::Result<Vec<Page>, Failure> {
     let pdf = Pdf::new(bytes).map_err(|e| match e {
         LoadPdfError::Decryption(_) => Failure::Encrypted,
         LoadPdfError::Invalid => Failure::Damaged,

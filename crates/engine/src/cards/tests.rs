@@ -46,11 +46,20 @@ impl Books {
     fn balance(&self, account: i64) -> Cents {
         self.db.accounts(true).unwrap().iter().find(|a| a.id == account).unwrap().balance
     }
+    fn csv(&self, account: i64, text: &str) -> importer::ImportResult {
+        let t = importer::analyze(text, "UTF-8").unwrap();
+        let (rows, skipped) = importer::parse_rows(&t, &t.mapping, false);
+        importer::import(&self.db, account, &t, &rows, skipped, false).unwrap()
+    }
     fn only(&self) -> (i64, Vec<i64>) {
         let p = self.db.propose_card_payments().unwrap();
         assert_eq!(p.len(), 1);
-        (p[0].statement.id, p[0].candidates.iter().map(|c| c.id).collect())
+        (p[0].statement.id, p[0].candidates.iter().map(|c| c.transaction.id).collect())
     }
+}
+
+fn txs(b: &Books, account: i64) -> Vec<Transaction> {
+    b.db.transactions(&TxFilter { account_id: Some(account), ..Default::default() }).unwrap()
 }
 
 #[test]
@@ -72,9 +81,9 @@ fn the_debit_becomes_a_transfer_whatever_is_imported_first() {
         let (s, candidates) = b.only();
         let [payment] = candidates[..] else { panic!("{candidates:?}") };
         let before = b.db.transaction(payment).unwrap();
-        b.db.link_card_payment(s, payment).unwrap();
+        b.db.link_card_payment(s, payment, None).unwrap();
         let linked = dump(&b.db.conn);
-        b.db.link_card_payment(s, payment).unwrap();
+        b.db.link_card_payment(s, payment, None).unwrap();
         assert_eq!(dump(&b.db.conn), linked, "twice");
         let t = b.db.transaction(payment).unwrap();
         assert_eq!((t.kind, t.date, &t.payee, t.cleared), (TxKind::Transfer, before.date, &before.payee, true));
@@ -105,7 +114,7 @@ fn only_the_banks_ordinary_lines_near_the_date_are_proposed() {
     let savings = b.db.add_account("Savings", AccountKind::Savings, "EUR", 0, "").unwrap();
     let dollars = b.db.add_account("Dollars", AccountKind::Bank, "USD", 0, "").unwrap();
     let near: Vec<i64> = ["2026-12-15", "2026-12-12", "2026-12-25"].map(|d| b.add(b.bank, d, -116_310)).to_vec();
-    b.add(b.bank, "2026-12-11", -116_310);
+    b.add(b.bank, "2026-12-04", -116_310);
     b.add(b.bank, "2026-12-26", -116_310);
     b.add(b.bank, "2026-12-15", 116_310);
     b.add(b.bank, "2026-12-15", -116_311);
@@ -117,40 +126,200 @@ fn only_the_banks_ordinary_lines_near_the_date_are_proposed() {
     assert_eq!(candidates, near, "nearest first, none chosen");
     let before = dump(&b.db.conn);
     for (statement, t) in [(s, moved), (s, 1), (s, 999_999), (999, near[0]), (s, moved + 2)] {
-        assert!(b.db.link_card_payment(statement, t).is_err());
+        assert!(b.db.link_card_payment(statement, t, None).is_err());
         assert_eq!(dump(&b.db.conn), before);
     }
-    b.db.link_card_payment(s, near[1]).unwrap();
-    assert!(b.db.link_card_payment(s, near[0]).is_err(), "one payment");
+    b.db.link_card_payment(s, near[1], None).unwrap();
+    assert!(b.db.link_card_payment(s, near[0], None).is_err(), "one payment");
     // The link goes with the bank's line, and when the transfer is separated in the register.
     b.db.delete_transaction(near[1]).unwrap();
     assert_eq!(b.only().1, [near[0], near[2]]);
-    b.db.link_card_payment(s, near[0]).unwrap();
+    b.db.link_card_payment(s, near[0], None).unwrap();
     let other = b.db.transaction(near[0]).unwrap().transfer_peer.unwrap();
     b.db.separate_transfer(other, true).unwrap();
     assert_eq!(b.only().1, [near[0], near[2]]);
     assert_sound(&b.db, "proposals");
 }
 
+/// Joining is the user's choice: without it the side of the card is added, whatever is there.
 #[test]
-fn the_cards_own_line_of_the_payment_is_joined() {
+fn the_cards_own_line_is_joined_only_when_asked() {
     let b = Books::new();
     b.import_card();
     b.import_bank();
     let own = b.add(b.card, "2026-12-15", 116_310);
     let balance = b.balance(b.card);
     let (s, candidates) = b.only();
-    b.db.link_card_payment(s, candidates[0]).unwrap();
+    let proposal = &b.db.propose_card_payments().unwrap()[0];
+    assert_eq!(proposal.candidates[0].card_lines.iter().map(|t| t.id).collect::<Vec<_>>(), [own]);
+    b.db.link_card_payment(s, candidates[0], None).unwrap();
+    assert_eq!(b.balance(b.card), balance + 116_310);
+    b.db.unlink_card_payment(s).unwrap();
+    assert_eq!((b.balance(b.card), b.only().1), (balance, candidates.clone()));
+    assert!(b.db.link_card_payment(s, candidates[0], Some(candidates[0])).is_err());
+    b.db.link_card_payment(s, candidates[0], Some(own)).unwrap();
     assert_eq!(b.balance(b.card), balance);
     assert_eq!(b.db.transaction(candidates[0]).unwrap().transfer_peer, Some(own));
     b.db.unlink_card_payment(s).unwrap();
     assert_eq!((b.balance(b.card), b.db.transaction(own).unwrap().amount), (balance, 116_310));
-    // With two of them, nobody chooses.
-    b.add(b.card, "2026-12-16", 116_310);
-    let before = dump(&b.db.conn);
-    assert!(b.db.link_card_payment(s, candidates[0]).is_err());
-    assert_eq!(dump(&b.db.conn), before);
     assert_sound(&b.db, "joined");
+}
+
+/// A refund of the same amount on a statement is neither proposed nor taken for the payment.
+#[test]
+fn rows_of_a_card_statement_are_never_the_payment() {
+    let refund = || crate::importer::ParsedRow {
+        date: parse_date("2026-12-13").unwrap(),
+        amount: 116_310,
+        payee: "RIMBORSO".into(),
+        memo: String::new(),
+        key: Some("card|2026-12-31|1234|2026-12-13|-116310|rimborso".into()),
+    };
+    let import = |b: &Books| crate::importer::import_rows(&b.db, b.card, &[refund()], 0).unwrap();
+    let b = Books::new();
+    b.import_bank();
+    b.import_card();
+    assert_eq!(import(&b).added, 1);
+    let (s, c) = b.only();
+    assert!(b.db.propose_card_payments().unwrap()[0].candidates[0].card_lines.is_empty());
+    let t = txs(&b, b.card).into_iter().find(|t| t.payee == "RIMBORSO").unwrap();
+    assert!(b.db.link_card_payment(s, c[0], Some(t.id)).is_err());
+    // The refund stays what it is.
+    let net = |b: &Books| {
+        let (income, expense) = b.expense("2026-12-01");
+        income - expense
+    };
+    let (card, before) = (b.balance(b.card), net(&b));
+    b.db.link_card_payment(s, c[0], None).unwrap();
+    assert_eq!(b.balance(b.card), card + 116_310);
+    assert_eq!(net(&b), before + 116_310);
+    assert_eq!(b.db.transaction(t.id).unwrap().kind, TxKind::Uncategorized);
+    // Nor does one imported afterwards take the place of the side that was added.
+    let b = Books::new();
+    b.import_bank();
+    b.import_card();
+    let (s, c) = b.only();
+    b.db.link_card_payment(s, c[0], None).unwrap();
+    let res = import(&b);
+    assert_eq!((res.added, res.adopted.len(), res.maybe_transfers.len()), (1, 0, 0));
+    // A line of the payment does.
+    let card = b.balance(b.card);
+    let csv = "Data;Descrizione;Importo\n16/12/2026;PAGAMENTO RICEVUTO;1.163,10\n";
+    assert_eq!(b.csv(b.card, csv).adopted.len(), 1);
+    assert_eq!((b.balance(b.card), b.csv(b.card, csv).duplicates), (card, 1));
+    // It came from a statement: unlinking keeps it.
+    b.db.unlink_card_payment(s).unwrap();
+    assert_eq!(b.balance(b.card), card);
+    assert!(txs(&b, b.card).iter().any(|t| t.payee == "PAGAMENTO RICEVUTO" && t.kind == TxKind::Uncategorized));
+    assert_sound(&b.db, "refund");
+}
+
+/// What the books say, not what was once stored, tells whether a statement is paid and how.
+#[test]
+fn the_books_tell_what_is_paid() {
+    let b = Books::new();
+    b.import_bank();
+    b.import_card();
+    let (s, c) = b.only();
+    b.db.link_card_payment(s, c[0], None).unwrap();
+    b.db.separate_transfer(c[0], false).unwrap();
+    let stored = |b: &Books| -> Option<i64> {
+        b.db.conn.query_row("SELECT payment_id FROM card_statements", [], |r| r.get(0)).unwrap()
+    };
+    assert_eq!((stored(&b), b.only().0), (None, s));
+    b.csv(b.card, "Data;Descrizione;Importo\n16/12/2026;PAGAMENTO RICEVUTO;1.163,10\n");
+    let own = txs(&b, b.card).into_iter().find(|t| t.payee == "PAGAMENTO RICEVUTO").unwrap().id;
+    let before = b.balance(b.card);
+    b.db.turn_into_transfer(c[0], b.card, OtherSide::Join(own)).unwrap();
+    b.db.unlink_card_payment(s).unwrap();
+    assert_eq!((b.balance(b.card), b.db.transaction(own).unwrap().amount), (before, 116_310));
+    // By hand, it is paid as well: a transfer of that amount.
+    assert!(b.db.propose_card_payments().unwrap().is_empty());
+    b.db.separate_transfer(own, true).unwrap();
+    b.db.link_card_payment(s, c[0], None).unwrap();
+    // A link to what is no longer a transfer to this card does not count.
+    let other = b.db.add_account("Other card", AccountKind::CreditCard, "EUR", 0, "").unwrap();
+    let t = b.db.transaction(c[0]).unwrap();
+    let mut d = b.db.load_draft(t.entry_id).unwrap();
+    let (from, to) = (b.db.money_ledger(b.card).unwrap().0, b.db.money_ledger(other).unwrap().0);
+    d.lines.iter_mut().filter(|l| l.account == from).for_each(|l| l.account = to);
+    b.db.save_entry(&d).unwrap();
+    assert_eq!(b.db.card_statements().unwrap()[0].payment_id, None);
+    assert_sound(&b.db, "books");
+}
+
+#[test]
+fn a_payment_whose_amount_was_changed_does_not_match() {
+    let b = Books::new();
+    b.import_bank();
+    b.import_card();
+    let (s, c) = b.only();
+    b.db.link_card_payment(s, c[0], None).unwrap();
+    assert!(b.db.card_statements().unwrap()[0].matches);
+    let t = b.db.transaction(c[0]).unwrap();
+    let edit = crate::db::TxEdit { date: t.date, amount: -1, payee: t.payee, ..Default::default() };
+    b.db.update_transaction(c[0], &edit).unwrap();
+    let now = &b.db.card_statements().unwrap()[0];
+    assert_eq!((now.payment_id, now.matches), (Some(c[0]), false));
+    b.db.unlink_card_payment(s).unwrap();
+    assert!(!b.db.card_statements().unwrap()[0].matches);
+}
+
+/// The same window, and the same lines, for what is proposed, what can be linked and what can be joined.
+#[test]
+fn proposals_links_and_joins_agree() {
+    for day in 1..=28 {
+        let b = Books::new();
+        b.import_card();
+        let date = |d: i64| (parse_date("2026-12-15").unwrap() + chrono::Duration::days(d - 14)).to_string();
+        let bank = b.add(b.bank, &date(day), -116_310);
+        let own = b.add(b.card, "2026-12-11", 116_310);
+        let p = b.db.propose_card_payments().unwrap().remove(0);
+        let proposed = p.candidates.iter().find(|c| c.transaction.id == bank);
+        assert_eq!(proposed.is_some(), (day - 14).abs() <= 10, "{day}");
+        assert_eq!(b.db.link_card_payment(p.statement.id, bank, None).is_ok(), proposed.is_some(), "{day}");
+        if let Some(c) = proposed {
+            let joins: Vec<i64> = c.card_lines.iter().map(|t| t.id).collect();
+            b.db.unlink_card_payment(p.statement.id).unwrap();
+            let found = b.db.transfer_candidates(bank, b.card).unwrap();
+            assert_eq!(found.iter().map(|t| t.id).collect::<Vec<_>>(), joins, "{day}");
+            let linked = b.db.link_card_payment(p.statement.id, bank, Some(own));
+            assert_eq!(linked.is_ok(), joins.contains(&own), "{day}");
+        }
+    }
+}
+
+/// A transfer made by hand before the bank's line is the one that line confirms.
+#[test]
+fn the_banks_line_confirms_a_transfer_made_by_hand() {
+    let b = Books::new();
+    b.import_card();
+    b.db.add_transfer(b.bank, b.card, parse_date("2026-12-15").unwrap(), 116_310, "").unwrap();
+    let before = b.balance(b.bank);
+    b.import_bank();
+    assert_eq!(b.balance(b.bank), before - 3_120);
+    assert_eq!(b.expense("2026-12-01"), (0, 3_120));
+    assert!(b.db.propose_card_payments().unwrap().is_empty());
+    assert_eq!(b.import_bank(), 0);
+    assert_sound(&b.db, "by hand");
+}
+
+#[test]
+fn only_one_statement_is_paid_by_a_payment() {
+    let b = Books::new();
+    b.import_bank();
+    b.import_card();
+    let other = table(&with(&[("30/11/2026", "29/11/2026")]));
+    let (rows, skipped) = importer::parse_rows(&other, &other.mapping, false);
+    importer::import(&b.db, b.card, &other, &rows, skipped, false).unwrap();
+    let p = b.db.propose_card_payments().unwrap();
+    assert_eq!(p.len(), 2);
+    let paid = p[0].candidates[0].transaction.id;
+    b.db.link_card_payment(p[0].statement.id, paid, None).unwrap();
+    // The transfer that pays one is not a payment made by hand of the other.
+    let left = b.db.propose_card_payments().unwrap();
+    assert_eq!((left.len(), left[0].statement.id), (1, p[1].statement.id));
+    assert!(b.db.link_card_payment(p[1].statement.id, paid, None).is_err());
 }
 
 #[test]

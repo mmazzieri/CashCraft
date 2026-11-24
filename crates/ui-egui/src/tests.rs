@@ -250,11 +250,15 @@ fn a_transaction_is_turned_into_a_transfer() {
             (f.other, f.error.is_empty())
         };
         assert_eq!(choice(&mut app, bank), (OtherSide::New, false));
-        assert_eq!(choice(&mut app, savings), (OtherSide::Join(into), true));
+        // Never chosen for the user, however few.
+        assert_eq!(choice(&mut app, savings), (OtherSide::Auto, true));
         let second = add(&app.db, savings, 50);
         assert_eq!(choice(&mut app, savings).0, OtherSide::Auto);
         app.db.delete_transaction(second).unwrap();
         choice(&mut app, savings);
+        if let Some(Dialog::TurnIntoTransfer(f)) = &mut app.dialog {
+            f.other = OtherSide::Join(into);
+        }
         // Account, the candidate, none of these, then the button.
         let ctx = egui::Context::default();
         let send = |app: &mut App, events: Vec<Event>| {
@@ -294,7 +298,7 @@ fn a_transaction_is_turned_into_a_transfer() {
 #[test]
 fn a_card_statement_is_checked_imported_and_paid() {
     use crate::gui::ImportState;
-    use cashcraft_engine::importer::{Check, CheckKind, ParsedRow, Statement, Table};
+    use cashcraft_engine::importer::{CardRow, Check, CheckKind, Statement, Table};
     for l in [Lang::It, Lang::En] {
         with_lang(l, || {
             let db = Db::open_in_memory().unwrap();
@@ -302,7 +306,7 @@ fn a_card_statement_is_checked_imported_and_paid() {
             let date = parse_date("2026-12-15").unwrap();
             let tx = NewTx { account_id: bank, amount: -900, date, payee: "x".into(), ..Default::default() };
             let paid = db.add_transaction(&tx).unwrap().unwrap();
-            let row = ParsedRow { date, amount: -900, payee: "shop".into(), memo: String::new(), key: None };
+            let row = CardRow { date, amount: -900, payee: "shop".into(), memo: String::new(), key: "k".into() };
             let check = |found| Check { kind: CheckKind::Debit, expected: Some(900), found };
             let statement = |found| Statement {
                 closing: parse_date("2026-11-30"),
@@ -311,6 +315,7 @@ fn a_card_statement_is_checked_imported_and_paid() {
                 cards: vec!["1234".into()],
                 rows: vec![row.clone()],
                 unread: 0,
+                unread_card: false,
                 checks: vec![check(found)],
             };
             let mut app = App::new(db, None);
@@ -352,8 +357,8 @@ fn a_card_statement_is_checked_imported_and_paid() {
             let t = table(900);
             cashcraft_engine::importer::import(&app.db, card, &t, &st.rows, 0, false).unwrap();
             st.cards.reload(&app.db);
-            assert_eq!(st.cards.proposals[0].candidates[0].id, paid);
-            app.db.link_card_payment(st.cards.proposals[0].statement.id, paid).unwrap();
+            assert_eq!(st.cards.proposals[0].candidates[0].transaction.id, paid);
+            app.db.link_card_payment(st.cards.proposals[0].statement.id, paid, None).unwrap();
             st.cards.reload(&app.db);
             assert!(st.cards.proposals.is_empty() && st.cards.statements[0].payment_id == Some(paid));
             st.table = None;
@@ -361,4 +366,31 @@ fn a_card_statement_is_checked_imported_and_paid() {
             draw(&mut app);
         });
     }
+}
+
+/// The window goes on while a file is read, and what was not waited for is not shown.
+#[test]
+fn a_file_is_read_beside_the_window() {
+    use crate::gui::ImportState;
+    let file = std::env::temp_dir().join(format!("cashcraft-ui-{}.csv", std::process::id()));
+    std::fs::write(&file, "Data;Descrizione;Importo\n01/02/2026;Bar;-1,20\n").unwrap();
+    let mut st = ImportState { path_text: file.display().to_string(), ..Default::default() };
+    st.load();
+    assert!(st.loading.is_some() && st.table.is_none());
+    let start = std::time::Instant::now();
+    while !st.poll() {
+        assert!(start.elapsed().as_secs() < 20);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(st.loading.is_none() && st.rows.len() == 1 && st.can_import() == st.account.is_some());
+    st.load();
+    st.loading = None;
+    assert!(!st.poll() && st.table.is_none());
+    st.path_text.push('x');
+    st.load();
+    while !st.poll() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!st.error.is_empty());
+    std::fs::remove_file(&file).unwrap();
 }

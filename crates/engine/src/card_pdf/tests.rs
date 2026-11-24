@@ -3,79 +3,9 @@ use crate::db::{AccountKind, Db, TxFilter};
 use crate::importer::{self, Table};
 use crate::ledger::tests::assert_sound;
 use crate::ops;
-use crate::pdf;
-use crate::pdf::tests::{Font, Item, document};
+use crate::pdf::tests::{Font, document, read_pages};
+pub use crate::testing::{Item, statement};
 use serde_json::json;
-
-/// A statement laid out as the real one, with invented contents.
-pub fn statement() -> Vec<Item> {
-    let mut v: Vec<Item> = Vec::new();
-    let mut add = |page, y, words: &[(f64, &str)]| {
-        for (x, text) in words {
-            v.push(Item { page, x: *x, y, text: text.to_string() });
-        }
-    };
-    add(0, 120.0, &[(40.0, "QUESTO MESE HA SPESO"), (300.0, "QUESTO MESE LE SARANNO ADDEBITATI")]);
-    add(0, 140.0, &[(40.0, "Euro 60,10"), (300.0, "Euro 1.163,10")]);
-    add(0, 160.0, &[(40.0, "Milano, 1 Dicembre 2026"), (300.0, "In data"), (340.0, "15 Dicembre 2026")]);
-
-    add(1, 60.0, &[(34.0, "RIEPILOGO DEI SUOI MOVIMENTI"), (320.0, "I SUOI PUNTI")]);
-    add(1, 80.0, &[(34.0, "Data"), (75.0, "Descrizione"), (230.0, "Importo in Euro"), (320.0, "Saldo punti 1.200")]);
-    add(1, 95.0, &[(34.0, "31/10/26"), (75.0, "Debito residuo al mese precedente"), (265.0, "5,00")]);
-    add(1, 110.0, &[(75.0, "Totale spese con carte a saldo"), (260.0, "60,10"), (320.0, "Valore 12,00")]);
-    add(1, 125.0, &[(75.0, "Totale complessivo finanziamenti per contributi previdenziali")]);
-    add(1, 126.0, &[(330.0, "1.100,50")]);
-    add(1, 140.0, &[(75.0, "Imposta di bollo"), (265.0, "2,00")]);
-    add(1, 155.0, &[(75.0, "TOTALE ADDEBITO SUL SUO C/C"), (253.0, "1.163,10")]);
-    add(1, 170.0, &[(75.0, "Debito residuo al 30/11/2026"), (265.0, "4,50")]);
-    add(1, 200.0, &[(34.0, "Le ricordiamo che 10,00 punti valgono")]);
-    add(1, 300.0, &[(34.0, "CARTA NUMERO ************1234 A SALDO SCADENZA 01/29")]);
-    add(1, 320.0, &[(34.0, "DETTAGLIO DEI SUOI MOVIMENTI")]);
-    add(
-        1,
-        338.0,
-        &[
-            (34.0, "Data"),
-            (75.0, "Descrizione"),
-            (339.0, "Importo in Euro"),
-            (417.0, "Importo in altre valute"),
-            (529.0, "Cambio"),
-        ],
-    );
-    add(1, 356.0, &[(34.0, "02/11/26"), (75.0, "BAR DEL MOLO ANCONA ITA"), (370.0, "1,20")]);
-    add(1, 370.0, &[(34.0, "02/11/26"), (75.0, "BAR DEL MOLO ANCONA ITA"), (370.0, "1,20")]);
-    add(1, 386.0, &[(75.0, "ONLINE SHOP NEW YORK USA")]);
-    add(1, 389.5, &[(34.0, "05/11/26"), (366.0, "50,70"), (455.0, "55,00 USD"), (535.0, "1,0848")]);
-    add(1, 393.0, &[(75.0, "Commissione di conversione applicata da Nexi: 0,70 Euro*")]);
-    add(1, 407.0, &[(75.0, "NEGOZIO CON UN NOME MOLTO LUNGO")]);
-    add(1, 410.5, &[(34.0, "09/11/26"), (366.0, "12,00")]);
-    add(1, 414.0, &[(75.0, "VIA DELLE ROSE 5 MACERATA")]);
-    add(1, 430.0, &[(34.0, "11/11/26"), (75.0, "RIMBORSO NEGOZIO"), (366.0, "-10,00")]);
-    add(1, 446.0, &[(34.0, "30/11/26"), (75.0, "EDICOLA CENTRALE"), (370.0, "5,00")]);
-    add(1, 462.0, &[(75.0, "TOTALE SPESE"), (366.0, "60,10")]);
-
-    add(2, 60.0, &[(34.0, "CARTA NUMERO ************1234 A SALDO SCADENZA 01/29")]);
-    add(2, 80.0, &[(34.0, "DETTAGLIO DEI SUOI MOVIMENTI")]);
-    add(
-        2,
-        98.0,
-        &[(34.0, "Data"), (75.0, "Descrizione"), (339.0, "Importo in Euro"), (417.0, "Importo in altre valute")],
-    );
-    add(2, 115.0, &[(34.0, "*Per rendere confrontabili le commissioni vale 1,00")]);
-    add(2, 200.0, &[(34.0, "BOX FINANZIAMENTI PER CONTRIBUTI PREVIDENZIALI")]);
-    add(2, 220.0, &[(34.0, "Data"), (75.0, "Descrizione"), (339.0, "Importo in Euro")]);
-    for (y, id, amount) in [(238.0, "11", "600,50"), (254.0, "12", "500,00")] {
-        let text = format!("Rata finanziamento per contributi previdenziali (Id. finanziamento: {id})");
-        add(2, y, &[(34.0, "15/11/26"), (75.0, &text), (362.0, amount)]);
-    }
-    add(2, 300.0, &[(34.0, "SITUAZIONE CONTABILE SECONDA LINEA DI CREDITO - 9 MESI (11)")]);
-    add(2, 320.0, &[(34.0, "Data"), (75.0, "Descrizione"), (339.0, "Importo in Euro")]);
-    add(2, 340.0, &[(34.0, "15/11/26"), (75.0, "Importo rata (3/9)(A+B)"), (362.0, "600,50")]);
-    add(2, 355.0, &[(34.0, "15/11/26"), (75.0, "Quota interessi (B)"), (370.0, "9,50")]);
-    add(2, 400.0, &[(34.0, "CONDIZIONI APPLICATE")]);
-    add(2, 420.0, &[(34.0, "15/11/26"), (75.0, "TAN 9,90")]);
-    v
-}
 
 /// The statement with some text replaced.
 pub fn with(changes: &[(&str, &str)]) -> Vec<Item> {
@@ -93,8 +23,8 @@ pub fn bytes(items: &[Item]) -> Vec<u8> {
     document(Font::TrueType, items)
 }
 
-pub fn read(items: &[Item], font: Font) -> Result<Statement> {
-    parse(&pdf::pages(&document(font, items))?)
+pub fn read(items: &[Item], font: Font) -> Result<Statement, Failure> {
+    parse(&read_pages(&document(font, items))?)
 }
 
 pub fn table(items: &[Item]) -> Table {
@@ -149,7 +79,7 @@ fn a_refund_may_have_its_minus_on_either_side() {
     for minus in ["10,00-", "- 10,00", "\u{2013}10,00", "10,00 -"] {
         // The PDF of the tests writes ASCII.
         let pages = {
-            let mut p = pdf::pages(&document(Font::Type3, &statement())).unwrap();
+            let mut p = read_pages(&document(Font::Type3, &statement())).unwrap();
             for w in p.iter_mut().flatten().flat_map(|l| l.words.iter_mut()).filter(|w| w.text == "-10,00") {
                 w.text = minus.into();
             }
@@ -195,6 +125,9 @@ fn figures_that_do_not_add_up_are_reported() {
     assert_eq!(failing(&[("500,00", "501,00")]), [CheckKind::Instalments, CheckKind::Debit]);
     assert_eq!(failing(&[("4,50", "4,60")]), [CheckKind::Debit]);
     assert_eq!(failing(&[("Euro 1.163,10", "Euro 1.163,20")]), [CheckKind::FirstPage]);
+    // The amount is that under its own heading, not any of the page.
+    let swapped = [("Euro 1.163,10", "Euro 9.999,99"), ("Euro 60,10", "Euro 1.163,10")];
+    assert_eq!(failing(&swapped), [CheckKind::FirstPage]);
     assert_eq!(failing(&[("TOTALE ADDEBITO", "ALTRO")]), [CheckKind::Debit]);
     // A row that cannot be read.
     let s = read(&with(&[("09/11/26", "39/11/26")]), Font::Type3).unwrap();
@@ -214,11 +147,7 @@ fn figures_that_do_not_add_up_are_reported() {
 
 #[test]
 fn other_documents_are_refused() {
-    for changes in [
-        &[("RIEPILOGO DEI", "ALTRO")][..],
-        &[("DETTAGLIO DEI", "ALTRO")],
-        &[("Debito residuo al 30/11/2026", "x"), ("15 Dicembre", "x"), ("1 Dicembre", "x")],
-    ] {
+    for changes in [&[("RIEPILOGO DEI", "ALTRO")][..], &[("DETTAGLIO DEI", "ALTRO")]] {
         assert!(read(&with(changes), Font::Type3).is_err());
     }
     // Text all over the place is never a panic.
@@ -226,7 +155,7 @@ fn other_documents_are_refused() {
     for skip in 0..v.len() {
         let mut less = v.clone();
         less.remove(skip);
-        let _ = parse(&pdf::pages(&document(Font::Type3, &less)).unwrap());
+        let _ = parse(&read_pages(&document(Font::Type3, &less)).unwrap());
     }
     for t in ["-", "--1,00", ",00", "1,0", "1,000", "a,00", "..,00", "99999999999999999999,00", "€", "1.,00-"] {
         let _ = amount(t);
@@ -286,9 +215,12 @@ fn operations_preview_and_import_a_pdf() {
         assert!(call("import_csv", a).is_err());
     }
     let r = call("import_csv", json!({"path": "good.pdf", "account": "Card"})).unwrap();
-    assert_eq!((&r["result"]["added"], &r["warning"]), (&json!(9), &json!(null)));
-    let r = call("import_csv", json!({"path": "bad.pdf", "account": "Bank", "allow_mismatch": true})).unwrap();
-    assert_eq!(r["warning"], "the account is not a credit card");
+    assert_eq!(r["result"]["added"], 9);
+    // The warning comes before anything is written.
+    assert!(call("import_csv", json!({"path": "bad.pdf", "account": "Bank", "allow_mismatch": true})).is_err());
+    assert_eq!(db.transactions(&TxFilter::default()).unwrap().len(), 9);
+    let sure = json!({"path": "bad.pdf", "account": "Bank", "allow_mismatch": true, "any_account": true});
+    assert_eq!(call("import_csv", sure).unwrap()["result"]["added"], 9);
     // Only those of credit cards.
     assert_eq!(call("list_card_statements", json!({})).unwrap()["statements"].as_array().unwrap().len(), 1);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -300,4 +232,56 @@ fn the_closing_date_is_read_when_glued_to_its_label() {
     let items = with(&[("Debito residuo al 30/11/2026", "Debito residuo al30/11/2026")]);
     let s = read(&items, Font::Type3).unwrap();
     assert_eq!(s.closing, NaiveDate::from_ymd_opt(2026, 11, 30));
+}
+
+/// Without what tells it from the others, a statement is not imported even if the user insists.
+#[test]
+fn a_statement_that_is_not_identified_is_refused() {
+    let import = |items: &[Item], force: bool| {
+        let db = Db::open_in_memory().unwrap();
+        let card = db.add_account("Card", AccountKind::CreditCard, "EUR", 0, "").unwrap();
+        let t = table(items);
+        assert!(!t.statement.as_ref().unwrap().is_sound());
+        let (rows, skipped) = importer::parse_rows(&t, &t.mapping, false);
+        importer::import(&db, card, &t, &rows, skipped, force).is_ok()
+    };
+    for changes in [
+        &[("Debito residuo al 30/11/2026", "Debito rimasto al 30/11/2026")][..],
+        &[("************1234", "************")],
+        &[("************1234", "**** 12")],
+    ] {
+        for force in [false, true] {
+            assert!(!import(&with(changes), force), "{changes:?}");
+        }
+    }
+    // The date of the debit is in no key: the user may insist.
+    let v = with(&[("15 Dicembre 2026", "più avanti"), ("1 Dicembre 2026", "oggi")]);
+    assert!(!import(&v, false) && import(&v, true));
+}
+
+#[test]
+fn the_number_of_the_card_is_read_however_it_is_spaced() {
+    for (written, card) in [("************1234", "1234"), ("**** **** **** 9876", "9876"), ("**** 5555", "5555")] {
+        let s = read(&with(&[("************1234", written)]), Font::Type3).unwrap();
+        assert_eq!((s.cards.as_slice(), s.is_sound()), (&[card.to_string()][..], true), "{written}");
+    }
+    // Two cards on one account, with equal rows: both are kept.
+    let db = Db::open_in_memory().unwrap();
+    let account = db.add_account("Card", AccountKind::CreditCard, "EUR", 0, "").unwrap();
+    for (written, added) in [("**** 1234", 9), ("**** 9876", 9), ("**** 1234", 0)] {
+        let t = table(&with(&[("************1234", written)]));
+        let (rows, skipped) = importer::parse_rows(&t, &t.mapping, false);
+        assert_eq!(importer::import(&db, account, &t, &rows, skipped, false).unwrap().added, added);
+    }
+    assert_eq!(db.card_statements().unwrap().len(), 2);
+}
+
+/// Rows of two months that are equal in everything: only the statement tells them.
+#[test]
+fn equal_rows_of_two_statements_are_kept() {
+    let next = with(&[("30/11/2026", "01/12/2026")]);
+    let rows = |v: &[Item]| read(v, Font::Type3).unwrap().rows;
+    let (a, b) = (rows(&statement()), rows(&next));
+    let key = |r: &CardRow| r.key.clone();
+    assert!(a.iter().map(key).all(|k| !b.iter().map(key).any(|x| x == k)));
 }

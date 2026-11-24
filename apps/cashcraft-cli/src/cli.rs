@@ -57,6 +57,9 @@ pub enum Cmd {
         /// Import a card statement even if its rows do not add up to its totals
         #[arg(long)]
         allow_mismatch: bool,
+        /// Import a card statement into an account that is not a credit card
+        #[arg(long)]
+        any_account: bool,
         #[command(flatten)]
         cols: ColumnArgs,
     },
@@ -237,10 +240,10 @@ pub enum TxCmd {
         id: i64,
         /// The other account (name or id)
         account: String,
-        /// Transaction to join as the other side (default: the only one that matches)
+        /// Transaction to join as the other side
         #[arg(long, conflicts_with = "no_match")]
         join: Option<i64>,
-        /// Add the other side even if a transaction matches
+        /// Add the other side even if some transactions match
         #[arg(long)]
         no_match: bool,
     },
@@ -262,7 +265,13 @@ pub enum CardsCmd {
     /// List the bank transactions that may pay a statement
     Payments,
     /// Make a bank transaction the payment of a statement: a transfer to the card
-    Link { statement: i64, transaction: i64 },
+    Link {
+        statement: i64,
+        transaction: i64,
+        /// The card's own line of the payment, if it is there (default: its side is added)
+        #[arg(long)]
+        join: Option<i64>,
+    },
     /// Undo `link`
     Unlink { statement: i64 },
 }
@@ -559,12 +568,13 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
             "add_transfer",
             args(&[("from", v(from)), ("to", v(to)), ("amount", v(amount)), ("date", o(&date)), ("memo", o(&memo))]),
         ),
-        Cmd::Import { file, account, dry_run, allow_mismatch, cols } => {
+        Cmd::Import { file, account, dry_run, allow_mismatch, any_account, cols } => {
             let mut m = Map::new();
             m.insert("path".into(), json!(file));
             m.insert("account".into(), json!(account));
             m.insert("dry_run".into(), json!(dry_run));
             m.insert("allow_mismatch".into(), json!(allow_mismatch));
+            m.insert("any_account".into(), json!(any_account));
             cols.put(&mut m);
             ("import_csv", Value::Object(m))
         }
@@ -578,9 +588,14 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
         Cmd::Cards(c) => match c {
             CardsCmd::Statements => ("list_card_statements", json!({})),
             CardsCmd::Payments => ("propose_card_payments", json!({})),
-            CardsCmd::Link { statement, transaction } => {
-                ("link_card_payment", args(&[("statement_id", v(statement)), ("transaction_id", v(transaction))]))
-            }
+            CardsCmd::Link { statement, transaction, join } => (
+                "link_card_payment",
+                args(&[
+                    ("statement_id", v(statement)),
+                    ("transaction_id", v(transaction)),
+                    ("join", join.map(|j| json!(j))),
+                ]),
+            ),
             CardsCmd::Unlink { statement } => ("unlink_card_payment", args(&[("statement_id", v(statement))])),
         },
         Cmd::Categories(c) => match c {
@@ -779,6 +794,45 @@ fn print_payments(proposals: &[Value]) {
                 cut(&st(field(&t, "payee")), 30),
                 eur(field(&t, "amount"))
             );
+            for l in field(&t, "card_lines").as_array().into_iter().flatten() {
+                let line = format!(
+                    "{} {} {} {} {}",
+                    st(field(l, "id")),
+                    date(field(l, "date")),
+                    st(field(l, "payee")),
+                    eur(field(l, "amount")),
+                    st(field(l, "category"))
+                );
+                println!("         {}", trf("on the card, perhaps the same (--join): {line}", &[("line", &line)]));
+            }
+        }
+    }
+}
+
+/// Imported lines that are sides of transfers, or may be.
+fn print_transfers(result: &Value) {
+    let line = |t: &Value| {
+        format!(
+            "{:>5}  {}  {:<40} {:>13}",
+            st(field(t, "id")),
+            date(field(t, "date")),
+            cut(&st(field(t, "payee")), 40),
+            eur(field(t, "amount"))
+        )
+    };
+    for t in field(result, "adopted").as_array().into_iter().flatten() {
+        println!("{}", trf("Side of a transfer that was there: {line}", &[("line", &line(t))]));
+    }
+    for m in field(result, "maybe_transfers").as_array().into_iter().flatten() {
+        println!(
+            "{}",
+            trf(
+                "It may be the side of a transfer (tx to-transfer --join): {line}",
+                &[("line", &line(field(m, "transaction")))]
+            )
+        );
+        for c in field(m, "candidates").as_array().into_iter().flatten() {
+            println!("  {}", line(c));
         }
     }
 }
@@ -983,6 +1037,9 @@ fn print_human(tool: &str, r: &Value) {
             for s in arr("statements") {
                 let paid = match field(&s, "payment_id") {
                     Value::Null => tr("not linked").to_string(),
+                    id if field(&s, "matches") == &json!(false) => {
+                        trf("transaction {id} pays another amount", &[("id", id)])
+                    }
                     id => trf("paid by transaction {id}", &[("id", id)]),
                 };
                 println!("{}  {paid}", statement_line(&s));
@@ -1023,12 +1080,10 @@ fn print_human(tool: &str, r: &Value) {
                     println!("  {:<13} ← \"{}\"", label, st(&m[k]));
                 }
             }
-            if let Some(w) = field(r, "warning").as_str() {
-                println!("{}", trf("Warning: {text}", &[("text", &w)]));
-            }
             if let Some(msg) = r.get("message") {
                 println!("{}", st(msg));
                 print_payments(&arr("card_payments"));
+                print_transfers(field(r, "result"));
             } else {
                 println!(
                     "{}",

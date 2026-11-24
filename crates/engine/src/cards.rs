@@ -2,17 +2,13 @@
 
 use crate::db::{AccountKind, Cents, Db, Transaction, TxFilter, TxKind, d2s, s2d};
 use crate::i18n::{tr, trf};
-use crate::transfers::OtherSide;
+use crate::transfers::{OtherSide, near};
 use anyhow::{Result, anyhow, bail};
 use chrono::NaiveDate;
 use rusqlite::params;
 use serde::Serialize;
-use std::ops::RangeInclusive;
 
-/// Days from the debit date on which the bank may have booked the payment.
-const NEAR: RangeInclusive<i64> = -3..=10;
-
-/// Format 4.
+/// Since format 4, where `payment_joined` was also kept.
 pub(crate) const CARD_SCHEMA: &str = "
 CREATE TABLE card_statements (
     id INTEGER PRIMARY KEY,
@@ -22,7 +18,6 @@ CREATE TABLE card_statements (
     amount INTEGER NOT NULL,
     import_key TEXT NOT NULL,
     payment_id INTEGER REFERENCES postings(id) ON DELETE SET NULL,
-    payment_joined INTEGER NOT NULL DEFAULT 0,
     UNIQUE (account_id, import_key)
 );
 CREATE INDEX card_statement_payment ON card_statements(payment_id);
@@ -39,15 +34,23 @@ pub struct CardStatement {
     pub amount: Cents,
     /// The bank's transaction linked to it.
     pub payment_id: Option<i64>,
-    #[serde(skip)]
-    joined: bool,
+    /// Whether that transaction is for this amount; not when it was changed afterwards.
+    pub matches: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct PaymentProposal {
     pub statement: CardStatement,
     /// Bank transactions that may be the payment, nearest date first.
-    pub candidates: Vec<Transaction>,
+    pub candidates: Vec<PaymentCandidate>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PaymentCandidate {
+    #[serde(flatten)]
+    pub transaction: Transaction,
+    /// What may be its other side on the card already: joined only if the user says so.
+    pub card_lines: Vec<Transaction>,
 }
 
 impl Db {
@@ -70,25 +73,30 @@ impl Db {
 
     /// The statements of the credit cards, newest first.
     pub fn card_statements(&self) -> Result<Vec<CardStatement>> {
-        // A payment counts while it is a transfer to the card.
+        // A payment counts while the books have it: a transfer from that posting to the card.
         let mut st = self.conn.prepare(
-            "SELECT s.id, s.account_id, a.name, s.closing_date, s.debit_date, s.amount, s.payment_joined,
-                    (SELECT p.id FROM postings p JOIN postings o ON o.entry_id=p.entry_id
-                     JOIN ledger_accounts l ON l.id=o.ledger_account_id
-                     WHERE p.id=s.payment_id AND l.money_account_id=s.account_id)
-             FROM card_statements s JOIN accounts a ON a.id=s.account_id WHERE a.kind='credit_card'
-             ORDER BY s.closing_date DESC, s.id DESC",
+            "SELECT s.id, s.account_id, a.name, s.closing_date, s.debit_date, s.amount, x.id, x.amount
+             FROM card_statements s JOIN accounts a ON a.id=s.account_id
+             LEFT JOIN (SELECT p.id, p.amount, ol.money_account_id AS card
+                        FROM postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                        JOIN postings o ON o.entry_id=p.entry_id AND o.id<>p.id
+                        JOIN ledger_accounts ol ON ol.id=o.ledger_account_id
+                        WHERE l.money_account_id IS NOT NULL AND l.id<>ol.id
+                          AND (SELECT COUNT(*) FROM postings n WHERE n.entry_id=p.entry_id)=2
+                       ) x ON x.id=s.payment_id AND x.card=s.account_id
+             WHERE a.kind='credit_card' ORDER BY s.closing_date DESC, s.id DESC",
         )?;
         let rows = st.query_map([], |r| {
+            let (amount, paid): (Cents, Option<Cents>) = (r.get(5)?, r.get(7)?);
             Ok(CardStatement {
                 id: r.get(0)?,
                 account_id: r.get(1)?,
                 account: r.get(2)?,
                 closing_date: s2d(&r.get::<_, String>(3)?),
                 debit_date: s2d(&r.get::<_, String>(4)?),
-                amount: r.get(5)?,
-                joined: r.get::<_, i64>(6)? != 0,
-                payment_id: r.get(7)?,
+                amount,
+                payment_id: r.get(6)?,
+                matches: paid.is_some() && paid.and_then(Cents::checked_neg) == Some(amount),
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -100,17 +108,23 @@ impl Db {
     }
 
     /// Bank transactions that may pay a statement.
-    fn payment_candidates(&self, s: &CardStatement) -> Result<Vec<Transaction>> {
-        let mut out = Vec::new();
+    fn payment_candidates(&self, s: &CardStatement) -> Result<Vec<PaymentCandidate>> {
+        let mut found = Vec::new();
         let (_, currency) = self.money_ledger(s.account_id)?;
-        let Some(wanted) = s.amount.checked_neg().filter(|a| *a < 0) else { return Ok(out) };
+        let Some(wanted) = s.amount.checked_neg().filter(|a| *a < 0) else { return Ok(Vec::new()) };
         for a in self.accounts(true)?.into_iter().filter(|a| a.kind == AccountKind::Bank) {
             if self.money_ledger(a.id)?.1 == currency {
-                out.extend(self.matching(a.id, wanted, s.debit_date, NEAR)?);
+                found.extend(self.matching(a.id, wanted, s.debit_date)?);
             }
         }
-        out.sort_by_key(|t| ((t.date - s.debit_date).num_days().abs(), t.id));
-        Ok(out)
+        found.sort_by_key(|t| ((t.date - s.debit_date).num_days().abs(), t.id));
+        found
+            .into_iter()
+            .map(|t| {
+                let card_lines = self.transfer_candidates(t.id, s.account_id)?;
+                Ok(PaymentCandidate { transaction: t, card_lines })
+            })
+            .collect()
     }
 
     /// Statements without a payment, each with the bank transactions that may be it. One already paid by a
@@ -125,7 +139,7 @@ impl Db {
             let paid = self.transactions(&f)?.into_iter().find(|t| {
                 t.kind == TxKind::Transfer
                     && t.amount == statement.amount
-                    && NEAR.contains(&(t.date - statement.debit_date).num_days())
+                    && near(t.date, statement.debit_date)
                     && t.transfer_peer.is_some_and(|p| !used.contains(&p) && !taken.contains(&p))
             });
             match paid {
@@ -139,9 +153,9 @@ impl Db {
         Ok(out)
     }
 
-    /// Makes a bank transaction the payment of a statement: a transfer to the card, joined with the card's
-    /// own line when there is one. Doing it again changes nothing.
-    pub fn link_card_payment(&self, statement: i64, transaction: i64) -> Result<()> {
+    /// Makes a bank transaction the payment of a statement: a transfer to the card, whose side is added, or
+    /// is the line of the card that the user chose. Doing it again changes nothing.
+    pub fn link_card_payment(&self, statement: i64, transaction: i64, join: Option<i64>) -> Result<()> {
         self.atomically(|| {
             let s = self.card_statement(statement)?;
             match s.payment_id {
@@ -149,41 +163,30 @@ impl Db {
                 Some(_) => bail!(tr("the card statement has a payment already: unlink it first")),
                 None => {}
             }
-            if !self.payment_candidates(&s)?.iter().any(|c| c.id == transaction) {
+            if !self.payment_candidates(&s)?.iter().any(|c| c.transaction.id == transaction) {
                 bail!(trf(
                     "transaction {id} cannot be the payment of this statement: it must be of a bank account, for the amount debited, near the debit date, and not a transfer or split",
                     &[("id", &transaction)]
                 ));
             }
-            let other = match self.matching(s.account_id, s.amount, s.debit_date, NEAR)?.as_slice() {
-                [] => OtherSide::New,
-                [one] => OtherSide::Join(one.id),
-                several => {
-                    let ids: Vec<String> = several.iter().map(|t| format!("{} ({})", t.id, d2s(t.date))).collect();
-                    bail!(trf(
-                        "the card has several payments of this amount: turn the bank's line into a transfer with one of them by hand: {which}",
-                        &[("which", &ids.join(", "))]
-                    ));
-                }
-            };
+            let other = join.map_or(OtherSide::New, OtherSide::Join);
             let done = self.turn_into_transfer(transaction, s.account_id, other)?;
-            self.conn.execute(
-                "UPDATE card_statements SET payment_id=?2, payment_joined=?3 WHERE id=?1",
-                params![s.id, done.id, done.joined as i64],
-            )?;
+            self.conn.execute("UPDATE card_statements SET payment_id=?2 WHERE id=?1", params![s.id, done.id])?;
             Ok(())
         })
     }
 
-    /// Undoes `link_card_payment`: the bank's line becomes an uncategorized transaction. Doing it again
-    /// changes nothing.
+    /// Undoes `link_card_payment`: the bank's line becomes an uncategorized transaction, and the side of the
+    /// card goes unless it came from a statement or was there before. Doing it again changes nothing.
     pub fn unlink_card_payment(&self, statement: i64) -> Result<()> {
         self.atomically(|| {
             let s = self.card_statement(statement)?;
             if let Some(p) = s.payment_id {
-                self.separate_transfer(p, s.joined)?;
+                let side = self.transaction(p)?.transfer_peer.map(|o| self.transaction(o)).transpose()?;
+                // The books tell: an added side has no import hash.
+                self.separate_transfer(p, side.is_none_or(|t| !t.added))?;
             }
-            self.conn.execute("UPDATE card_statements SET payment_id=NULL, payment_joined=0 WHERE id=?1", [s.id])?;
+            self.conn.execute("UPDATE card_statements SET payment_id=NULL WHERE id=?1", [s.id])?;
             Ok(())
         })
     }
