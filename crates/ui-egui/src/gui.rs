@@ -475,7 +475,7 @@ impl App {
                 "categories" | "categorie" => View::Categories,
                 "rules" | "regole" => View::Rules,
                 "scheduled" | "pianificati" => View::Scheduled,
-                "ledger" | "entry" => View::Ledger,
+                "ledger" | "entry" | "journal" => View::Ledger,
                 _ => View::Dashboard,
             };
             app.reload_txs();
@@ -484,6 +484,10 @@ impl App {
             }
             if v == "entry" {
                 app.open_entry();
+            }
+            if v == "journal" {
+                let all = or_report(app.db.ledger_accounts(), &mut app.toast);
+                app.journal = all.first().map(|l| (l.id, 0));
             }
         }
         app

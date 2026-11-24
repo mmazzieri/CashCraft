@@ -818,6 +818,11 @@ fn part_of_a_split_is_categorized_again() {
     db.delete_category(db.find_category("Health").unwrap().id).unwrap();
     let uncategorized = || db.transactions(&TxFilter { uncategorized: true, ..Default::default() }).unwrap();
     assert_eq!(uncategorized().len(), 1);
+    // A rule never touches a split.
+    db.add_rule("x", db.find_category("Travel").unwrap().id, "").unwrap();
+    let before = dump(&db.conn);
+    assert_eq!(db.apply_rules().unwrap(), 0);
+    assert_eq!(dump(&db.conn), before);
     let find = |name: &str| db.entry(e).unwrap().postings.into_iter().find(|p| p.account == name).unwrap().id;
     let posting = find("Uncategorized");
     ops::call(&db, "set_posting_category", &json!({"posting_id": posting, "category": "Travel"}), None).unwrap();
