@@ -144,7 +144,6 @@ Home:Maintenance	Casa:Manutenzione
 Home:Rent and mortgage	Casa:Affitto e mutuo
 Home:Utilities	Casa:Bollette
 How income and expenses are grouped	Come raggruppare entrate e uscite
-Import a CSV statement	Importa estratto conto CSV
 Import a bank statement (⌘I). You can also drop the file on the window.	Importa l'estratto conto della banca (⌘I). Puoi anche trascinare il file sulla finestra.
 Import into the account:	Importa nel conto:
 Import {n} transaction	Importa {n} movimento
@@ -160,7 +159,6 @@ Internet subscription	Abbonamento internet
 Invert the sign (credit cards)	Inverti segno (carte di credito)
 Investment	Investimento
 Investments	Investimenti
-It works with CSV files exported from online banking: columns, separator, dates and Italian amounts are recognized. Transactions already imported are skipped.	Funziona con i CSV esportati dall'home banking: colonne, separatore, date e importi all'italiana vengono riconosciuti da soli. I movimenti già importati vengono saltati.
 Its {n} line will be deleted. This cannot be undone.	La sua riga verrà eliminata ({n}). Non si può annullare.
 January	gennaio
 July	luglio
@@ -492,9 +490,9 @@ yyyy-mm-dd	gg/mm/aaaa
 ✔ Mark as cleared	✔ Segna come verificato
 ✔ Record what is due up to today ({n})	✔ Registra le scadenze fino a oggi ({n})
 ✖ Clear filters	✖ Azzera filtri
-⬇ Import CSV	⬇ Importa CSV
-⬇ Import CSV into this account…	⬇ Importa CSV in questo conto…
-⬇ Import a CSV statement	⬇ Importa un estratto conto CSV
+⬇ Import	⬇ Importa
+⬇ Import a statement into this account…	⬇ Importa un estratto conto in questo conto…
+⬇ Import a statement	⬇ Importa un estratto conto
 🏷 Category	🏷 Categoria
 📂 Choose file…	📂 Scegli file…
 📖 Entry…	📖 Registrazione…
@@ -530,3 +528,46 @@ transaction {id} is not the other side of this transfer: it needs the opposite a
 several transactions may be the other side, choose one of them or none: {which}	più movimenti possono essere l'altro lato, occorre sceglierne uno o nessuno: {which}
 the transaction is not a transfer	il movimento non è un giroconto
 What was changed here is not saved.	Le modifiche fatte qui non vengono salvate.
+the PDF is damaged and cannot be read	il PDF è danneggiato e non si può leggere
+the PDF is protected by a password: save a copy without it	il PDF è protetto da una password: occorre salvarne una copia senza
+the PDF has no text that can be read: it may be a scan	il PDF non ha testo leggibile: forse è una scansione
+the PDF is too large for a statement	il PDF è troppo grande per un estratto conto
+the PDF takes too long to read	la lettura del PDF richiede troppo tempo
+the program that reads PDF files could not start	il programma che legge i PDF non si è avviato
+Purchases	Acquisti
+Instalments	Rate
+Amount debited	Addebito
+Amount debited, on the first page	Addebito, in prima pagina
+the PDF is not a card statement of a kind that can be read	il PDF non è un estratto conto di carta di un tipo leggibile
+the date of the card statement was not found	la data dell'estratto conto della carta non è stata trovata
+card statement {id} not found	estratto conto {id} della carta non trovato
+the card statement has a payment already: unlink it first	l'estratto conto della carta ha già un pagamento: prima va scollegato
+transaction {id} cannot be the payment of this statement: it must be of a bank account, for the amount debited, near the debit date, and not a transfer or split	il movimento {id} non può essere il pagamento di questo estratto conto: deve essere di un conto corrente, dell'importo addebitato, vicino alla data di addebito, e non un giroconto o un movimento suddiviso
+the card has several payments of this amount: turn the bank's line into a transfer with one of them by hand: {which}	la carta ha più pagamenti di questo importo: il movimento della banca va trasformato a mano in giroconto con uno di essi: {which}
+the rows read do not add up to the totals of the card statement: nothing was imported	le righe lette non danno i totali dell'estratto conto della carta: non è stato importato nulla
+the card statement is in euros and the account is not	l'estratto conto della carta è in euro e il conto no
+the columns and the sign of a card statement cannot be changed	le colonne e il segno di un estratto conto di carta non si possono cambiare
+the account is not a credit card	il conto non è una carta di credito
+the bank's line is now the transfer that pays the card statement	il movimento della banca è ora il giroconto che paga l'estratto conto della carta
+card payment unlinked	pagamento della carta scollegato
+Import a statement	Importa un estratto conto
+It works with CSV and Excel 97 files exported from online banking and with the PDF statement of a credit card. Transactions already imported are skipped.	Funziona con i file CSV ed Excel 97 esportati dall'home banking e con l'estratto conto PDF di una carta di credito. I movimenti già importati vengono saltati.
+Card {digits}	Carta {digits}
+⚠ This account is not a credit card.	⚠ Questo conto non è una carta di credito.
+choose a file	scegli un file
+Card payments	Pagamenti delle carte
+Is it one of these bank transactions? It becomes a transfer, not an expense.	È uno di questi movimenti della banca? Diventa un giroconto, non una spesa.
+Link	Collega
+Unlink	Scollega
+{account}, statement of {closing}: {amount} debited on {debit}	{account}, estratto conto al {closing}: {amount} addebitati il {debit}
+Card statement {cards}: up to {closing}, debited on {debit}	Estratto conto carta {cards}: al {closing}, addebito il {debit}
+{what}: {said} on the statement, {read} read	{what}: {said} sull'estratto conto, {read} letti
+{n} row could not be read	{n} riga non letta
+{n} rows could not be read	{n} righe non lette
+The debit was not found: its payment will not be proposed.	L'addebito non è stato trovato: il suo pagamento non verrà proposto.
+The totals do not match: import the rows all the same	I totali non corrispondono: importa comunque le righe
+not linked	non collegato
+paid by transaction {id}	pagato dal movimento {id}
+Warning: {text}	Attenzione: {text}
+Card statement {line}	Estratto conto carta {line}
+no bank transaction matches	nessun movimento della banca corrisponde

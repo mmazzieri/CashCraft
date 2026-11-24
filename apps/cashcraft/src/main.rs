@@ -26,6 +26,9 @@ struct Args {
 }
 
 fn main() {
+    if cashcraft_engine::pdf::answer_if_child() {
+        return;
+    }
     let args = Args::parse();
     let path = args.db.unwrap_or_else(db::default_db_path);
     if let Err(e) = gui::run(path, args.screenshot) {

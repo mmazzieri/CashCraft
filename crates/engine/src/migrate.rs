@@ -1,6 +1,7 @@
 //! From formats 0 (CashCraft 0.1) and 1 (0.2.0), where money was a table of transactions, to the
 //! double-entry ledger of format 2, and from that to the present one. `docs/ledger.md` describes what becomes what.
 
+use crate::cards::CARD_SCHEMA;
 use crate::db::{Cents, Db, RENAMED, SCHEMA, SCHEMA_VERSION};
 use crate::i18n::{tr, trf};
 use crate::ledger::{Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
@@ -117,14 +118,16 @@ impl Db {
     /// holds the write lock: nobody changes the file between the backup and the end.
     pub(crate) fn migrate(&self, version: i64) -> Result<()> {
         let again = self.has_table("postings")?;
-        let current = again && self.has_posting_dates()?;
+        let dated = again && self.has_posting_dates()?;
+        let current = dated && self.has_table("card_statements")?;
         if current && !self.has_leftovers()? {
             return self.drop_leftovers();
         }
         // An older program may have written a lower number on a newer file.
-        let from = match (again, current) {
-            (false, _) => 1,
-            (_, false) => 2,
+        let from = match (again, dated, current) {
+            (false, _, _) => 1,
+            (_, false, _) => 2,
+            (_, _, false) => 3,
             _ => SCHEMA_VERSION.max(version),
         };
         let copy = match &self.path {
@@ -133,11 +136,24 @@ impl Db {
             })?),
             None => None,
         };
-        let done = match (again, current) {
-            (false, _) => self.convert(),
-            (_, false) => self.add_posting_dates().and_then(|()| self.merge_leftovers()),
-            _ => self.merge_leftovers(),
-        };
+        let done = (|| -> Result<()> {
+            if !again {
+                self.convert()?;
+            } else {
+                if !dated {
+                    self.add_posting_dates()?;
+                }
+                if self.has_leftovers()? {
+                    self.merge_leftovers()?;
+                } else {
+                    self.drop_leftovers()?;
+                }
+            }
+            if !current {
+                self.conn.execute_batch(CARD_SCHEMA)?;
+            }
+            Ok(())
+        })();
         if done.is_err()
             && let Some(p) = copy
         {

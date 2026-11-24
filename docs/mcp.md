@@ -30,6 +30,15 @@ An account of the chart is named by its path or name, or as `ledger:5` (its `led
 or `system:uncategorized`; a bare number is refused. `post_scheduled` posts what it can: `failed` lists the
 rest, with the reason.
 
+## Card statements
+
+`preview_csv` and `import_csv` read the PDF statement of a credit card too: `statement` has its dates and
+`checks`, the totals it states against what was read, in exact decimal text. When they differ
+(`sound: false`) the import is refused, unless `allow_mismatch` is true: ask the user first.
+`propose_card_payments` (also `card_payments` in the answer of an import) lists the bank transactions that
+may pay each statement, `link_card_payment` makes one the transfer to the card, `unlink_card_payment` undoes
+it, `list_card_statements` shows them all. See [cards.md](cards.md).
+
 ## Allowed folders
 
 The server refuses to start without both folders:

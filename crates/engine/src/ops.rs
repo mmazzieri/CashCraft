@@ -130,7 +130,7 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "preview_csv",
-            description: "Analyzes a bank statement (CSV or Excel 97 .xls) without importing it: separator, recognized columns and first rows.",
+            description: "Analyzes a statement (CSV, Excel 97 .xls or the PDF of a credit card) without importing it: separator, recognized columns and first rows; for a card statement its dates and whether the rows add up to its totals.",
             schema: obj(
                 json!({"path": s("Path of the CSV file."), "invert": b("Invert the sign of the amounts."), "limit": n("Preview rows (default 10)."),
                 "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."), "credit_column": s("Money-in column."),
@@ -140,14 +140,38 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "import_csv",
-            description: "Imports a CSV or Excel 97 .xls file exported by an Italian bank into an account. Columns, separator, encoding and amount format are detected; transactions already imported are skipped; rules assign the categories.",
+            description: "Imports a CSV or Excel 97 .xls file exported by an Italian bank, or the PDF statement of a credit card (into a credit_card account), into an account. Columns, separator, encoding and amount format are detected; transactions already imported are skipped; rules assign the categories.",
             schema: obj(
                 json!({"path": s("Path of the CSV file."), "account": s(ACCOUNT), "invert": b("Invert the sign (e.g. credit card statements with positive expenses)."),
                 "dry_run": b("Trial run: saves nothing."), "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."),
                 "credit_column": s("Money-in column."), "debit_column": s("Money-out column."), "description_column": s("Description column."),
-                "payee_column": s("Payee column.")}),
+                "payee_column": s("Payee column."),
+                "allow_mismatch": b("Import a card statement even if its rows do not add up to its totals; only after the user agreed.")}),
                 &["path", "account"],
             ),
+        },
+        ToolDef {
+            name: "list_card_statements",
+            description: "Lists the imported credit card statements, newest first: closing date, debit date, amount and the bank transaction linked as payment.",
+            schema: obj(json!({}), &[]),
+        },
+        ToolDef {
+            name: "propose_card_payments",
+            description: "For each card statement without a payment, the bank transactions that may be its monthly debit (same amount, near the debit date). Changes nothing: ask the user, then link_card_payment.",
+            schema: obj(json!({}), &[]),
+        },
+        ToolDef {
+            name: "link_card_payment",
+            description: "Makes a bank transaction the payment of a card statement: it becomes a transfer to the card, no longer an expense. The bank's line keeps its id, date, text and import key.",
+            schema: obj(
+                json!({"statement_id": n("Id of the card statement."), "transaction_id": n("Id of the bank transaction, one of those proposed.")}),
+                &["statement_id", "transaction_id"],
+            ),
+        },
+        ToolDef {
+            name: "unlink_card_payment",
+            description: "Undoes link_card_payment: the bank's line becomes an uncategorized transaction.",
+            schema: obj(json!({"statement_id": n("Id of the card statement.")}), &["statement_id"]),
         },
         ToolDef {
             name: "list_categories",
@@ -762,10 +786,13 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             };
             let t = importer::load(&path)?;
             let m = mapping_overrides(&t, a)?;
-            if m.date.is_none() {
+            if t.statement.is_some() && (m != t.mapping || opt_bool(a, "invert")) {
+                bail!(tr("the columns and the sign of a card statement cannot be changed"));
+            }
+            if m.date.is_none() && t.statement.is_none() {
                 bail!(tr("the date column was not found: give it with date_column"));
             }
-            if m.amount.is_none() && m.credit.is_none() && m.debit.is_none() {
+            if m.amount.is_none() && m.credit.is_none() && m.debit.is_none() && t.statement.is_none() {
                 bail!(tr("the amount column was not found: give it with amount_column or credit_column/debit_column"));
             }
             let (rows, skipped) = importer::parse_rows(&t, &m, opt_bool(a, "invert"));
@@ -775,13 +802,32 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 let total = checked_total(rows.iter().map(|r| r.amount)).ok_or_else(too_big)?;
                 json!({"format": info, "rows_found": rows.len(), "rows_skipped": skipped, "sum": total,
                        "first_date": rows.first().map(|r| r.date), "last_date": rows.last().map(|r| r.date),
-                       "preview": rows.iter().take(limit).collect::<Vec<_>>()})
+                       "preview": rows.iter().take(limit).collect::<Vec<_>>(),
+                       "statement": t.statement.as_ref().map(importer::Statement::json)})
             } else {
                 let acc = db.find_account(&req_str(a, "account")?)?;
-                let res = importer::import_rows(db, acc.id, &rows, skipped)?;
-                json!({"account": acc.name, "format": info, "result": res,
+                let res = importer::import(db, acc.id, &t, &rows, skipped, opt_bool(a, "allow_mismatch"))?;
+                let proposals: Vec<_> =
+                    db.propose_card_payments()?.into_iter().filter(|p| !p.candidates.is_empty()).collect();
+                let warning = (t.statement.is_some() && acc.kind != AccountKind::CreditCard)
+                    .then(|| tr("the account is not a credit card"));
+                json!({"account": acc.name, "format": info, "result": res, "card_payments": proposals,
+                       "statement": t.statement.as_ref().map(importer::Statement::json), "warning": warning,
                        "message": trf("{added} imported, {present} already present, {categorized} categorized automatically", &[("added", &res.added), ("present", &res.duplicates), ("categorized", &res.categorized)])})
             }
+        }
+        "list_card_statements" => json!({"statements": db.card_statements()?}),
+        "propose_card_payments" => json!({"card_payments": db.propose_card_payments()?}),
+        "link_card_payment" => {
+            let (statement, transaction) = (req_i64(a, "statement_id")?, req_i64(a, "transaction_id")?);
+            db.link_card_payment(statement, transaction)?;
+            json!({"statement_id": statement, "transaction": db.transaction(transaction)?,
+                   "message": tr("the bank's line is now the transfer that pays the card statement")})
+        }
+        "unlink_card_payment" => {
+            let statement = req_i64(a, "statement_id")?;
+            db.unlink_card_payment(statement)?;
+            json!({"statement_id": statement, "message": tr("card payment unlinked")})
         }
         "list_categories" => json!({"categories": db.categories()?}),
         "create_category" => {
@@ -1210,7 +1256,7 @@ mod tests {
                         "from_account": "Conto corrente", "to_account": "Portafoglio", "name": "x", "payee": "x",
                         "category": "Svago", "amount": 1, "monthly_amount": 1, "date": "2025-01-31",
                         "next_date": "2025-01-31", "id": 1, "class": "asset",
-                        "posting_id": 2, "currency": "USD",
+                        "posting_id": 2, "statement_id": 1, "transaction_id": 1, "currency": "USD",
                         "parent": "Conto corrente", "match": "none", "ledger_account": "Conto corrente", "code": "1",
                         "postings": [{"account": "Conto corrente", "amount": "1,00"}, {"account": "Svago", "amount": -1}],
                         "path": "out.csv", "pattern": "x", "unit": "month"});

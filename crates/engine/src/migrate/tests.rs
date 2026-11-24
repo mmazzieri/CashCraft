@@ -533,12 +533,17 @@ fn a_file_without_transactions_and_an_empty_file_open() {
     assert_sound(&Db::open(&empty).unwrap().0, "empty");
 }
 
-/// Format 2 gets the dates of single postings, after a copy; everything else stays as it was.
 #[test]
-fn a_file_of_format_2_opens() {
-    let dir = Dir::new("format-2");
+fn files_of_formats_2_and_3_open() {
+    ledger_file_opens(2, include_str!("v2.sql"));
+    ledger_file_opens(3, include_str!("v3.sql"));
+}
+
+/// The new column and tables are added, after a copy; everything else stays as it was.
+fn ledger_file_opens(version: i64, schema: &str) {
+    let dir = Dir::new(&format!("format-{version}"));
     let old = Connection::open(dir.file()).unwrap();
-    old.execute_batch(include_str!("v2.sql")).unwrap();
+    old.execute_batch(schema).unwrap();
     old.execute_batch(
         "INSERT INTO accounts(id,name,kind) VALUES (1,'Bank','bank'), (2,'Card','credit_card');
          INSERT INTO categories(id,name) VALUES (1,'Home');
@@ -547,23 +552,24 @@ fn a_file_of_format_2_opens() {
          SELECT 1,1,id,-500,'EUR','h' FROM ledger_accounts WHERE money_account_id=1 UNION ALL
          SELECT 2,1,id,500,'EUR',NULL FROM ledger_accounts WHERE category_id=1 UNION ALL
          SELECT 3,2,id,-900,'EUR',NULL FROM ledger_accounts WHERE money_account_id=1 UNION ALL
-         SELECT 4,2,id,900,'EUR',NULL FROM ledger_accounts WHERE money_account_id=2;
-         PRAGMA user_version=2;",
+         SELECT 4,2,id,900,'EUR',NULL FROM ledger_accounts WHERE money_account_id=2;",
     )
     .unwrap();
+    old.pragma_update(None, "user_version", version).unwrap();
     let before = dump(&old);
     let (db, _) = Db::open(&dir.file()).unwrap();
-    assert_sound(&db, "format 2");
+    assert_sound(&db, "opened");
+    assert!(db.card_statements().unwrap().is_empty());
     let figures = v2_figures(&db);
     assert_eq!(figures.register.len(), 3);
     assert_eq!(figures.accounts.iter().map(|a| a.2).collect::<Vec<_>>(), [-1400, 900]);
     db.separate_transfer(3, true).unwrap();
-    assert_sound(&db, "format 2, changed");
-    let copy = Connection::open(dir.0.join("books.v2-backup.db")).unwrap();
+    assert_sound(&db, "changed");
+    let copy = Connection::open(dir.0.join(format!("books.v{version}-backup.db"))).unwrap();
     assert_eq!(dump(&copy), before);
     drop(db);
     Db::open(&dir.file()).unwrap();
-    assert!(!dir.0.join("books.v2-backup-2.db").exists());
+    assert!(!dir.0.join(format!("books.v{version}-backup-2.db")).exists());
     // A number written by an older program on a present file changes nothing.
     old.pragma_update(None, "user_version", 1).unwrap();
     let (db, _) = Db::open(&dir.file()).unwrap();

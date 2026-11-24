@@ -113,9 +113,14 @@ was opened. It is read and changed as `opening_balance` of the account.
 `trial_balance` (up to a date) lists every balance with equal totals of debits and credits.
 `verify_ledger` checks each entry, posting and account and reports what is wrong; it changes nothing.
 
+## Migration from format 3
+
+The table `card_statements` ([cards.md](cards.md)) is added, after a copy as `cashcraft.v3-backup.db` with the
+rules below.
+
 ## Migration from format 2
 
-The column `postings.date` is added, after a copy as `cashcraft.v2-backup.db` with the rules below.
+The column `postings.date` is added, and the table of format 4, after a copy as `cashcraft.v2-backup.db` with the rules below.
 
 ## Migration from formats 0 and 1
 

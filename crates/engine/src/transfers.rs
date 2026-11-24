@@ -70,7 +70,7 @@ impl Db {
     }
 
     /// Ordinary transactions of an account with this amount, within these days of `date`, nearest first.
-    fn matching(
+    pub(crate) fn matching(
         &self,
         account: i64,
         amount: Cents,
