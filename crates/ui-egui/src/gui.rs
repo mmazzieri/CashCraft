@@ -1,8 +1,9 @@
 //! Finestra di CashCraft (eframe/egui): avvio, stato, stile e widget comuni.
 //! Le singole schermate sono in `views.rs`, le finestre di dialogo in `dialogs.rs`.
 
+use crate::ledger::{EntryForm, LedgerAccountForm, LedgerData};
 use anyhow::Result;
-use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Db, Scheduled, Transaction, TxFilter};
+use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Db, Scheduled, Transaction, TxFilter, TxKind};
 use cashcraft_engine::i18n::{self, Lang, lang, tr, trf};
 use cashcraft_engine::importer::{self, ImportResult, Mapping, ParsedRow, Table};
 use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_number, month_short};
@@ -66,6 +67,16 @@ pub fn or_report<T: Default>(r: Result<T>, toast: &mut Option<(String, f64)>) ->
     })
 }
 
+/// Whether a transaction has one category, or may be given one.
+pub fn has_category(t: &Transaction) -> bool {
+    matches!(t.kind, TxKind::Category | TxKind::Uncategorized)
+}
+
+/// Whether a transaction counts as income or expense.
+pub fn is_income_or_expense(t: &Transaction) -> bool {
+    has_category(t) || t.kind == TxKind::Split
+}
+
 /// The colour of the `i`-th series of a chart.
 pub fn palette(i: usize) -> Color32 {
     PALETTE.get(i % PALETTE.len()).copied().unwrap_or(ACCENT)
@@ -103,6 +114,7 @@ pub enum View {
     Categories,
     Rules,
     Scheduled,
+    Ledger,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -156,6 +168,9 @@ pub struct TxForm {
     pub category: Option<i64>,
     pub cleared: bool,
     pub is_transfer: bool,
+    /// Whether the category can be chosen.
+    pub has_category: bool,
+    pub is_split: bool,
     pub error: String,
 }
 
@@ -240,6 +255,8 @@ pub enum Dialog {
     Account(AccountForm),
     Import(Box<ImportState>),
     Scheduled(SchedForm),
+    Entry(EntryForm),
+    LedgerAccount(LedgerAccountForm),
     ConfirmDeleteAccount(i64, String),
     ConfirmClearDemo,
 }
@@ -283,6 +300,9 @@ pub struct App {
     pub rename_cat: Option<(i64, String)>,
     pub dash: Option<Dash>,
     pub report: Option<ReportData>,
+    pub ledger: Option<LedgerData>,
+    /// The trial balance up to this date, as it is typed.
+    pub ledger_date: String,
     /// The language chosen in the window, `None` for the system's.
     pub language: Option<Lang>,
     data_version: i64,
@@ -419,6 +439,8 @@ impl App {
             rename_cat: None,
             dash: None,
             report: None,
+            ledger: None,
+            ledger_date: String::new(),
             language,
             data_version: 0,
             last_check: 0.0,
@@ -441,11 +463,15 @@ impl App {
                 "categories" | "categorie" => View::Categories,
                 "rules" | "regole" => View::Rules,
                 "scheduled" | "pianificati" => View::Scheduled,
+                "ledger" | "entry" => View::Ledger,
                 _ => View::Dashboard,
             };
             app.reload_txs();
             if v == "import" || v == "importa" {
                 app.open_import(None);
+            }
+            if v == "entry" {
+                app.open_entry();
             }
         }
         app
@@ -471,6 +497,7 @@ impl App {
         self.reload_txs();
         self.dash = None;
         self.report = None;
+        self.ledger = None;
     }
 
     pub fn reload_txs(&mut self) {
@@ -534,6 +561,7 @@ impl App {
             account: self.default_account(),
             date: fmt_date(db::today()),
             expense: true,
+            has_category: true,
             ..Default::default()
         }));
     }
@@ -550,6 +578,8 @@ impl App {
             category: t.category_id,
             cleared: t.cleared,
             is_transfer: t.transfer_peer.is_some(),
+            has_category: has_category(t),
+            is_split: t.kind == TxKind::Split,
             error: String::new(),
         }));
     }
@@ -665,6 +695,9 @@ impl eframe::App for App {
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
                 self.open_new_tx();
             }
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::J)) {
+                self.open_entry();
+            }
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::I)) {
                 self.open_import(None);
             }
@@ -683,6 +716,7 @@ impl eframe::App for App {
                 View::Categories => self.categories_view(ui),
                 View::Rules => self.rules_view(ui),
                 View::Scheduled => self.scheduled_view(ui),
+                View::Ledger => self.ledger_view(ui),
             },
         );
         self.dialogs(&ctx);

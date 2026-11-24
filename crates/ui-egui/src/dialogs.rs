@@ -56,7 +56,15 @@ impl App {
                     form_row(ui, tr("Payee"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.payee).desired_width(280.0));
                     });
-                    if !f.is_transfer {
+                    if f.is_split {
+                        ui.label(
+                            RichText::new(tr(
+                                "Split over several accounts: amount and category cannot be changed here.",
+                            ))
+                            .color(MUTED),
+                        );
+                    }
+                    if f.has_category {
                         form_row(ui, tr("Category"), |ui| {
                             category_combo(ui, "txcat", &cats, &mut f.category, tr("Automatic (rules)"));
                         });
@@ -311,12 +319,19 @@ impl App {
                         message = m;
                     }
                 }
+                Dialog::Entry(f) => {
+                    (keep, message) = self.entry_dialog(ui, f);
+                }
+                Dialog::LedgerAccount(f) => {
+                    (keep, message) = self.ledger_account_dialog(ui, f);
+                }
                 Dialog::ConfirmDeleteAccount(id, name) => {
                     ui.heading(tr("Delete the account?"));
                     ui.label(trf(
                         "The account \"{name}\" and all its transactions will be deleted. This cannot be undone.",
                         &[("name", name)],
                     ));
+                    ui.label(tr("The other side of its transfers stays in the other account, uncategorized."));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui
@@ -355,7 +370,13 @@ impl App {
             }
         });
         // Esc o clic fuori chiudono (tranne l'importazione, per non perdere la mappatura).
-        if modal.should_close() && !matches!(dialog, Dialog::Import(_)) {
+        // Nor what is written in the form of an entry.
+        let precious = match &dialog {
+            Dialog::Import(_) => true,
+            Dialog::Entry(f) => !f.is_untouched(),
+            _ => false,
+        };
+        if modal.should_close() && !precious {
             keep = false;
         }
         if keep {
