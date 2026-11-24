@@ -185,6 +185,24 @@ fn what_cannot_be_a_transfer_is_refused() {
     assert_sound(&db, "half");
 }
 
+/// A side with the date of the entry keeps it when the other side is given another.
+#[test]
+fn a_joined_side_keeps_its_date() {
+    let (db, bank, savings) = books();
+    let date = parse_date("2026-01-31").unwrap();
+    let add = |account_id, amount| {
+        db.add_transaction(&NewTx { account_id, date, amount, payee: "x".into(), ..Default::default() })
+            .unwrap()
+            .unwrap()
+    };
+    let (x, y) = (add(bank, -5), add(savings, 5));
+    db.turn_into_transfer(x, savings, OtherSide::Auto).unwrap();
+    let edit = crate::db::TxEdit { date: parse_date("2026-01-20").unwrap(), amount: -5, ..Default::default() };
+    db.update_transaction(x, &edit).unwrap();
+    assert_eq!((db.transaction(x).unwrap().date, db.transaction(y).unwrap().date), (edit.date, date));
+    assert_sound(&db, "dates");
+}
+
 /// Accounts deleted afterwards leave the other side where it was.
 #[test]
 fn a_joined_side_outlives_the_other_account() {

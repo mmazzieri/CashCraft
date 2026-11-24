@@ -220,7 +220,7 @@ pub struct Posting {
     pub amount: Cents,
     pub currency: String,
     pub cleared: bool,
-    /// When it is not the entry's.
+    /// Of this side alone.
     pub date: Option<NaiveDate>,
 }
 
@@ -295,7 +295,7 @@ pub(crate) struct Line {
     /// The text of this side alone (the two sides of a transfer), instead of the entry's.
     pub payee: Option<String>,
     pub memo: Option<String>,
-    /// The date of this side alone, when its bank has another one than the entry's.
+    /// The date of this side alone, as its own bank has it.
     pub date: Option<String>,
 }
 
@@ -428,8 +428,6 @@ impl Db {
             };
             let mut ids = Vec::with_capacity(d.lines.len());
             for l in &d.lines {
-                // A date like the entry's is the entry's.
-                let date = l.date.as_ref().filter(|x| **x != d.date);
                 let id = match l.id {
                     Some(id) if current.contains(&id) => {
                         let n = self
@@ -448,7 +446,7 @@ impl Db {
                                 l.import_hash,
                                 l.payee,
                                 l.memo,
-                                date
+                                l.date
                             ])?;
                         if n != 1 {
                             return Err(no_entry(entry));
@@ -472,7 +470,7 @@ impl Db {
                                 l.import_hash,
                                 l.payee,
                                 l.memo,
-                                date
+                                l.date
                             ])?;
                         self.conn.last_insert_rowid()
                     }

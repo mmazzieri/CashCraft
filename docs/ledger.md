@@ -52,7 +52,7 @@ category, on *Uncategorized* or on *Opening balances* (half a transfer of an old
 splits, transfers and those on accounts added by hand cannot.
 
 The two banks may date the same transfer differently. The entry has the date of the transaction that was
-turned; a side with another one keeps it in `postings.date`. Registers, their running balances, filters and
+turned; a side that was joined keeps its own in `postings.date`. Registers, their running balances, filters and
 exports use the date of the side, so they go on agreeing with each bank's statement. The trial balance, the
 net worth over time and the journal use the date of the entry, so that debits equal credits on every date:
 for them both sides happen on that day. Editing the date of a side that has its own changes that
