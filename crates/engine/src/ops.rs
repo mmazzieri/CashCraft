@@ -1182,7 +1182,8 @@ mod tests {
             // Balanced and as large as they can be, again and again until refused; then everything still reads.
             let huge = json!({"postings": [{"account": "Conto corrente", "amount": "1000000000000"},
                                            {"account": "Svago", "amount": "-1000000000000"}]});
-            while call(&db, "post_entry", &huge, Some(&roots)).is_ok() {}
+            let posted = (0..50).take_while(|_| call(&db, "post_entry", &huge, Some(&roots)).is_ok()).count();
+            assert!(posted < 50, "{}", tool.name);
             let mut reads = vec![];
             for t in tools() {
                 if t.name.starts_with("list_") {
