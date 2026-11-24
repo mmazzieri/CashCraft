@@ -28,7 +28,7 @@ impl App {
                     ui.heading(if f.id.is_some() { tr("Edit transaction") } else { tr("New transaction") });
                     ui.add_space(8.0);
                     if f.is_transfer {
-                        ui.label(RichText::new(tr("Transfer: changes apply to both accounts.")).color(MUTED));
+                        ui.label(RichText::new(tr("Transfer: the amount changes in both accounts.")).color(MUTED));
                     } else {
                         expense_toggle(ui, &mut f.expense);
                         ui.add_space(6.0);
@@ -542,7 +542,14 @@ impl App {
                 ui.label(tr("The other side is already in that account?"));
                 egui::ScrollArea::vertical().id_salt("turn_candidates").max_height(220.0).show(ui, |ui| {
                     for c in &f.candidates {
-                        let text = format!("{} · {} · {}", fmt_date(c.date), cut(&c.payee, 48), fmt_eur(c.amount));
+                        let category = if c.category.is_empty() { tr("Uncategorized") } else { &c.category };
+                        let text = format!(
+                            "{} · {} · {} · {}",
+                            fmt_date(c.date),
+                            cut(&c.payee, 44),
+                            fmt_eur(c.amount),
+                            cut(category, 30)
+                        );
                         ui.radio_value(&mut f.other, OtherSide::Join(c.id), text);
                     }
                 });
@@ -676,7 +683,12 @@ impl App {
                         .color(MUTED),
                     );
                 }
+                for a in &res.adopted {
+                    let line = format!("{} · {} · {}", fmt_date(a.date), cut(&a.payee, 44), fmt_eur(a.amount));
+                    ui.label(trf("Side of a transfer that was there: {line}", &[("line", &line)]));
+                }
             });
+            self.maybe_transfers(ui, st);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if primary_button(ui, tr("Go to the account")).clicked() {
@@ -824,5 +836,39 @@ impl App {
             }
         });
         (keep, msg)
+    }
+
+    /// Imported lines that may be the side of a transfer that is there.
+    fn maybe_transfers(&mut self, ui: &mut Ui, st: &mut ImportState) {
+        let Some(res) = st.result.as_mut().filter(|r| !r.maybe_transfers.is_empty()) else { return };
+        let mut joined: Option<(usize, Result<()>)> = None;
+        ui.add_space(8.0);
+        card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(tr("Sides of transfers that are there already?")).strong());
+            egui::ScrollArea::vertical().id_salt("maybe_transfers").max_height(160.0).show(ui, |ui| {
+                for (i, m) in res.maybe_transfers.iter().enumerate() {
+                    let t = &m.transaction;
+                    ui.label(format!("{} · {} · {}", fmt_date(t.date), cut(&t.payee, 44), fmt_eur(t.amount)));
+                    for c in &m.candidates {
+                        ui.horizontal(|ui| {
+                            if ui.button(tr("Join")).clicked() {
+                                let done = self.db.turn_into_transfer(t.id, c.account_id, OtherSide::Join(c.id));
+                                joined = Some((i, done.map(|_| ())));
+                            }
+                            ui.label(format!("{} · {} · {}", fmt_date(c.date), c.account, cut(&c.payee, 40)));
+                        });
+                    }
+                }
+            });
+        });
+        match joined {
+            Some((i, Ok(()))) => {
+                res.maybe_transfers.remove(i);
+                self.reload();
+            }
+            Some((_, Err(e))) => st.error = format!("{e:#}"),
+            None => {}
+        }
     }
 }

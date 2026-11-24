@@ -199,11 +199,7 @@ impl TurnForm {
         let Some(account) = self.account else { return };
         match db.transfer_candidates(self.tx.id, account) {
             Ok(c) => {
-                self.other = match c.as_slice() {
-                    [] => OtherSide::New,
-                    [one] => OtherSide::Join(one.id),
-                    _ => OtherSide::Auto,
-                };
+                self.other = if c.is_empty() { OtherSide::New } else { OtherSide::Auto };
                 self.candidates = c;
             }
             Err(e) => self.error = format!("{e:#}"),
@@ -651,7 +647,10 @@ impl App {
     /// Asks for the other account of a transaction, or whether to separate a transfer.
     pub fn open_turn(&mut self, t: &Transaction) {
         self.dialog = Some(if t.kind == TxKind::Transfer {
-            Dialog::SeparateTransfer(Box::new(t.clone()), true)
+            // Both added by hand: none is the one that should go.
+            let added = |id| self.db.transaction(id).is_ok_and(|t| t.added);
+            let spare = !t.added && t.transfer_peer.is_some_and(added);
+            Dialog::SeparateTransfer(Box::new(t.clone()), !spare)
         } else {
             Dialog::TurnIntoTransfer(Box::new(TurnForm {
                 tx: t.clone(),

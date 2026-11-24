@@ -287,7 +287,6 @@ Transfer	Giroconto
 Transfer from {account}	Giroconto da {account}
 Transfer recorded	Giroconto registrato
 Transfer to {account}	Giroconto verso {account}
-Transfer: changes apply to both accounts.	Giroconto: le modifiche valgono per entrambi i conti.
 Transport:Car	Trasporti:Auto
 Transport:Fuel	Trasporti:Carburante
 Transport:Public transport	Trasporti:Mezzi pubblici
@@ -527,6 +526,13 @@ the transaction is a transfer already	il movimento è già un giroconto
 the transaction is split over several accounts: it cannot become a transfer	il movimento è suddiviso su più conti: non può diventare un giroconto
 the transaction is on an account added to the chart by hand: it cannot become a transfer	il movimento è su un conto aggiunto a mano al piano dei conti: non può diventare un giroconto
 transaction {id} is not the other side of this transfer: it needs the opposite amount, within {days} days, in the other account	il movimento {id} non è l'altro lato di questo giroconto: servono l'importo opposto, entro {days} giorni, nell'altro conto
-several transactions may be the other side, choose one of them or none: {which}	più movimenti possono essere l'altro lato, occorre sceglierne uno o nessuno: {which}
 the transaction is not a transfer	il movimento non è un giroconto
 What was changed here is not saved.	Le modifiche fatte qui non vengono salvate.
+these transactions may be the other side, choose one of them or none: {which}	questi movimenti possono essere l'altro lato, occorre sceglierne uno o nessuno: {which}
+the side of the transfer is on a statement already	il lato del giroconto è già su un estratto conto
+the parameter "{name}" must be true or false	il parametro «{name}» deve essere true o false
+Transfer: the amount changes in both accounts.	Giroconto: l'importo cambia in entrambi i conti.
+Side of a transfer that was there: {line}	Lato di un giroconto già presente: {line}
+It may be the side of a transfer (tx to-transfer --join): {line}	Può essere il lato di un giroconto (tx to-transfer --join): {line}
+Sides of transfers that are there already?	Lati di giroconti già presenti?
+Join	Unisci

@@ -23,8 +23,9 @@ account of the chart) or `split`. The amount and category of a split one cannot 
 Transfers between accounts of different currencies are refused.
 
 `transfer_candidates`, `turn_into_transfer` and `separate_transfer` make a transfer of an imported line and
-back. With several transactions that may be the other side, `turn_into_transfer` is refused and lists them:
-pass `match` with the id of one, or `"none"`.
+back. When transactions may be the other side, `turn_into_transfer` is refused and lists them: ask the user,
+then pass `match` with the id of one, or `"none"`. An import reports the lines that took the place of an
+added side of a transfer (`adopted`) and those that may (`maybe_transfers`). Booleans must be booleans.
 
 An account of the chart is named by its path or name, or as `ledger:5` (its `ledger_account_id`), `code:3010`
 or `system:uncategorized`; a bare number is refused. `post_scheduled` posts what it can: `failed` lists the

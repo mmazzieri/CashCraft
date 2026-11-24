@@ -3,11 +3,11 @@
 
 use crate::db::{Cents, Db, Transaction, TxFilter, TxKind, d2s, no_transaction};
 use crate::i18n::{tr, trf};
-use crate::ledger::{Draft, Line, OPENING, UNCATEGORIZED, split_error, too_big};
+use crate::ledger::{ADDED, Draft, Line, OPENING, UNCATEGORIZED, split_error, too_big};
+use crate::money::{fmt_date, fmt_eur};
 use anyhow::{Result, anyhow, bail};
 use chrono::NaiveDate;
 use serde::Serialize;
-use std::ops::RangeInclusive;
 
 /// How far apart the two banks may date the same transfer.
 pub const MAX_DAYS: i64 = 10;
@@ -15,7 +15,7 @@ pub const MAX_DAYS: i64 = 10;
 /// What to do about the other side of a transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OtherSide {
-    /// The one transaction that matches, a new one if there is none; refused when there are several.
+    /// A new one; refused when some transactions match, for the user to choose.
     Auto,
     /// A new one, even if some match.
     New,
@@ -30,6 +30,20 @@ pub struct Turned {
     pub other_id: i64,
     /// Whether the other side was a transaction already.
     pub joined: bool,
+}
+
+pub(crate) fn near(a: NaiveDate, b: NaiveDate) -> bool {
+    (a - b).num_days().abs() <= MAX_DAYS
+}
+
+/// Id, date, text, amount and category, for people to choose.
+fn describe(t: &Transaction) -> String {
+    format!("{} ({}, {}, {}, {})", t.id, fmt_date(t.date), t.payee, fmt_eur(t.amount), t.category)
+}
+
+/// The posting of a transaction, as a side with its own date and texts.
+fn own_side(posting: Line, t: &Transaction) -> Line {
+    Line { payee: Some(t.payee.clone()), memo: Some(t.memo.clone()), date: Some(d2s(t.date)), origin: None, ..posting }
 }
 
 impl Db {
@@ -57,7 +71,8 @@ impl Db {
         Ok(())
     }
 
-    /// The transactions of `account` that can be the other side of transaction `id`, nearest date first.
+    /// What can be the other side of transaction `id` in `account`, nearest date first: ordinary
+    /// transactions, and the far side of transfers whose near side was added and stands for this one.
     pub fn transfer_candidates(&self, id: i64, account: i64) -> Result<Vec<Transaction>> {
         let t = self.transaction(id)?;
         self.check_ordinary(&t)?;
@@ -66,30 +81,64 @@ impl Db {
         }
         self.check_transfer(t.account_id, account)?;
         let wanted = t.amount.checked_neg().ok_or_else(too_big)?;
-        self.matching(account, wanted, t.date, -MAX_DAYS..=MAX_DAYS)
-    }
-
-    /// Ordinary transactions of an account with this amount, within these days of `date`, nearest first.
-    fn matching(
-        &self,
-        account: i64,
-        amount: Cents,
-        date: NaiveDate,
-        near: RangeInclusive<i64>,
-    ) -> Result<Vec<Transaction>> {
-        let days = |x: &Transaction| (x.date - date).num_days();
-        let mut out = Vec::new();
-        for x in self.transactions(&TxFilter { account_id: Some(account), ..Default::default() })? {
-            if x.amount == amount && near.contains(&days(&x)) && self.is_ordinary(&x)? {
-                out.push(x);
+        let mut out = self.matching(account, wanted, t.date)?;
+        for side in self.added_sides(t.account_id)? {
+            if side.amount == t.amount
+                && near(side.date, t.date)
+                && let Some(peer) = side.transfer_peer
+            {
+                let peer = self.transaction(peer)?;
+                if peer.account_id == account {
+                    out.push(peer);
+                }
             }
         }
-        out.sort_by_key(|x| (days(x).abs(), x.id));
+        out.sort_by_key(|x| ((x.date - t.date).num_days().abs(), x.id));
         Ok(out)
     }
 
+    /// Ordinary transactions of an account with this amount near a date, nearest first.
+    pub(crate) fn matching(&self, account: i64, amount: Cents, date: NaiveDate) -> Result<Vec<Transaction>> {
+        let mut out = Vec::new();
+        for x in self.transactions(&TxFilter { account_id: Some(account), ..Default::default() })? {
+            if x.amount == amount && near(x.date, date) && self.is_ordinary(&x)? {
+                out.push(x);
+            }
+        }
+        out.sort_by_key(|x| ((x.date - date).num_days().abs(), x.id));
+        Ok(out)
+    }
+
+    /// The sides of transfers on an account that no statement has brought yet.
+    pub(crate) fn added_sides(&self, account: i64) -> Result<Vec<Transaction>> {
+        let mut all = self.transactions(&TxFilter { account_id: Some(account), ..Default::default() })?;
+        all.retain(|t| t.added);
+        Ok(all)
+    }
+
+    /// An imported line takes the place of an added side: its date, text and key move onto it.
+    pub(crate) fn adopt(&self, side: i64, date: NaiveDate, payee: &str, memo: &str, hash: &str) -> Result<()> {
+        self.atomically(|| {
+            let t = self.transaction(side)?;
+            if !t.added {
+                bail!(tr("the side of the transfer is on a statement already"));
+            }
+            let mut d = self.load_draft(t.entry_id)?;
+            for l in d.lines.iter_mut().filter(|l| l.id == Some(side)) {
+                l.payee = Some(payee.trim().into());
+                l.memo = Some(memo.trim().into());
+                l.date = Some(d2s(date));
+                l.import_hash = Some(hash.into());
+                l.cleared = true;
+                l.origin = None;
+            }
+            self.save_entry(&d)?;
+            Ok(())
+        })
+    }
+
     /// Turns a transaction into a transfer with `account`. When the other side is a transaction already,
-    /// the two become one entry.
+    /// the two become one entry; which one is never guessed.
     pub fn turn_into_transfer(&self, id: i64, account: i64, other: OtherSide) -> Result<Turned> {
         self.atomically(|| {
             let t = self.transaction(id)?;
@@ -102,32 +151,37 @@ impl Db {
                         &[("id", &x), ("days", &MAX_DAYS)],
                     ))
                 })?),
-                OtherSide::Auto => match candidates.as_slice() {
-                    [] => None,
-                    [one] => Some(one),
-                    several => {
-                        let ids: Vec<String> = several.iter().map(|c| format!("{} ({})", c.id, d2s(c.date))).collect();
-                        bail!(trf(
-                            "several transactions may be the other side, choose one of them or none: {which}",
-                            &[("which", &ids.join(", "))]
-                        ));
-                    }
-                },
+                OtherSide::Auto if candidates.is_empty() => None,
+                OtherSide::Auto => {
+                    let which: Vec<String> = candidates.iter().map(describe).collect();
+                    bail!(trf(
+                        "these transactions may be the other side, choose one of them or none: {which}",
+                        &[("which", &which.join("; "))]
+                    ));
+                }
             };
+            if let Some(far) = join.filter(|c| c.kind == TxKind::Transfer) {
+                // The transfer is there: this line takes the place of its added side.
+                let mut d = self.load_draft(far.entry_id)?;
+                let own = self.load_draft(t.entry_id)?;
+                let mine = own.lines.into_iter().find(|l| l.id == Some(id)).ok_or_else(|| no_transaction(id))?;
+                self.remove_entry(t.entry_id)?;
+                for l in d.lines.iter_mut().filter(|l| l.id != Some(far.id)) {
+                    *l = own_side(mine.clone(), &t);
+                }
+                self.save_entry(&d)?;
+                return Ok(Turned { id, other_id: far.id, joined: true });
+            }
             let mut d = self.load_draft(t.entry_id)?;
             let (_, i) = self.kind_of(&d, id)?;
             let (ledger, _) = self.money_ledger(account)?;
             let line = match join {
                 Some(x) => {
                     let old = self.load_draft(x.entry_id)?;
-                    let mine = old.lines.into_iter().find(|l| l.id == Some(x.id)).ok_or_else(|| no_transaction(x.id))?;
+                    let mine =
+                        old.lines.into_iter().find(|l| l.id == Some(x.id)).ok_or_else(|| no_transaction(x.id))?;
                     self.remove_entry(x.entry_id)?;
-                    Line {
-                        payee: Some(x.payee.clone()),
-                        memo: Some(x.memo.clone()),
-                        date: Some(d2s(x.date)),
-                        ..mine
-                    }
+                    own_side(mine, x)
                 }
                 None => {
                     let payee = if t.amount < 0 {
@@ -136,15 +190,23 @@ impl Db {
                         trf("Transfer to {account}", &[("account", &t.account)])
                     };
                     let old = d.lines.get(i).cloned().ok_or_else(too_big)?;
-                    Line { id: None, account: ledger, payee: Some(payee), cleared: false, import_hash: None, date: None, ..old }
+                    Line {
+                        id: None,
+                        account: ledger,
+                        payee: Some(payee),
+                        memo: Some(t.memo.clone()),
+                        cleared: false,
+                        import_hash: None,
+                        date: None,
+                        origin: Some(ADDED.into()),
+                        ..old
+                    }
                 }
             };
             for l in d.lines.iter_mut().filter(|l| l.id == Some(id)) {
                 // Its text stays its own when the other side is edited.
                 l.payee = Some(t.payee.clone());
-                if join.is_some() {
-                    l.memo = Some(t.memo.clone());
-                }
+                l.memo = Some(t.memo.clone());
                 // The entry takes its date.
                 d.date = d2s(t.date);
             }
@@ -183,7 +245,7 @@ impl Db {
                     memo: l.memo.clone().unwrap_or_else(|| d.memo.clone()),
                     opening: None,
                     lines: vec![
-                        Line { payee: None, memo: None, date: None, ..l.clone() },
+                        Line { payee: None, memo: None, date: None, origin: None, ..l.clone() },
                         Line {
                             id: Some(counter),
                             account: spare,

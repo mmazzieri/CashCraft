@@ -3,7 +3,7 @@
 
 use crate::db::{Cents, Db, RENAMED, SCHEMA, SCHEMA_VERSION};
 use crate::i18n::{tr, trf};
-use crate::ledger::{Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
+use crate::ledger::{ADDED, Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
 use anyhow::{Context, Result, bail};
 use rusqlite::backup::Backup;
 use rusqlite::{Connection, OpenFlags, params};
@@ -118,14 +118,16 @@ impl Db {
     /// holds the write lock: nobody changes the file between the backup and the end.
     pub(crate) fn migrate(&self, version: i64) -> Result<()> {
         let again = self.has_table("postings")?;
-        let current = again && self.has_posting_dates()?;
+        let dated = again && self.has_posting_column("date")?;
+        let current = dated && self.has_posting_column("origin")?;
         if current && !self.has_leftovers()? {
             return self.drop_leftovers();
         }
         // An older program may have written a lower number on a newer file.
-        let from = match (again, current) {
-            (false, _) => 1,
-            (_, false) => 2,
+        let from = match (again, dated, current) {
+            (false, _, _) => 1,
+            (_, false, _) => 2,
+            (_, _, false) => version.max(3),
             _ => SCHEMA_VERSION.max(version),
         };
         let copy = match &self.path {
@@ -134,11 +136,26 @@ impl Db {
             })?),
             None => None,
         };
-        let done = match (again, current) {
-            (false, _) => self.convert(),
-            (_, false) => self.add_posting_dates().and_then(|()| self.merge_leftovers()),
-            _ => self.merge_leftovers(),
-        };
+        let done = (|| -> Result<()> {
+            if !again {
+                self.convert()?;
+            }
+            if again && !dated {
+                self.conn.execute_batch("ALTER TABLE postings ADD COLUMN date TEXT")?;
+            }
+            if again && !current {
+                self.conn.execute_batch("ALTER TABLE postings ADD COLUMN origin TEXT")?;
+                self.repair_dates()?;
+            }
+            if again && self.has_leftovers()? {
+                self.merge_leftovers()?;
+            }
+            self.drop_leftovers()?;
+            if !current {
+                self.mark_added_sides()?;
+            }
+            Ok(())
+        })();
         if done.is_err()
             && let Some(p) = copy
         {
@@ -148,13 +165,36 @@ impl Db {
         done.context(tr("the data file cannot be updated to the new format; nothing was changed"))
     }
 
-    /// Format 3.
-    fn add_posting_dates(&self) -> Result<()> {
-        Ok(self.conn.execute_batch("ALTER TABLE postings ADD COLUMN date TEXT")?)
+    fn has_posting_column(&self, name: &str) -> Result<bool> {
+        Ok(self.conn.prepare("SELECT 1 FROM pragma_table_info('postings') WHERE name=?1")?.exists([name])?)
     }
 
-    fn has_posting_dates(&self) -> Result<bool> {
-        Ok(self.conn.prepare("SELECT 1 FROM pragma_table_info('postings') WHERE name='date'")?.exists([])?)
+    /// Format 3 left the date of a side that had lost the other one apart from the entry's.
+    fn repair_dates(&self) -> Result<()> {
+        let mut st = self.conn.prepare("SELECT DISTINCT entry_id FROM postings WHERE date IS NOT NULL")?;
+        let entries: Vec<i64> = st.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+        for id in entries {
+            self.save_entry(&self.load_draft(id)?)?;
+        }
+        Ok(())
+    }
+
+    /// Sides of transfers that were never imported.
+    fn mark_added_sides(&self) -> Result<()> {
+        let mut st = self.conn.prepare(
+            "SELECT entry_id FROM postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+             GROUP BY entry_id HAVING COUNT(*)=2 AND SUM(l.money_account_id IS NOT NULL)=2
+                AND COUNT(p.import_hash)<2 AND COUNT(p.payee)>0",
+        )?;
+        let entries: Vec<i64> = st.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+        for id in entries {
+            let mut d = self.load_draft(id)?;
+            for l in d.lines.iter_mut().filter(|l| l.import_hash.is_none() && l.payee.is_some() && l.date.is_none()) {
+                l.origin = Some(ADDED.into());
+            }
+            self.save_entry(&d)?;
+        }
+        Ok(())
     }
 
     /// An older program can mark a newer file with its own number, and add its tables, when both
@@ -368,6 +408,7 @@ impl Db {
                         payee: Some(p.payee.clone()),
                         memo: Some(p.memo.clone()).filter(|m| *m != r.memo),
                         date: None,
+                        origin: None,
                     });
                 }
                 None => {

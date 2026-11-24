@@ -231,10 +231,10 @@ pub enum TxCmd {
         id: i64,
         /// The other account (name or id)
         account: String,
-        /// Transaction to join as the other side (default: the only one that matches)
+        /// Transaction to join as the other side
         #[arg(long, conflicts_with = "no_match")]
         join: Option<i64>,
-        /// Add the other side even if a transaction matches
+        /// Add the other side even if some transactions match
         #[arg(long)]
         no_match: bool,
     },
@@ -684,6 +684,34 @@ fn print_entry(e: &Value) {
     }
 }
 
+/// Imported lines that are sides of transfers, or may be.
+fn print_transfers(result: &Value) {
+    let line = |t: &Value| {
+        format!(
+            "{:>5}  {}  {:<40} {:>13}",
+            st(field(t, "id")),
+            date(field(t, "date")),
+            cut(&st(field(t, "payee")), 40),
+            eur(field(t, "amount"))
+        )
+    };
+    for t in field(result, "adopted").as_array().into_iter().flatten() {
+        println!("{}", trf("Side of a transfer that was there: {line}", &[("line", &line(t))]));
+    }
+    for m in field(result, "maybe_transfers").as_array().into_iter().flatten() {
+        println!(
+            "{}",
+            trf(
+                "It may be the side of a transfer (tx to-transfer --join): {line}",
+                &[("line", &line(field(m, "transaction")))]
+            )
+        );
+        for c in field(m, "candidates").as_array().into_iter().flatten() {
+            println!("  {}", line(c));
+        }
+    }
+}
+
 fn st(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -910,6 +938,7 @@ fn print_human(tool: &str, r: &Value) {
             }
             if let Some(msg) = r.get("message") {
                 println!("{}", st(msg));
+                print_transfers(field(r, "result"));
             } else {
                 println!(
                     "{}",

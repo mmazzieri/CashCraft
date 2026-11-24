@@ -250,11 +250,15 @@ fn a_transaction_is_turned_into_a_transfer() {
             (f.other, f.error.is_empty())
         };
         assert_eq!(choice(&mut app, bank), (OtherSide::New, false));
-        assert_eq!(choice(&mut app, savings), (OtherSide::Join(into), true));
+        // Never chosen for the user, however few.
+        assert_eq!(choice(&mut app, savings), (OtherSide::Auto, true));
         let second = add(&app.db, savings, 50);
         assert_eq!(choice(&mut app, savings).0, OtherSide::Auto);
         app.db.delete_transaction(second).unwrap();
         choice(&mut app, savings);
+        if let Some(Dialog::TurnIntoTransfer(f)) = &mut app.dialog {
+            f.other = OtherSide::Join(into);
+        }
         // Account, the candidate, none of these, then the button.
         let ctx = egui::Context::default();
         let send = |app: &mut App, events: Vec<Event>| {
