@@ -1,6 +1,7 @@
 use crate::db::*;
 use crate::ledger::*;
 use crate::ops;
+use crate::transfers::OtherSide;
 use rusqlite::Connection;
 use serde_json::json;
 use std::path::Path;
@@ -407,7 +408,8 @@ struct Model {
     /// Opening balances, by account of the user.
     openings: std::collections::BTreeMap<i64, Cents>,
     hashes: std::collections::HashSet<(i64, String)>,
-    hash_of: std::collections::BTreeMap<i64, (i64, String)>,
+    /// The keys of an entry: a transfer may have two.
+    hash_of: Vec<(i64, (i64, String))>,
 }
 
 impl Model {
@@ -423,9 +425,12 @@ impl Model {
 
     fn remove(&mut self, entry: i64) {
         self.entries.remove(&entry);
-        if let Some(h) = self.hash_of.remove(&entry) {
-            self.hashes.remove(&h);
-        }
+        self.hash_of.retain(|(e, h)| {
+            if *e == entry {
+                self.hashes.remove(h);
+            }
+            *e != entry
+        });
     }
 }
 
@@ -449,7 +454,7 @@ fn step(db: &Db, m: &mut Model, r: &mut Lcg, n: usize) -> (String, anyhow::Resul
     let account = r.pick(&accounts).unwrap_or(0);
     let tx = if txs.is_empty() { None } else { Some(&txs[r.below(txs.len())]) };
     let (tx_id, tx_entry) = tx.map_or((0, 0), |t| (t.id, t.entry_id));
-    let what = r.below(25);
+    let what = r.below(29);
     let done: anyhow::Result<()> = (|| {
         match what {
             0 => {
@@ -478,7 +483,7 @@ fn step(db: &Db, m: &mut Model, r: &mut Lcg, n: usize) -> (String, anyhow::Resul
                     m.remove(id);
                 }
                 m.hashes.retain(|h| h.0 != account);
-                m.hash_of.retain(|_, h| h.0 != account);
+                m.hash_of.retain(|(_, h)| h.0 != account);
             }
             2 => {
                 let opening = if r.below(3) == 0 { 0 } else { r.amount() };
@@ -506,7 +511,7 @@ fn step(db: &Db, m: &mut Model, r: &mut Lcg, n: usize) -> (String, anyhow::Resul
                     m.entries.insert(entry, vec![(account, amount), (0, -amount)]);
                     if let Some(h) = hash {
                         m.hashes.insert((account, h.clone()));
-                        m.hash_of.insert(entry, (account, h));
+                        m.hash_of.push((entry, (account, h)));
                     }
                 }
             }
@@ -578,6 +583,68 @@ fn step(db: &Db, m: &mut Model, r: &mut Lcg, n: usize) -> (String, anyhow::Resul
                     db.entries(&EntryFilter::default())?.iter().flat_map(|e| e.postings.iter().map(|p| p.id)).collect();
                 db.set_posting_category(r.pick(&postings).unwrap_or(0), category)?;
             }
+            25 | 26 => {
+                // Half of them have something to join.
+                let t = tx.ok_or_else(|| anyhow::anyhow!("none"))?;
+                let mut target = account;
+                if what == 26 {
+                    let opposite = txs.iter().find(|x| x.amount == -t.amount && x.account_id != t.account_id);
+                    target = match opposite {
+                        Some(x) => x.account_id,
+                        None => {
+                            db.transfer_candidates(tx_id, target)?;
+                            let day = t.date + chrono::Days::new(r.below(10) as u64);
+                            let tx = NewTx { account_id: target, date: day, amount: -t.amount, ..Default::default() };
+                            let id = db.add_transaction(&tx)?.unwrap();
+                            m.entries.insert(db.transaction(id)?.entry_id, vec![(target, -t.amount), (0, t.amount)]);
+                            target
+                        }
+                    };
+                }
+                let candidates = db.transfer_candidates(tx_id, target)?;
+                let other = match r.pick(&candidates.iter().map(|c| (c.id, c.entry_id)).collect::<Vec<_>>()) {
+                    Some((id, entry)) => {
+                        m.entries.remove(&entry);
+                        for (e, _) in m.hash_of.iter_mut().filter(|h| h.0 == entry) {
+                            *e = tx_entry;
+                        }
+                        OtherSide::Join(id)
+                    }
+                    None => OtherSide::Auto,
+                };
+                let done = db.turn_into_transfer(tx_id, target, other)?;
+                m.entries.insert(tx_entry, vec![(t.account_id, t.amount), (target, -t.amount)]);
+                let (a, b) = (db.transaction(done.id)?, db.transaction(done.other_id)?);
+                assert_eq!((a.date, a.payee, a.memo), (t.date, t.payee.clone(), t.memo.clone()));
+                if let Some(c) = candidates.iter().find(|c| c.id == b.id) {
+                    assert_eq!((b.date, b.payee, b.memo), (c.date, c.payee.clone(), c.memo.clone()));
+                }
+            }
+            27 | 28 => {
+                let t = txs.iter().find(|t| t.kind == TxKind::Transfer).ok_or_else(|| anyhow::anyhow!("none"))?;
+                let peer = db.transaction(t.transfer_peer.unwrap())?;
+                let keep = r.below(2) == 0;
+                let other = db.separate_transfer(t.id, keep)?;
+                assert_eq!(other, t.transfer_peer.filter(|_| keep));
+                m.entries.insert(t.entry_id, vec![(t.account_id, t.amount), (0, -t.amount)]);
+                let moved = match other {
+                    Some(id) => db.transaction(id)?.entry_id,
+                    None => -1,
+                };
+                for (e, h) in m.hash_of.iter_mut() {
+                    if *e == t.entry_id && h.0 == peer.account_id {
+                        *e = moved;
+                    }
+                }
+                match other {
+                    Some(id) => {
+                        let now = db.transaction(id)?;
+                        assert_eq!((now.date, now.payee, now.memo), (peer.date, peer.payee, peer.memo));
+                        m.entries.insert(moved, vec![(peer.account_id, peer.amount), (0, -peer.amount)]);
+                    }
+                    None => m.remove(-1),
+                }
+            }
             _ => {
                 // Balanced but for the last case.
                 let mut lines: Vec<(i64, i64, Cents)> = (0..1 + r.below(5))
@@ -603,7 +670,7 @@ fn step(db: &Db, m: &mut Model, r: &mut Lcg, n: usize) -> (String, anyhow::Resul
 
 #[test]
 fn random_operations_keep_the_books_balanced_and_as_the_model() {
-    let mut worked = [0; 25];
+    let mut worked = [0; 29];
     for seed in 1..=25 {
         let mut r = Lcg(seed);
         let (db, a, b) = books();
@@ -645,7 +712,7 @@ fn random_operations_keep_the_books_balanced_and_as_the_model() {
         }
     }
     // Every operation was tried and some of each succeeded, but for the one that is never balanced.
-    assert!(worked.iter().take(24).all(|n| *n > 0) && worked[24] == 0, "{worked:?}");
+    assert!(worked.iter().enumerate().all(|(i, n)| (*n > 0) == (i != 24)), "{worked:?}");
     assert!(worked.iter().sum::<i32>() > 1500, "{worked:?}");
 }
 

@@ -533,6 +533,44 @@ fn a_file_without_transactions_and_an_empty_file_open() {
     assert_sound(&Db::open(&empty).unwrap().0, "empty");
 }
 
+/// Format 2 gets the dates of single postings, after a copy; everything else stays as it was.
+#[test]
+fn a_file_of_format_2_opens() {
+    let dir = Dir::new("format-2");
+    let old = Connection::open(dir.file()).unwrap();
+    old.execute_batch(include_str!("v2.sql")).unwrap();
+    old.execute_batch(
+        "INSERT INTO accounts(id,name,kind) VALUES (1,'Bank','bank'), (2,'Card','credit_card');
+         INSERT INTO categories(id,name) VALUES (1,'Home');
+         INSERT INTO entries(id,date,payee) VALUES (1,'2026-01-05','Shop'), (2,'2026-01-06','Moved');
+         INSERT INTO postings(id,entry_id,ledger_account_id,amount,currency,import_hash)
+         SELECT 1,1,id,-500,'EUR','h' FROM ledger_accounts WHERE money_account_id=1 UNION ALL
+         SELECT 2,1,id,500,'EUR',NULL FROM ledger_accounts WHERE category_id=1 UNION ALL
+         SELECT 3,2,id,-900,'EUR',NULL FROM ledger_accounts WHERE money_account_id=1 UNION ALL
+         SELECT 4,2,id,900,'EUR',NULL FROM ledger_accounts WHERE money_account_id=2;
+         PRAGMA user_version=2;",
+    )
+    .unwrap();
+    let before = dump(&old);
+    let (db, _) = Db::open(&dir.file()).unwrap();
+    assert_sound(&db, "format 2");
+    let figures = v2_figures(&db);
+    assert_eq!(figures.register.len(), 3);
+    assert_eq!(figures.accounts.iter().map(|a| a.2).collect::<Vec<_>>(), [-1400, 900]);
+    db.separate_transfer(3, true).unwrap();
+    assert_sound(&db, "format 2, changed");
+    let copy = Connection::open(dir.0.join("books.v2-backup.db")).unwrap();
+    assert_eq!(dump(&copy), before);
+    drop(db);
+    Db::open(&dir.file()).unwrap();
+    assert!(!dir.0.join("books.v2-backup-2.db").exists());
+    // A number written by an older program on a present file changes nothing.
+    old.pragma_update(None, "user_version", 1).unwrap();
+    let (db, _) = Db::open(&dir.file()).unwrap();
+    assert_sound(&db, "stamped");
+    assert_eq!(db.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+}
+
 #[test]
 fn a_backup_is_never_overwritten() {
     let dir = Dir::new("backup");

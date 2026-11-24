@@ -3,7 +3,7 @@
 Every amount in the data file is a *posting*. An *entry* is a date, a payee, a note and at least two
 postings whose debits equal their credits in each currency. Debit is positive, credit negative, so a
 posting on an account of the user has the sign people expect (negative = money out). Amounts are
-integers, in cents. Format 2 has no other record of money: balances, registers, budgets and reports
+integers, in cents. Since format 2 there is no other record of money: balances, registers, budgets and reports
 are sums of postings.
 
 ## Chart of accounts (`ledger_accounts`)
@@ -41,6 +41,27 @@ A transaction is a posting on an account of the user that is not an opening bala
 id of the posting. Its category is the other posting of the entry; `transfer_peer` is the other posting
 when that is on an account of the user too. Each side of a transfer keeps its own payee. Import hashes
 are unique in each account.
+
+## Turning a transaction into a transfer
+
+`turn_into_transfer` gives the other posting of a transaction to another account of the user. When the
+other account has its own transaction for the same money (opposite amount, at most 10 days apart) the two
+entries become one, with the postings of both: ids, texts, cleared marks and import hashes stay, so either
+statement can be imported again. Several that match are listed and none is chosen. Transactions on a
+category, on *Uncategorized* or on *Opening balances* (half a transfer of an older file) can be turned;
+splits, transfers and those on accounts added by hand cannot.
+
+The two banks may date the same transfer differently. The entry has the date of the transaction that was
+turned; a side with another one keeps it in `postings.date`. Registers, their running balances, filters and
+exports use the date of the side, so they go on agreeing with each bank's statement. The trial balance, the
+net worth over time and the journal use the date of the entry, so that debits equal credits on every date:
+for them both sides happen on that day. Editing the date of a side that has its own changes that
+one alone.
+
+`separate_transfer` gives each side an entry of its own, uncategorized, with its date and texts; the
+categories of before are not brought back. With `keep_other` false the other side goes instead, for one that
+was only added by mistake. An other side that was added, and not joined, has no import hash: the statement
+of its account, imported later, will add its own line.
 
 An entry with more than two postings shows as **Split**. Its date, payee, notes and cleared mark can be
 edited from the register; its amount and category cannot. Reports and the category filter see each of
@@ -91,6 +112,10 @@ was opened. It is read and changed as `opening_balance` of the account.
 
 `trial_balance` (up to a date) lists every balance with equal totals of debits and credits.
 `verify_ledger` checks each entry, posting and account and reports what is wrong; it changes nothing.
+
+## Migration from format 2
+
+The column `postings.date` is added, after a copy as `cashcraft.v2-backup.db` with the rules below.
 
 ## Migration from formats 0 and 1
 

@@ -9,6 +9,7 @@ use crate::ledger::{
     Class, Entry, EntryFilter, MAX_LINES, NewEntry, NewLine, TrialBalance, find_ledger_account, too_big,
 };
 use crate::money::{checked_total, fmt_date, fmt_eur, fmt_machine, fmt_plain, parse_amount, parse_date};
+use crate::transfers::OtherSide;
 use anyhow::{Result, anyhow, bail};
 use chrono::{Datelike, Months, NaiveDate};
 use serde_json::{Map, Value, json};
@@ -100,6 +101,31 @@ pub fn tools() -> Vec<ToolDef> {
                 json!({"from": s("Account to transfer from."), "to": s("Account to transfer to."), "amount": s("Positive amount in euros."),
                 "date": s(DATE), "memo": s("Notes.")}),
                 &["from", "to", "amount"],
+            ),
+        },
+        ToolDef {
+            name: "transfer_candidates",
+            description: "Lists the transactions of another account that may be the other side of a transaction: opposite amount, within 10 days, nearest first.",
+            schema: obj(
+                json!({"id": n("Id of the transaction."), "account": s("The other account: numeric id or name.")}),
+                &["id", "account"],
+            ),
+        },
+        ToolDef {
+            name: "turn_into_transfer",
+            description: "Turns a transaction into a transfer with another account. If the other side is there already as a transaction, the two are joined; with several that match, the call is refused and lists them. Ids, texts, dates and import keys are kept.",
+            schema: obj(
+                json!({"id": n("Id of the transaction."), "account": s("The other account: numeric id or name."),
+                "match": s("\"auto\" (default), \"none\" to add the other side anyway, or the id of the transaction to join.")}),
+                &["id", "account"],
+            ),
+        },
+        ToolDef {
+            name: "separate_transfer",
+            description: "Separates a transfer: both sides become uncategorized transactions.",
+            schema: obj(
+                json!({"id": n("Id of one side, which stays."), "keep_other": b("Keep the other side too (default true).")}),
+                &["id"],
             ),
         },
         ToolDef {
@@ -392,7 +418,7 @@ fn entry_json(e: &Entry) -> Value {
         .iter()
         .map(|p| {
             json!({"id": p.id, "ledger_account_id": p.account_id, "account": p.account, "amount": fmt_machine(p.amount),
-                   "currency": p.currency, "cleared": p.cleared})
+                   "currency": p.currency, "cleared": p.cleared, "date": p.date})
         })
         .collect();
     json!({"id": e.id, "date": e.date, "payee": e.payee, "memo": e.memo, "opening": e.opening, "postings": postings})
@@ -701,6 +727,32 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 &opt_str(a, "memo").unwrap_or_default(),
             )?;
             json!({"ids": [x, y], "message": tr("transfer recorded")})
+        }
+        "transfer_candidates" => {
+            let acc = db.find_account(&req_str(a, "account")?)?;
+            let found = db.transfer_candidates(req_i64(a, "id")?, acc.id)?;
+            json!({"count": found.len(), "transactions": found})
+        }
+        "turn_into_transfer" => {
+            let id = req_i64(a, "id")?;
+            let acc = db.find_account(&req_str(a, "account")?)?;
+            let other = match opt_str(a, "match").unwrap_or_default().trim() {
+                "" | "auto" => OtherSide::Auto,
+                "none" => OtherSide::New,
+                x => OtherSide::Join(x.parse().map_err(|_| {
+                    anyhow!(trf("\"{match}\" is neither auto, none nor the id of a transaction", &[("match", &x)]))
+                })?),
+            };
+            let done = db.turn_into_transfer(id, acc.id, other)?;
+            let message =
+                if done.joined { tr("the two transactions are one transfer now") } else { tr("transfer recorded") };
+            json!({"ids": [done.id, done.other_id], "joined": done.joined, "message": message})
+        }
+        "separate_transfer" => {
+            let id = req_i64(a, "id")?;
+            let keep = a.get("keep_other").is_none_or(Value::is_null) || opt_bool(a, "keep_other");
+            let other = db.separate_transfer(id, keep)?;
+            json!({"id": id, "other_id": other, "message": tr("transfer separated")})
         }
         "preview_csv" | "import_csv" => {
             let raw = req_str(a, "path")?;
@@ -1159,7 +1211,7 @@ mod tests {
                         "category": "Svago", "amount": 1, "monthly_amount": 1, "date": "2025-01-31",
                         "next_date": "2025-01-31", "id": 1, "class": "asset",
                         "posting_id": 2, "currency": "USD",
-                        "parent": "Conto corrente", "ledger_account": "Conto corrente", "code": "1",
+                        "parent": "Conto corrente", "match": "none", "ledger_account": "Conto corrente", "code": "1",
                         "postings": [{"account": "Conto corrente", "amount": "1,00"}, {"account": "Svago", "amount": -1}],
                         "path": "out.csv", "pattern": "x", "unit": "month"});
                     a[hostile.as_str()] = v.clone();

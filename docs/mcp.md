@@ -22,6 +22,10 @@ Transactions have an `entry_id` and a `kind`: `category`, `uncategorized`, `tran
 account of the chart) or `split`. The amount and category of a split one cannot be edited.
 Transfers between accounts of different currencies are refused.
 
+`transfer_candidates`, `turn_into_transfer` and `separate_transfer` make a transfer of an imported line and
+back. With several transactions that may be the other side, `turn_into_transfer` is refused and lists them:
+pass `match` with the id of one, or `"none"`.
+
 An account of the chart is named by its path or name, or as `ledger:5` (its `ledger_account_id`), `code:3010`
 or `system:uncategorized`; a bare number is refused. `post_scheduled` posts what it can: `failed` lists the
 rest, with the reason.

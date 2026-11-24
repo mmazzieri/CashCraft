@@ -538,13 +538,19 @@ impl App {
         let show_account = account.is_none();
         let show_balance =
             account.is_some() && self.search.is_empty() && self.cat_filter.is_none() && !self.only_uncategorized;
-        let bottom_bar = if self.selected.is_some() { 44.0 } else { 0.0 };
         let avail = ui.available_size();
+        // In a narrow window the commands of the selected row take two lines.
+        let bottom_bar = match self.selected {
+            None => 0.0,
+            Some(_) if avail.x < 940.0 => 78.0,
+            Some(_) => 44.0,
+        };
         let table_h = (avail.y - bottom_bar).max(120.0);
         let mut open_edit: Option<Transaction> = None;
         let mut toggle_cleared: Option<(i64, bool)> = None;
         let mut delete: Option<Transaction> = None;
         let mut open_entry: Option<i64> = None;
+        let mut turn: Option<Transaction> = None;
         let mut set_cat: Option<(i64, Option<i64>)> = None;
         let mut want_import = false;
         let cats = self.categories.clone();
@@ -618,6 +624,9 @@ impl App {
                             CARD
                         };
                         p.rect_filled(rect, CornerRadius::ZERO, bg);
+                        if resp.has_focus() {
+                            p.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, ACCENT), egui::StrokeKind::Inside);
+                        }
                         let mut x = rect.left() + 12.0;
                         let mut cell = |cw: f32, text: &str, color: Color32, right: bool, size: f32| {
                             if cw <= 0.0 {
@@ -692,6 +701,9 @@ impl App {
                                     });
                                 });
                             }
+                            if turn_button(ui, &tc) {
+                                turn = Some(tc.clone());
+                            }
                             if !has_category(&tc) && ui.button(tr("📖 Entry…")).clicked() {
                                 open_entry = Some(tc.entry_id);
                             }
@@ -710,7 +722,7 @@ impl App {
             && let Some(t) = self.txs.iter().find(|t| t.id == sel).cloned()
         {
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(format!("{} · {}", fmt_date(t.date), cut(&t.payee, 40))).strong());
                 ui.label(money(t.amount));
                 if has_category(&t) {
@@ -718,6 +730,9 @@ impl App {
                     if category_combo(ui, "selcat", &cats, &mut c, tr("Uncategorized")) {
                         set_cat = Some((t.id, c));
                     }
+                }
+                if turn_button(ui, &t) {
+                    turn = Some(t.clone());
                 }
                 if !has_category(&t) && ui.button(tr("📖 Entry…")).clicked() {
                     open_entry = Some(t.entry_id);
@@ -744,6 +759,9 @@ impl App {
         if let Some((id, c)) = set_cat {
             let r = self.db.set_category(id, c).map(|_| tr("Category updated").to_string());
             self.act(ui, r);
+        }
+        if let Some(t) = turn {
+            self.open_turn(&t);
         }
         if let Some(id) = open_entry {
             self.dialog = Some(Dialog::EntryDetail(id));
@@ -1261,4 +1279,16 @@ impl App {
             self.act(ui, r);
         }
     }
+}
+
+/// The button that turns a transaction into a transfer, or separates one; whether it was clicked.
+pub fn turn_button(ui: &mut Ui, t: &Transaction) -> bool {
+    let text = match t.kind {
+        TxKind::Split => return false,
+        TxKind::Transfer => tr("🔀 Separate the transfer…"),
+        _ => tr("🔁 Turn into transfer…"),
+    };
+    ui.button(text)
+        .on_hover_text(tr("Money moved between two of your accounts is neither income nor an expense (⌘T)."))
+        .clicked()
 }

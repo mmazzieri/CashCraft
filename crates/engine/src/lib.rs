@@ -11,4 +11,5 @@ mod migrate;
 pub mod money;
 pub mod ops;
 mod paths;
+pub mod transfers;
 mod xls;

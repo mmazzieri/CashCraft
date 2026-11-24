@@ -32,7 +32,7 @@ pub const MAX_TURNOVER: Cents = 4_000_000_000_000_000_000;
 
 const MAX_DEPTH: usize = 16;
 
-/// The ledger of format 2. A row linked to an account of the user or to a category has no name of
+/// The ledger since format 2 (`postings.date` since 3). A row linked to an account of the user or to a category has no name of
 /// its own, so that names are in one place; triggers keep exactly one row for each of them.
 pub(crate) const LEDGER_SCHEMA: &str = r#"
 CREATE TABLE ledger_accounts (
@@ -65,7 +65,8 @@ CREATE TABLE postings (
     cleared INTEGER NOT NULL DEFAULT 0,
     import_hash TEXT,
     payee TEXT,
-    memo TEXT
+    memo TEXT,
+    date TEXT
 );
 CREATE INDEX posting_entry ON postings(entry_id);
 CREATE INDEX posting_account ON postings(ledger_account_id);
@@ -219,6 +220,8 @@ pub struct Posting {
     pub amount: Cents,
     pub currency: String,
     pub cleared: bool,
+    /// When it is not the entry's.
+    pub date: Option<NaiveDate>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -292,6 +295,8 @@ pub(crate) struct Line {
     /// The text of this side alone (the two sides of a transfer), instead of the entry's.
     pub payee: Option<String>,
     pub memo: Option<String>,
+    /// The date of this side alone, when its bank has another one than the entry's.
+    pub date: Option<String>,
 }
 
 /// What an account of the chart is, for the checks.
@@ -394,8 +399,10 @@ impl Db {
         self.check_draft(d)?;
         self.atomically(|| {
             let mut touched: HashSet<i64> = d.lines.iter().map(|l| l.account).collect();
+            let mut current = Vec::new();
             let entry = match d.id {
                 Some(id) => {
+                    current = self.posting_ids(id)?;
                     touched.extend(self.load_draft(id)?.lines.iter().map(|l| l.account));
                     let n = self
                         .conn
@@ -405,9 +412,9 @@ impl Db {
                         return Err(no_entry(id));
                     }
                     let kept: HashSet<i64> = d.lines.iter().filter_map(|l| l.id).collect();
-                    for old in self.posting_ids(id)? {
-                        if !kept.contains(&old) {
-                            self.conn.execute("DELETE FROM postings WHERE id=?1", [old])?;
+                    for old in &current {
+                        if !kept.contains(old) {
+                            self.conn.execute("DELETE FROM postings WHERE id=?1", [*old])?;
                         }
                     }
                     id
@@ -421,13 +428,15 @@ impl Db {
             };
             let mut ids = Vec::with_capacity(d.lines.len());
             for l in &d.lines {
+                // A date like the entry's is the entry's.
+                let date = l.date.as_ref().filter(|x| **x != d.date);
                 let id = match l.id {
-                    Some(id) if d.id.is_some() => {
+                    Some(id) if current.contains(&id) => {
                         let n = self
                             .conn
                             .prepare_cached(
                                 "UPDATE postings SET ledger_account_id=?3, amount=?4, currency=?5, cleared=?6,
-                                        import_hash=?7, payee=?8, memo=?9 WHERE id=?1 AND entry_id=?2",
+                                        import_hash=?7, payee=?8, memo=?9, date=?10 WHERE id=?1 AND entry_id=?2",
                             )?
                             .execute(params![
                                 id,
@@ -438,7 +447,8 @@ impl Db {
                                 l.cleared as i64,
                                 l.import_hash,
                                 l.payee,
-                                l.memo
+                                l.memo,
+                                date
                             ])?;
                         if n != 1 {
                             return Err(no_entry(entry));
@@ -449,8 +459,8 @@ impl Db {
                         self.conn
                             .prepare_cached(
                                 "INSERT INTO postings(id,entry_id,ledger_account_id,amount,currency,cleared,
-                                                      import_hash,payee,memo)
-                                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                                                      import_hash,payee,memo,date)
+                                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                             )?
                             .execute(params![
                                 wanted,
@@ -461,7 +471,8 @@ impl Db {
                                 l.cleared as i64,
                                 l.import_hash,
                                 l.payee,
-                                l.memo
+                                l.memo,
+                                date
                             ])?;
                         self.conn.last_insert_rowid()
                     }
@@ -570,7 +581,7 @@ impl Db {
             .optional()?
             .ok_or_else(|| no_entry(id))?;
         let mut st = self.conn.prepare_cached(
-            "SELECT id, ledger_account_id, amount, currency, cleared, import_hash, payee, memo
+            "SELECT id, ledger_account_id, amount, currency, cleared, import_hash, payee, memo, date
              FROM postings WHERE entry_id=?1 ORDER BY id",
         )?;
         let lines = st.query_map([id], |r| {
@@ -583,6 +594,7 @@ impl Db {
                 import_hash: r.get(5)?,
                 payee: r.get(6)?,
                 memo: r.get(7)?,
+                date: r.get(8)?,
             })
         })?;
         for l in lines {
@@ -605,7 +617,7 @@ impl Db {
     }
 
     /// What the transaction is, and the index of the posting on the other side when there is one.
-    fn kind_of(&self, d: &Draft, posting: i64) -> Result<(TxKind, usize)> {
+    pub(crate) fn kind_of(&self, d: &Draft, posting: i64) -> Result<(TxKind, usize)> {
         let [a, b] = d.lines.as_slice() else { return Ok((TxKind::Split, 0)) };
         let (me, other, i) = if a.id == Some(posting) { (a, b, 1) } else { (b, a, 0) };
         let row = self.ledger_row(other.account)?;
@@ -700,7 +712,12 @@ impl Db {
             _ => None,
         };
         let (payee, memo) = (tx.payee.trim().to_string(), tx.memo.trim().to_string());
-        d.date = d2s(tx.date);
+        // A side with a date of its own changes that one; the others follow the entry.
+        let date = d2s(tx.date);
+        match d.lines.iter_mut().find(|l| l.id == Some(id)) {
+            Some(l) if l.date.is_some() => l.date = Some(date),
+            _ => d.date = date,
+        }
         for (i, l) in d.lines.iter_mut().enumerate() {
             let mine = l.id == Some(id);
             if mine {
@@ -853,7 +870,7 @@ impl Db {
     }
 
     /// Every side of an entry goes, so the books stay balanced.
-    fn remove_entry(&self, id: i64) -> Result<()> {
+    pub(crate) fn remove_entry(&self, id: i64) -> Result<()> {
         self.conn.execute("DELETE FROM entries WHERE id=?1", [id])?;
         Ok(())
     }
@@ -1159,6 +1176,7 @@ impl Db {
                 amount: l.amount,
                 currency: l.currency,
                 cleared: l.cleared,
+                date: l.date.as_deref().map(s2d),
             })
             .collect();
         Ok(Entry { id, date: s2d(&d.date), payee: d.payee, memo: d.memo, opening: d.opening.is_some(), postings })

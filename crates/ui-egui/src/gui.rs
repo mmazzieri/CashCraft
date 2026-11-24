@@ -7,6 +7,7 @@ use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Db, Sche
 use cashcraft_engine::i18n::{self, Lang, lang, tr, trf};
 use cashcraft_engine::importer::{self, ImportResult, Mapping, ParsedRow, Table};
 use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_number, month_short, total};
+use cashcraft_engine::transfers::OtherSide;
 use cashcraft_engine::{demo, ops};
 use chrono::{Datelike, NaiveDate};
 use egui::{self, Align2, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
@@ -179,6 +180,37 @@ pub struct TransferForm {
     pub error: String,
 }
 
+/// A transaction that becomes a transfer.
+pub struct TurnForm {
+    pub tx: Transaction,
+    pub account: Option<i64>,
+    /// What may be the other side in that account.
+    pub candidates: Vec<Transaction>,
+    /// `Auto` is not chosen yet.
+    pub other: OtherSide,
+    pub error: String,
+}
+
+impl TurnForm {
+    pub fn reload(&mut self, db: &Db) {
+        self.error.clear();
+        self.candidates.clear();
+        self.other = OtherSide::New;
+        let Some(account) = self.account else { return };
+        match db.transfer_candidates(self.tx.id, account) {
+            Ok(c) => {
+                self.other = match c.as_slice() {
+                    [] => OtherSide::New,
+                    [one] => OtherSide::Join(one.id),
+                    _ => OtherSide::Auto,
+                };
+                self.candidates = c;
+            }
+            Err(e) => self.error = format!("{e:#}"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AccountForm {
     pub id: Option<i64>,
@@ -250,6 +282,9 @@ impl ImportState {
 pub enum Dialog {
     Tx(TxForm),
     Transfer(TransferForm),
+    TurnIntoTransfer(Box<TurnForm>),
+    /// A side of a transfer, and whether the other one stays.
+    SeparateTransfer(Box<Transaction>, bool),
     Account(AccountForm),
     Import(Box<ImportState>),
     Scheduled(SchedForm),
@@ -468,7 +503,7 @@ impl App {
         if let Ok(v) = std::env::var("CASHCRAFT_START_VIEW") {
             let first = app.accounts.first().map(|a| a.id);
             app.view = match v.as_str() {
-                "register" | "movimenti" => View::Register(first),
+                "register" | "movimenti" | "selected" | "transfer" => View::Register(first),
                 "all" | "tutti" => View::Register(None),
                 "reports" | "report" => View::Reports,
                 "budget" => View::Budget,
@@ -481,6 +516,17 @@ impl App {
             app.reload_txs();
             if v == "import" || v == "importa" {
                 app.open_import(None);
+            }
+            if v == "selected" || v == "transfer" {
+                let t = app.txs.iter().find(|t| has_category(t) && t.amount < 0).cloned();
+                app.selected = t.as_ref().map(|t| t.id);
+                if let Some(t) = t.filter(|_| v == "transfer") {
+                    app.open_turn(&t);
+                    if let Some(Dialog::TurnIntoTransfer(f)) = &mut app.dialog {
+                        f.account = app.accounts.iter().find(|a| a.id != t.account_id).map(|a| a.id);
+                        f.reload(&app.db);
+                    }
+                }
             }
             if v == "entry" {
                 app.open_entry();
@@ -602,6 +648,21 @@ impl App {
         }));
     }
 
+    /// Asks for the other account of a transaction, or whether to separate a transfer.
+    pub fn open_turn(&mut self, t: &Transaction) {
+        self.dialog = Some(if t.kind == TxKind::Transfer {
+            Dialog::SeparateTransfer(Box::new(t.clone()), true)
+        } else {
+            Dialog::TurnIntoTransfer(Box::new(TurnForm {
+                tx: t.clone(),
+                account: None,
+                candidates: vec![],
+                other: OtherSide::New,
+                error: String::new(),
+            }))
+        });
+    }
+
     pub fn open_import(&mut self, path: Option<PathBuf>) {
         let mut st = ImportState { account: self.default_account(), ..Default::default() };
         if let Some(p) = path {
@@ -717,6 +778,12 @@ impl eframe::App for App {
             }
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::I)) {
                 self.open_import(None);
+            }
+            if matches!(self.view, View::Register(_))
+                && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::T))
+                && let Some(t) = self.txs.iter().find(|t| Some(t.id) == self.selected).cloned()
+            {
+                self.open_turn(&t);
             }
         }
 
