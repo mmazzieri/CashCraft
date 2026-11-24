@@ -285,3 +285,34 @@ fn equal_rows_of_two_statements_are_kept() {
     let key = |r: &CardRow| r.key.clone();
     assert!(a.iter().map(key).all(|k| !b.iter().map(key).any(|x| x == k)));
 }
+
+/// Totals that add up are not enough: a row that was not read, or a card without its number.
+#[test]
+fn what_was_not_read_is_never_sound() {
+    let item = |page, x, y, text: &str| Item { page, x, y, text: text.into() };
+    let mut v = statement();
+    v.extend([item(1, 34.0, 454.0, "31/11/26"), item(1, 75.0, 454.0, "X"), item(1, 370.0, 454.0, "0,00")]);
+    let s = read(&v, Font::Type3).unwrap();
+    assert!(s.checks.iter().all(Check::ok) && s.unread == 1 && !s.is_sound());
+    let mut v = statement();
+    for i in v.iter_mut().filter(|i| i.page == 2) {
+        i.text = i.text.replace("************1234", "************");
+    }
+    let s = read(&v, Font::Type3).unwrap();
+    assert!(s.checks.iter().all(Check::ok) && s.cards == ["1234"] && !s.is_identified() && !s.is_sound());
+}
+
+#[test]
+fn the_figure_of_another_heading_is_not_that_of_the_debit() {
+    let mut v = statement();
+    // Nearer, but below the heading on the left, and one further right.
+    v.push(Item { page: 0, x: 40.0, y: 130.0, text: "Euro 1,00".into() });
+    v.push(Item { page: 0, x: 520.0, y: 130.0, text: "2,00".into() });
+    let s = read(&v, Font::Type3).unwrap();
+    assert!(s.is_sound(), "{:?}", s.checks);
+    // Without a figure of its own there is nothing to compare.
+    v.retain(|i| i.page != 0 || i.x < 200.0 || !i.text.starts_with("Euro"));
+    v.retain(|i| i.page != 0 || i.text != "2,00");
+    let s = read(&v, Font::Type3).unwrap();
+    assert!(s.checks.iter().all(|c| c.kind != CheckKind::FirstPage) && s.is_sound());
+}
