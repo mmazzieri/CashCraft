@@ -373,10 +373,13 @@ pub fn parse(pages: &[Page]) -> Result<Statement> {
         bail!(unknown());
     }
     for l in &summary {
-        if let Some((_, next)) = find_label(&l.words, "DEBITORESIDUOAL")
-            && let Some(d) = l.words.get(next).and_then(|w| day(&w.text))
-        {
-            s.closing = Some(d);
+        // The date can be glued to the word before it.
+        if let Some((start, _)) = find_label(&l.words, "DEBITORESIDUOAL") {
+            let text: String = l.words.iter().skip(start).map(|w| w.text.as_str()).collect();
+            let date = text.char_indices().find(|(_, c)| c.is_ascii_digit()).and_then(|(i, _)| text.get(i..i + 10));
+            if let Some(d) = date.filter(|d| d.matches('/').count() == 2).and_then(crate::money::parse_date) {
+                s.closing = Some(d);
+            }
         }
     }
     let closing_label = s.closing.map(|d| format!("DEBITORESIDUOAL{}", d.format("%d%m%Y")));

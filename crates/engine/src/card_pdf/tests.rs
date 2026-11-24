@@ -293,3 +293,11 @@ fn operations_preview_and_import_a_pdf() {
     assert_eq!(call("list_card_statements", json!({})).unwrap()["statements"].as_array().unwrap().len(), 1);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// The real statement has no gap between the word and the date.
+#[test]
+fn the_closing_date_is_read_when_glued_to_its_label() {
+    let items = with(&[("Debito residuo al 30/11/2026", "Debito residuo al30/11/2026")]);
+    let s = read(&items, Font::Type3).unwrap();
+    assert_eq!(s.closing, NaiveDate::from_ymd_opt(2026, 11, 30));
+}
