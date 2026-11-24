@@ -216,7 +216,7 @@ impl ImportState {
         self.table = None;
         self.rows.clear();
         let p = PathBuf::from(self.path_text.trim());
-        match importer::read_text(&p).and_then(|(t, enc)| importer::analyze(&t, enc)) {
+        match importer::load(&p) {
             Ok(t) => {
                 self.mapping = t.mapping.clone();
                 self.table = Some(t);

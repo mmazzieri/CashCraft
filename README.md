@@ -34,7 +34,7 @@
 - **Categories and rules**: nested categories and keyword rules that categorize new and imported
   transactions automatically.
 - **Scheduled transactions**: recurring payments and transfers, posted when due.
-- **Italian bank CSV import**: detects the encoding (UTF-8 or Windows-1252), the separator, the
+- **Italian bank CSV and Excel 97 (`.xls`) import**, BPER's included: detects the encoding (UTF-8 or Windows-1252), the separator, the
   heading lines to skip and the columns by name (*Data contabile*, *Data valuta*, *Descrizione*,
   *Causale*, *Importo*, *Accrediti/Addebiti*, *Entrate/Uscite*, *Dare/Avere*…); reads Italian
   amounts (`1.234,56`) and dates (`dd/mm/yyyy`); pulls the merchant out of card payment
@@ -107,12 +107,12 @@ Files are UTF-8. Choose a layout with, for example, `CASHCRAFT_LANG=en cashcraft
 
     cashcraft-cli mcp --automation-read-root <folder> --automation-write-root <folder>
 
-Both folders are required: the agent may only import CSV files from the read folder and only
+Both folders are required: the agent may only import statements from the read folder and only
 write exports into the write folder. The server always speaks English. See [docs/mcp.md](docs/mcp.md).
 
 ## Building
 
-Needs Rust 1.92 or newer.
+Needs Rust 1.95 or newer.
 
     cargo run --release -p cashcraft
     cargo xtask ci      # fmt, clippy -D warnings, tests
