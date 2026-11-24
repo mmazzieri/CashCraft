@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=CashCraft
+GenericName=Personal finance
+GenericName[it]=Finanze personali
+Comment=Personal finance with bank statement import
+Comment[it]=Finanze personali con importazione degli estratti conto
+Exec=cashcraft
+TryExec=cashcraft
+Icon=it.mauromazzieri.cashcraft
+Terminal=false
+StartupNotify=true
+StartupWMClass=it.mauromazzieri.cashcraft
+Categories=Office;Finance;
+Keywords=money;bank;budget;expenses;conti;banca;spese;bilancio;

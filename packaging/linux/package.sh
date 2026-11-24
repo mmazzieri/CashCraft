@@ -1,45 +1,83 @@
-#!/bin/sh
-# Builds the Linux release files for this machine's processor:
-#   dist/cashcraft-<ver>-linux-<arch>.tar.gz    both programs, desktop entry, icon, licences
-#   dist/cashcraft-<ver>-linux-<arch>.deb       Debian/Ubuntu package (cargo-packager)
-#   dist/cashcraft-<ver>-linux-<arch>.AppImage  single-file app (cargo-packager)
+#!/usr/bin/env bash
+# Build and package CashCraft for Linux (<arch> is x86_64 or aarch64):
 #
-# Usage: packaging/linux/package.sh        (needs: cargo install cargo-packager --locked)
-set -eu
-cd "$(dirname "$0")/../.."
+#   $DIST/cashcraft-<version>-linux-<arch>.deb       Debian, Ubuntu, Mint, ...
+#   $DIST/cashcraft-<version>-linux-<arch>.rpm       Fedora, openSUSE, RHEL, ...
+#   $DIST/cashcraft-<version>-linux-<arch>.tar.gz    plain tree (bin/, share/)
+#
+# No AppImage: its runtime links libfuse (LGPL-2.1), which the license policy keeps out of releases.
+#
+# Usage: packaging/linux/package.sh [--skip-build] [--formats "deb rpm tar"]
+#
+# Needs: cargo; nfpm for deb/rpm. Build on an
+# old distro (CI: Ubuntu 22.04, glibc 2.35) so the binary runs on newer ones.
+# Adapted from storytold/craft-launcher (packaging/linux/package.sh, MIT OR Apache-2.0).
+set -euo pipefail
+# shellcheck source=../env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
+HERE="$ROOT/packaging/linux"
 
-VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
-case "$(uname -m)" in
-    x86_64 | amd64) ARCH=x86_64 ;;
-    aarch64 | arm64) ARCH=aarch64 ;;
-    riscv64) ARCH=riscv64 ;;
-    *) echo "unsupported processor: $(uname -m)" >&2; exit 2 ;;
+SKIP_BUILD=0
+FORMATS="deb rpm tar"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-build) SKIP_BUILD=1; shift ;;
+    --formats) FORMATS="$(printf %s "$2" | tr ',' ' ')"; shift 2 ;;
+    -h | --help) sed -n '2,18p' "$0"; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64) DEB_ARCH=amd64 ;;
+  aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
+  *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
-ID=io.github.mmazzieri.cashcraft
-DIST=dist
-mkdir -p "$DIST"
+BASENAME="$PKG-$VERSION-linux-$ARCH"
+has() { case " $FORMATS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
-echo "→ Building CashCraft $VERSION ($ARCH)"
-cargo build --release --bins
+echo "==> $APP_NAME $VERSION for Linux $ARCH ($FORMATS)"
+if [[ "$SKIP_BUILD" = 0 ]]; then
+  (cd "$ROOT" && cargo build --release --locked -p "$PKG" -p "$PKG-cli")
+fi
+BIN="$CARGO_TARGET_DIR/release"
+WORK="$CARGO_TARGET_DIR/linux-package"
+STAGE="$WORK/root"
+rm -rf "$WORK"
 
-NAME="cashcraft-$VERSION-linux-$ARCH"
-STAGE="$DIST/$NAME"
-echo "→ Creating $DIST/$NAME.tar.gz"
-rm -rf "$STAGE"
-mkdir -p "$STAGE/bin" "$STAGE/share/applications" "$STAGE/share/icons/hicolor/256x256/apps" \
-    "$STAGE/share/icons/hicolor/512x512/apps"
-cp target/release/cashcraft target/release/cashcraft-cli "$STAGE/bin/"
-cp packaging/linux/$ID.desktop "$STAGE/share/applications/"
-cp assets/icons/256x256.png "$STAGE/share/icons/hicolor/256x256/apps/$ID.png"
-cp assets/icons/512x512.png "$STAGE/share/icons/hicolor/512x512/apps/$ID.png"
-cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "$STAGE/"
-tar -C "$DIST" -czf "$DIST/$NAME.tar.gz" "$NAME"
-rm -rf "$STAGE"
+# ---- FHS tree shared by every format -------------------------------------------------------
+for b in "$PKG" "$PKG-cli"; do
+  install -Dm755 "$BIN/$b" "$STAGE/usr/bin/$b"
+  strip "$STAGE/usr/bin/$b" 2>/dev/null || true
+done
+install -Dm644 "$HERE/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
+mkdir -p "$STAGE/usr/share/icons"
+cp -R "$ROOT/assets/app-icon/hicolor" "$STAGE/usr/share/icons/"
+mkdir -p "$STAGE/usr/share/doc/$PKG"
+copy_docs "$STAGE/usr/share/doc/$PKG"
+if command -v desktop-file-validate >/dev/null; then
+  desktop-file-validate "$STAGE/usr/share/applications/$APP_ID.desktop"
+fi
 
-echo "→ Creating .deb and .AppImage"
-rm -rf target/packager
-APPIMAGE_EXTRACT_AND_RUN=1 cargo packager --release --formats deb,appimage
-for f in target/packager/*.deb; do cp "$f" "$DIST/$NAME.deb"; done
-for f in target/packager/*.AppImage; do cp "$f" "$DIST/$NAME.AppImage"; chmod +x "$DIST/$NAME.AppImage"; done
+# ---- .tar.gz -------------------------------------------------------------------------------
+if has tar; then
+  mkdir -p "$WORK/tar"
+  cp -R "$STAGE/usr" "$WORK/tar/$BASENAME"
+  tar -C "$WORK/tar" -czf "$DIST/$BASENAME.tar.gz" "$BASENAME"
+  echo "wrote $DIST/$BASENAME.tar.gz"
+fi
 
-ls -l "$DIST/$NAME".*
+# ---- .deb / .rpm ---------------------------------------------------------------------------
+if has deb || has rpm; then
+  command -v nfpm >/dev/null || { echo "error: nfpm not found (https://nfpm.goreleaser.com/install/)" >&2; exit 1; }
+  export NFPM_ARCH="$DEB_ARCH"
+  export GLIBC_FLOOR="${GLIBC_FLOOR:-2.35}"
+  sed "s|\${STAGE}|$STAGE|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
+  for fmt in deb rpm; do
+    if has "$fmt"; then (cd "$ROOT" && nfpm package -f "$WORK/nfpm.yaml" -p "$fmt" -t "$DIST/$BASENAME.$fmt"); fi
+  done
+fi
+
+echo "==> done"
+ls -lh "$DIST"

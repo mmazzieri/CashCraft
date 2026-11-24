@@ -1,115 +1,137 @@
-# Builds every installer and drafts a GitHub Release with SHA256SUMS.txt.
-# Runs when a version tag (v0.1.0) is pushed, or by hand from the Actions tab.
 name: Release
 
+# A tag vX.Y.Z builds every package and opens a draft GitHub release with them and
+# SHA256SUMS.txt; the release is published by hand. A pull request that touches the
+# packaging builds the same packages without releasing anything, so they are tested
+# before a tag.
 on:
   push:
-    tags: ['v*']
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "assets/app-icon/**"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:
-  contents: write
-
-env:
-  CARGO_TERM_COLOR: always
+  contents: read
 
 jobs:
-  macos:
-    runs-on: macos-14
-    env:
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - name: Import the Developer ID certificate
-        if: env.APPLE_CERTIFICATE != ''
-        run: |
-          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security import "$RUNNER_TEMP/cert.p12" -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-          rm "$RUNNER_TEMP/cert.p12"
-      - name: Package
-        run: sh packaging/macos/package.sh --arch universal
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos
-          path: |
-            dist/*.dmg
-            dist/*.zip
-
-  windows:
-    runs-on: windows-latest
-    env:
-      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-packager
-        run: cargo install cargo-packager --locked
-      - name: Package
-        shell: pwsh
-        run: ./packaging/windows/package.ps1
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows
-          path: |
-            dist/*.msi
-            dist/*.zip
-
   linux:
     strategy:
+      fail-fast: false
       matrix:
+        # Ubuntu 22.04: glibc 2.35, so the binaries run on newer distros.
         runner: [ubuntu-22.04, ubuntu-22.04-arm]
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: System libraries
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Install nfpm and rpm
         run: |
+          set -euo pipefail
+          case "$(dpkg --print-architecture)" in
+            amd64) sha=45650c5f6109685436fa6ba91958eb93e09a899bb0d65dd5b7c3c66020c056d2 ;;
+            arm64) sha=f6c77951e74a267fade0c6a14fa66eee35a750cd23da483e39d2e92a6b307527 ;;
+          esac
+          curl --proto '=https' -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
+            "https://github.com/goreleaser/nfpm/releases/download/v2.49.0/nfpm_2.49.0_$(dpkg --print-architecture).deb"
+          echo "$sha  $RUNNER_TEMP/nfpm.deb" | sha256sum -c -
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb-render0-dev \
-            libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev libfuse2 file
-      - name: Install cargo-packager
-        run: cargo install cargo-packager --locked
-      - name: Package
-        run: sh packaging/linux/package.sh
-      - uses: actions/upload-artifact@v4
+          sudo apt-get install -y rpm "$RUNNER_TEMP/nfpm.deb"
+      - run: packaging/linux/package.sh
+      - name: Check the packages
+        run: |
+          set -eux
+          ls -l dist/release
+          dpkg-deb --info dist/release/*.deb
+          dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/cashcraft|applications/'
+          rpm -qip dist/release/*.rpm
+          tar -tzf dist/release/*.tar.gz | grep -E 'bin/cashcraft(-cli)?$'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-${{ matrix.runner }}
-          path: |
-            dist/*.AppImage
-            dist/*.deb
-            dist/*.tar.gz
+          path: dist/release/*
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Import the signing certificate (skipped without secrets)
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: packaging/macos/import-cert.sh
+      - name: Build, sign and notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: packaging/macos/package.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos
+          path: dist/release/*
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Install WiX v5
+        run: dotnet tool install --global wix --version 5.0.2
+      - run: pwsh packaging/windows/package.ps1
+      - name: Check the MSI installs and removes cleanly (per user)
+        shell: pwsh
+        run: |
+          $msi = (Get-ChildItem dist/release/*.msi).FullName
+          $p = Start-Process msiexec -ArgumentList '/i', "`"$msi`"", '/qn', 'ALLUSERS=2', 'MSIINSTALLPERUSER=1', '/l*v', 'install.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 60; throw "install failed: $($p.ExitCode)" }
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\CashCraft\cashcraft.exe'
+          if (-not (Test-Path $exe)) { throw "not installed at $exe" }
+          $cli = Join-Path (Split-Path $exe) 'cashcraft-cli.exe'
+          & $cli --version
+          if ($LASTEXITCODE -ne 0) { throw "cashcraft-cli does not run" }
+          $p = Start-Process msiexec -ArgumentList '/x', "`"$msi`"", '/qn' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "uninstall failed: $($p.ExitCode)" }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows
+          path: dist/release/*
+          if-no-files-found: error
 
   release:
-    needs: [macos, windows, linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos, windows]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          path: out
+          path: dist
           merge-multiple: true
       - name: Checksums
-        working-directory: out
+        working-directory: dist
         run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
-      - name: Draft the release
+      - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
-          TAG="v$VERSION"
-          gh release create "$TAG" --draft --target "$GITHUB_SHA" \
-            --title "CashCraft $VERSION" --generate-notes out/*
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --draft --title "CashCraft ${GITHUB_REF_NAME#v}" --generate-notes

@@ -1,143 +1,139 @@
-#!/bin/sh
-# Builds CashCraft.app and the release files for macOS:
-#   dist/cashcraft-<ver>-macos-<arch>.dmg       the app, for ArtCraft Launcher and manual installs
-#   dist/cashcraft-cli-<ver>-macos-<arch>.zip   the command line / MCP server on its own
+#!/usr/bin/env bash
+# Build, sign and (when the secrets are there) notarize the macOS release file:
 #
-# Usage: packaging/macos/package.sh [--arch universal|native] [--install]
+#   $DIST/cashcraft-<version>-macos-universal.dmg   CashCraft.app on a drag-to-Applications DMG
 #
-# Signing: with APPLE_SIGNING_IDENTITY set ("Developer ID Application: Name (TEAMID)") the app
-# and the disk image are signed with the hardened runtime; with APPLE_ID, APPLE_TEAM_ID and
-# APPLE_APP_PASSWORD also set they are notarized and stapled. Without them the build is signed
-# ad hoc: it runs on this Mac, but ArtCraft Launcher only installs Developer ID signed apps.
-set -eu
-cd "$(dirname "$0")/../.."
-[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+# Usage: packaging/macos/package.sh [--skip-build]
+#
+# Signing (env): MACOS_SIGN_IDENTITY (default "-" = ad hoc: Gatekeeper rejects it on other
+# Macs), MACOS_KEYCHAIN. Notarization: APPLE_ID, APPLE_PASSWORD (app-specific), APPLE_TEAM_ID.
+# Adapted from storytold/craft-launcher (packaging/macos/package.sh, MIT OR Apache-2.0).
+set -euo pipefail
+# shellcheck source=../env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
+HERE="$ROOT/packaging/macos"
 
-ARCH=universal
-INSTALL=0
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --arch) ARCH="$2"; shift 2 ;;
-        --install) INSTALL=1; shift ;;
-        *) echo "unknown option: $1" >&2; exit 2 ;;
-    esac
+SKIP_BUILD=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-build) SKIP_BUILD=1; shift ;;
+    -h | --help) sed -n '2,10p' "$0"; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
 done
+TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
+export MACOSX_DEPLOYMENT_TARGET=11.0   # = LSMinimumSystemVersion
+IDENTITY="${MACOS_SIGN_IDENTITY:--}"
+SHORT_VERSION="${VERSION%%-*}"
+WORK="$CARGO_TARGET_DIR/macos-package"
+APP="$WORK/$APP_NAME.app"
+DMG="$DIST/$PKG-$VERSION-macos-universal.dmg"
 
-VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
-DIST=dist
-APP="$DIST/CashCraft.app"
-mkdir -p "$DIST"
+NOTARIZE=0
+if [[ "$IDENTITY" = "-" ]]; then
+  warn "macOS: ad-hoc signing (no MACOS_SIGN_IDENTITY); the DMG is not notarized"
+elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
+  NOTARIZE=1
+else
+  warn "macOS: APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID incomplete; signed but not notarized"
+fi
+echo "==> $APP_NAME $VERSION for macOS (universal), identity: $IDENTITY, notarize: $NOTARIZE"
 
-echo "→ Building CashCraft $VERSION ($ARCH)"
-case "$ARCH" in
-    universal)
-        rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
-        for t in aarch64-apple-darwin x86_64-apple-darwin; do
-            MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release --bins --target "$t"
-        done
-        BIN_DIR="target/universal-apple-darwin/release"
-        mkdir -p "$BIN_DIR"
-        for b in cashcraft cashcraft-cli; do
-            lipo -create -output "$BIN_DIR/$b" \
-                "target/aarch64-apple-darwin/release/$b" "target/x86_64-apple-darwin/release/$b"
-        done
-        ;;
-    native)
-        MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release --bins
-        BIN_DIR="target/release"
-        case "$(uname -m)" in arm64) ARCH=aarch64 ;; *) ARCH=x86_64 ;; esac
-        ;;
-    *) echo "--arch must be universal or native" >&2; exit 2 ;;
-esac
+if [[ "$SKIP_BUILD" = 0 ]]; then
+  args=()
+  for t in "${TARGETS[@]}"; do args+=(--target "$t"); done
+  (cd "$ROOT" && cargo build --release --locked -p "$PKG" -p "$PKG-cli" "${args[@]}")
+fi
 
-echo "→ Assembling $APP"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN_DIR/cashcraft" "$BIN_DIR/cashcraft-cli" "$APP/Contents/MacOS/"
-
-ICONSET="$DIST/CashCraft.iconset"
-rm -rf "$ICONSET"
-mkdir -p "$ICONSET"
-SRC=assets/icons/1024x1024.png
-for s in 16 32 128 256 512; do
-    sips -z $s $s "$SRC" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-    d=$((s * 2))
-    sips -z $d $d "$SRC" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+rm -rf "$WORK"
+mkdir -p "$WORK/bin" "$APP/Contents/MacOS" "$APP/Contents/Resources"
+for b in "$PKG" "$PKG-cli"; do
+  inputs=()
+  for t in "${TARGETS[@]}"; do inputs+=("$CARGO_TARGET_DIR/$t/release/$b"); done
+  lipo -create -output "$WORK/bin/$b" "${inputs[@]}"
+  lipo -info "$WORK/bin/$b"
 done
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/CashCraft.icns"
-rm -rf "$ICONSET"
-
-cat > "$APP/Contents/Info.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key><string>CashCraft</string>
-    <key>CFBundleDisplayName</key><string>CashCraft</string>
-    <key>CFBundleIdentifier</key><string>io.github.mmazzieri.cashcraft</string>
-    <key>CFBundleExecutable</key><string>cashcraft</string>
-    <key>CFBundleIconFile</key><string>CashCraft</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundleVersion</key><string>$VERSION</string>
-    <key>LSApplicationCategoryType</key><string>public.app-category.finance</string>
-    <key>LSMinimumSystemVersion</key><string>11.0</string>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>NSHumanReadableCopyright</key><string>CashCraft contributors. MIT OR Apache-2.0.</string>
-</dict>
-</plist>
-EOF
-cp LICENSE-MIT LICENSE-APACHE NOTICE "$APP/Contents/Resources/"
-xattr -cr "$APP" 2>/dev/null || true
 
 sign() {
-    if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
-        codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$@"
-    else
-        codesign --force --sign - "$@"
-    fi
+  local ts=(--timestamp) kc=()
+  [[ "$IDENTITY" = "-" ]] && ts=(--timestamp=none)
+  [[ -n "${MACOS_KEYCHAIN:-}" ]] && kc=(--keychain "$MACOS_KEYCHAIN")
+  codesign --force --sign "$IDENTITY" ${kc[@]+"${kc[@]}"} "${ts[@]}" "$@"
 }
+
 notarize() {
-    if [ -n "${APPLE_SIGNING_IDENTITY:-}" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; then
-        echo "→ Notarizing $1"
-        xcrun notarytool submit "$1" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD" --wait
-        xcrun stapler staple "$1"
-    fi
+  local file="$1" out id status
+  echo "==> notarizing $(basename "$file")"
+  out="$(xcrun notarytool submit "$file" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+    --team-id "$APPLE_TEAM_ID" --wait --timeout 1h --output-format json)" || true
+  echo "$out"
+  id="$(printf '%s' "$out" | plutil -extract id raw -o - - 2>/dev/null || true)"
+  status="$(printf '%s' "$out" | plutil -extract status raw -o - - 2>/dev/null || true)"
+  if [[ "$status" != "Accepted" ]]; then
+    [[ -n "$id" ]] && xcrun notarytool log "$id" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
+    echo "error: notarization of $(basename "$file") failed (status: ${status:-unknown})" >&2
+    exit 1
+  fi
 }
 
-echo "→ Signing"
-sign "$APP/Contents/MacOS/cashcraft-cli"
-sign "$APP"
-if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
-    echo "  warning: signed ad hoc (no APPLE_SIGNING_IDENTITY): fine locally, not for ArtCraft Launcher"
+# The stapler fetches the ticket from Apple and can drop the connection: retry.
+staple() {
+  local target="$1" try
+  for try in 1 2 3 4; do
+    xcrun stapler staple "$target" && xcrun stapler validate "$target" && return 0
+    sleep $((try * 20))
+  done
+  echo "error: stapling $(basename "$target") failed 4 times" >&2
+  exit 1
+}
+
+# ---- icon: .icns from the committed 1024 px drawing ---------------------------------------
+ICONSET="$WORK/$APP_NAME.iconset"
+mkdir -p "$ICONSET"
+SRC="$ROOT/assets/app-icon/cashcraft-1024.png"
+for s in 16 32 128 256 512; do
+  sips -z "$s" "$s" "$SRC" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+  sips -z $((s * 2)) $((s * 2)) "$SRC" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/$APP_NAME.icns"
+
+# ---- CashCraft.app ----------------------------------------------------------------------
+cp "$WORK/bin/$PKG" "$APP/Contents/MacOS/$APP_NAME"
+cp "$WORK/bin/$PKG-cli" "$APP/Contents/MacOS/$PKG-cli"
+for f in LICENSE-MIT LICENSE-APACHE NOTICE ATTRIBUTION.md THIRD-PARTY-LICENSES.txt; do cp "$ROOT/$f" "$APP/Contents/Resources/"; done
+sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" "$HERE/Info.plist.in" >"$APP/Contents/Info.plist"
+plutil -lint "$APP/Contents/Info.plist"
+printf 'APPL????' >"$APP/Contents/PkgInfo"
+xattr -cr "$APP"
+sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP/Contents/MacOS/$PKG-cli"
+sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP/Contents/MacOS/$APP_NAME"
+sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP"
+codesign --verify --strict --deep --verbose=2 "$APP"
+if [[ "$NOTARIZE" = 1 ]]; then
+  ditto -c -k --keepParent "$APP" "$WORK/notarize.zip"
+  notarize "$WORK/notarize.zip"
+  staple "$APP"
+  spctl --assess --type execute -vvv "$APP"
 fi
 
-DMG="$DIST/cashcraft-$VERSION-macos-$ARCH.dmg"
-echo "→ Creating $DMG"
-STAGE="$DIST/dmg-stage"
-rm -rf "$STAGE" "$DMG"
+# ---- DMG -----------------------------------------------------------------------------------
+STAGE="$WORK/dmg"
 mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/CashCraft.app"
+ditto "$APP" "$STAGE/$APP_NAME.app"
 ln -s /Applications "$STAGE/Applications"
-hdiutil create -quiet -volname "CashCraft $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
-rm -rf "$STAGE"
+rm -f "$DMG"
+# `hdiutil create` attaches a device while it copies, which fails now and then on CI runners.
+for attempt in 1 2 3 4 5; do
+  hdiutil create -srcfolder "$STAGE" -volname "$APP_NAME" -fs HFS+ -format UDZO -imagekey zlib-level=9 -ov "$DMG" && break
+  [[ "$attempt" = 5 ]] && { echo "error: hdiutil create failed 5 times" >&2; exit 1; }
+  sleep $((attempt * 10))
+done
 sign "$DMG"
-notarize "$DMG"
-
-ZIP="$DIST/cashcraft-cli-$VERSION-macos-$ARCH.zip"
-echo "→ Creating $ZIP"
-rm -f "$ZIP"
-ditto -c -k --keepParent "$APP/Contents/MacOS/cashcraft-cli" "$ZIP"
-
-echo "✔ $DMG"
-echo "✔ $ZIP"
-
-if [ "$INSTALL" = 1 ]; then
-    if [ -w /Applications ]; then DEST=/Applications; else DEST="$HOME/Applications"; mkdir -p "$DEST"; fi
-    echo "→ Installing into $DEST"
-    rm -rf "$DEST/CashCraft.app"
-    ditto "$APP" "$DEST/CashCraft.app"
-    echo "✔ Open Launchpad and look for CashCraft."
-    echo "  Terminal and MCP: \"$DEST/CashCraft.app/Contents/MacOS/cashcraft-cli\" --help"
+codesign --verify --strict --verbose=2 "$DMG"
+if [[ "$NOTARIZE" = 1 ]]; then
+  notarize "$DMG"
+  staple "$DMG"
+  spctl --assess --type open --context context:primary-signature -vvv "$DMG"
 fi
+echo "==> done"
+ls -lh "$DMG"

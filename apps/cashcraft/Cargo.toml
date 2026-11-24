@@ -1,0 +1,17 @@
+[package]
+name = "cashcraft"
+description = "CashCraft desktop app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cashcraft-engine.workspace = true
+cashcraft-ui-egui.workspace = true
+clap.workspace = true
