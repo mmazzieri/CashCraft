@@ -10,7 +10,7 @@ use crate::gui::{
 use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Transaction};
 use cashcraft_engine::money::{fmt_date, fmt_eur, month_name, parse_amount};
 use chrono::{Datelike, Months};
-use eframe::egui::{
+use egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui,
     Vec2,
 };
@@ -247,9 +247,11 @@ impl App {
                     ui.label(RichText::new(format!("Archivio: {path}")).size(11.5).color(MUTED));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
-                            RichText::new("Pilotabile da terminale (cashcraft --help) e da MCP (cashcraft mcp)")
-                                .size(11.5)
-                                .color(MUTED),
+                            RichText::new(
+                                "Pilotabile da terminale (cashcraft-cli --help) e da MCP (cashcraft-cli mcp)",
+                            )
+                            .size(11.5)
+                            .color(MUTED),
                         );
                     });
                 });

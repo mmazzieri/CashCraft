@@ -8,7 +8,7 @@ use anyhow::Result;
 use cashcraft_engine::db::{Account, AccountKind, Cents, NewScheduled, NewTx, TxEdit};
 use cashcraft_engine::importer::{self, ImportResult};
 use cashcraft_engine::money::{fmt_date, fmt_eur, parse_amount, parse_date};
-use eframe::egui::{self, Color32, CornerRadius, Frame, Id, Margin, RichText, Ui};
+use egui::{self, Color32, CornerRadius, Frame, Id, Margin, RichText, Ui};
 
 impl App {
     pub fn dialogs(&mut self, ctx: &egui::Context) {

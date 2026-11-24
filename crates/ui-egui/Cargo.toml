@@ -17,5 +17,6 @@ cashcraft-icon.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 eframe.workspace = true
+egui.workspace = true
 image.workspace = true
 rfd.workspace = true

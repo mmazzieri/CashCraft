@@ -7,9 +7,7 @@ use cashcraft_engine::importer::{self, ImportResult, Mapping, ParsedRow, Table};
 use cashcraft_engine::money::{fmt_date, fmt_eur, month_short};
 use cashcraft_engine::{demo, ops};
 use chrono::{Datelike, NaiveDate};
-use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2,
-};
+use egui::{self, Align2, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

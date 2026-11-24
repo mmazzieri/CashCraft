@@ -625,6 +625,7 @@ dependencies = [
  "cashcraft-icon",
  "chrono",
  "eframe",
+ "egui",
  "image",
  "rfd",
 ]
