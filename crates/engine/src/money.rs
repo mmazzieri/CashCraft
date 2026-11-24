@@ -167,6 +167,17 @@ pub fn parse_amount(s: &str) -> Result<Cents> {
     parse_amount_with(s, Some(decimal_comma))
 }
 
+/// The sum of some amounts, `None` when it does not fit.
+pub fn checked_total(amounts: impl IntoIterator<Item = Cents>) -> Option<Cents> {
+    amounts.into_iter().try_fold(0, Cents::checked_add)
+}
+
+/// The sum of some amounts for the screen: at the limit rather than wrong in sign. The ledger keeps every
+/// sum of its postings far from it.
+pub fn total(amounts: impl IntoIterator<Item = Cents>) -> Cents {
+    amounts.into_iter().fold(0, Cents::saturating_add)
+}
+
 /// [`parse_amount`] without rounding: more than two decimals are refused.
 pub fn parse_amount_exact(s: &str) -> Result<Cents> {
     let c = parse_amount(s)?;

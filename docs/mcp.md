@@ -7,8 +7,9 @@ categories, rules, budgets, reports, scheduled transactions, CSV export and the 
 
 ## Ledger
 
-`list_ledger_accounts`, `create_ledger_account`, `post_entry`, `get_entry`, `list_entries`,
-`delete_entry`, `trial_balance` and `verify_ledger` work on the ledger ([ledger.md](ledger.md)). Their
+`list_ledger_accounts`, `create_ledger_account`, `rename_ledger_account`, `delete_ledger_account`,
+`post_entry`, `get_entry`, `list_entries`, `delete_entry`, `set_posting_category`, `set_account_currency`,
+`trial_balance` and `verify_ledger` work on the ledger ([ledger.md](ledger.md)). Their
 amounts come out as decimal text (`"-12.50"`), debit positive, and more than two decimals are refused.
 `post_entry` takes at least two postings and refuses, with nothing written, what does not balance:
 
@@ -20,6 +21,10 @@ amounts come out as decimal text (`"-12.50"`), debit positive, and more than two
 Transactions have an `entry_id` and a `kind`: `category`, `uncategorized`, `transfer`, `other` (an
 account of the chart) or `split`. The amount and category of a split one cannot be edited.
 Transfers between accounts of different currencies are refused.
+
+An account of the chart is named by its path or name, or as `ledger:5` (its `ledger_account_id`), `code:3010`
+or `system:uncategorized`; a bare number is refused. `post_scheduled` posts what it can: `failed` lists the
+rest, with the reason.
 
 ## Allowed folders
 

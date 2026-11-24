@@ -7,7 +7,7 @@
 use crate::db::{Cents, Db, TxEdit, TxKind, d2s, s2d};
 use crate::i18n::{tr, trf};
 use crate::money::{MAX_AMOUNT, fmt_machine};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::NaiveDate;
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
@@ -22,6 +22,13 @@ pub const OPENING_DATE: &str = "0001-01-01";
 
 /// Most postings of one entry.
 pub const MAX_LINES: usize = 1000;
+
+/// Largest balance of an account, either side.
+pub const MAX_BALANCE: Cents = 1_000_000_000_000_000;
+
+/// Largest sum of all postings of the file, whatever their sign. No sum of some of them, at any date, can
+/// be larger, so every total and the difference of two fit in an `i64`.
+pub const MAX_TURNOVER: Cents = 4_000_000_000_000_000_000;
 
 const MAX_DEPTH: usize = 16;
 
@@ -63,6 +70,17 @@ CREATE TABLE postings (
 CREATE INDEX posting_entry ON postings(entry_id);
 CREATE INDEX posting_account ON postings(ledger_account_id);
 CREATE UNIQUE INDEX posting_import_hash ON postings(ledger_account_id, import_hash) WHERE import_hash IS NOT NULL;
+CREATE TABLE ledger_turnover (id INTEGER PRIMARY KEY CHECK (id = 1), total INTEGER NOT NULL);
+INSERT INTO ledger_turnover VALUES (1, 0);
+CREATE TRIGGER posting_added AFTER INSERT ON postings BEGIN
+    UPDATE ledger_turnover SET total = total + abs(NEW.amount);
+END;
+CREATE TRIGGER posting_changed AFTER UPDATE OF amount ON postings BEGIN
+    UPDATE ledger_turnover SET total = total - abs(OLD.amount) + abs(NEW.amount);
+END;
+CREATE TRIGGER posting_removed AFTER DELETE ON postings BEGIN
+    UPDATE ledger_turnover SET total = total - abs(OLD.amount);
+END;
 CREATE TRIGGER account_gets_ledger AFTER INSERT ON accounts BEGIN
     INSERT INTO ledger_accounts(class, currency, money_account_id)
     VALUES (CASE WHEN NEW.kind IN ('credit_card','loan') THEN 'liability' ELSE 'asset' END,
@@ -83,6 +101,12 @@ INSERT INTO ledger_accounts(class, system) VALUES ('equity', 'opening_balances')
 
 /// A posting counts as income or expense when its account (`l`) is of one of those classes.
 pub(crate) const PROFIT_AND_LOSS: &str = "l.class IN ('income','expense')";
+
+/// The postings that count from ?1 to ?2, each with how many of them its entry has (`n`).
+pub(crate) const COUNTED: &str = "WITH counted AS (
+    SELECT l.category_id, l.class, p.amount, COUNT(*) OVER (PARTITION BY p.entry_id) AS n
+    FROM postings p JOIN entries e ON e.id=p.entry_id JOIN ledger_accounts l ON l.id=p.ledger_account_id
+    WHERE l.class IN ('income','expense') AND e.date>=?1 AND e.date<=?2)";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -202,6 +226,7 @@ pub struct EntryFilter {
     pub ledger_account_id: Option<i64>,
     pub from: Option<NaiveDate>,
     pub to: Option<NaiveDate>,
+    pub offset: usize,
     pub limit: Option<usize>,
 }
 
@@ -279,14 +304,27 @@ pub(crate) struct LedgerRow {
     pub system: Option<String>,
 }
 
-/// "EUR" when empty, else in capitals without spaces around.
+/// In capitals without spaces around; the ways people write the euro become its code.
 pub fn normalize_currency(s: &str) -> String {
-    let t = s.trim();
-    if t.is_empty() { "EUR".into() } else { t.to_ascii_uppercase() }
+    let t = s.trim().to_uppercase();
+    if matches!(t.as_str(), "" | "€" | "EURO" | "EUROS") { "EUR".into() } else { t }
+}
+
+/// A currency for something new: a code of three letters.
+pub fn check_currency(s: &str) -> Result<String> {
+    let c = normalize_currency(s);
+    if c.len() != 3 || !c.chars().all(|x| x.is_ascii_uppercase()) {
+        bail!(trf("the currency \"{currency}\" is not a code of three letters, like EUR", &[("currency", &s)]));
+    }
+    Ok(c)
 }
 
 fn no_ledger_account(key: &str) -> anyhow::Error {
     anyhow!(trf("account \"{name}\" is not in the chart of accounts", &[("name", &key)]))
+}
+
+fn no_posting(id: i64) -> anyhow::Error {
+    anyhow!(trf("posting {id} not found", &[("id", &id)]))
 }
 
 fn no_entry(id: i64) -> anyhow::Error {
@@ -297,39 +335,54 @@ pub(crate) fn split_error() -> anyhow::Error {
     anyhow!(tr("the transaction is split over several accounts: its amount and category cannot be changed here"))
 }
 
-fn too_big() -> anyhow::Error {
+pub(crate) fn too_big() -> anyhow::Error {
     anyhow!(tr("the sum of the amounts is too large"))
 }
 
-/// Finds one of the accounts of the chart by code, system key, path, name or id.
+/// Finds one of the accounts of the chart by "ledger:id", "code:…", "system:…", code, system key, path or
+/// name. A number alone is refused: it could be the id of something else.
 pub fn find_ledger_account(all: &[LedgerAccount], key: &str) -> Result<LedgerAccount> {
     let key = key.trim();
-    let lk = key.to_lowercase();
+    let lower = key.to_lowercase();
+    if !key.is_empty() && key.chars().all(|c| c.is_ascii_digit()) {
+        bail!(trf(
+            "\"{key}\" may be several things: write ledger:{key} for the id in the chart of accounts, code:{key} for the code",
+            &[("key", &key)]
+        ));
+    }
     let only = |test: &dyn Fn(&LedgerAccount) -> bool| -> Result<Option<LedgerAccount>> {
         let hits: Vec<&LedgerAccount> = all.iter().filter(|a| test(a)).collect();
         match hits.as_slice() {
             [] => Ok(None),
             [one] => Ok(Some((*one).clone())),
             _ => {
-                bail!(trf("several accounts of the chart are called \"{name}\": give the id", &[("name", &key)]))
+                let ids: Vec<String> = hits.iter().map(|a| format!("ledger:{} ({})", a.id, a.path)).collect();
+                bail!(trf(
+                    "several accounts of the chart are called \"{name}\": {which}",
+                    &[("name", &key), ("which", &ids.join(", "))]
+                ))
             }
         }
     };
-    if let Some(a) = only(&|a| !a.code.is_empty() && a.code == key)? {
-        return Ok(a);
-    }
-    if let Some(a) = all.iter().find(|a| a.system.as_deref() == Some(lk.as_str())) {
-        return Ok(a.clone());
-    }
-    if let Ok(id) = key.parse::<i64>()
-        && let Some(a) = all.iter().find(|a| a.id == id)
-    {
-        return Ok(a.clone());
-    }
-    if let Some(a) = only(&|a| a.path.to_lowercase() == lk)? {
-        return Ok(a);
-    }
-    only(&|a| a.name.to_lowercase() == lk)?.ok_or_else(|| no_ledger_account(key))
+    let found = if let Some(id) = lower.strip_prefix("ledger:") {
+        let id = id.trim().parse::<i64>().ok();
+        only(&|a| Some(a.id) == id)?
+    } else if let Some(code) = key.strip_prefix("code:") {
+        only(&|a| !a.code.is_empty() && a.code == code.trim())?
+    } else if let Some(system) = lower.strip_prefix("system:") {
+        only(&|a| a.system.as_deref() == Some(system.trim()))?
+    } else {
+        let exact = only(&|a| {
+            (!a.code.is_empty() && a.code == key)
+                || a.system.as_deref() == Some(lower.as_str())
+                || a.path.to_lowercase() == lower
+        })?;
+        match exact {
+            None => only(&|a| a.name.to_lowercase() == lower)?,
+            found => found,
+        }
+    };
+    found.ok_or_else(|| no_ledger_account(key))
 }
 
 impl Db {
@@ -340,8 +393,10 @@ impl Db {
     pub(crate) fn save_entry(&self, d: &Draft) -> Result<(i64, Vec<i64>)> {
         self.check_draft(d)?;
         self.atomically(|| {
+            let mut touched: HashSet<i64> = d.lines.iter().map(|l| l.account).collect();
             let entry = match d.id {
                 Some(id) => {
+                    touched.extend(self.load_draft(id)?.lines.iter().map(|l| l.account));
                     let n = self
                         .conn
                         .prepare_cached("UPDATE entries SET date=?2, payee=?3, memo=?4 WHERE id=?1")?
@@ -413,8 +468,29 @@ impl Db {
                 };
                 ids.push(id);
             }
+            self.check_bounds(&touched)?;
             Ok((entry, ids))
         })
+    }
+
+    /// Refuses what would make some sum too large to be read back.
+    fn check_bounds(&self, touched: &HashSet<i64>) -> Result<()> {
+        let turnover: Cents = self.conn.query_row("SELECT total FROM ledger_turnover", [], |r| r.get(0))?;
+        if turnover > MAX_TURNOVER {
+            bail!(tr("the amounts in the data file are too large"));
+        }
+        if turnover <= MAX_BALANCE {
+            return Ok(());
+        }
+        let mut st = self.conn.prepare_cached(
+            "SELECT 1 FROM postings WHERE ledger_account_id=?1 GROUP BY currency HAVING SUM(amount) NOT BETWEEN -?2 AND ?2",
+        )?;
+        for a in touched {
+            if st.exists(params![a, MAX_BALANCE])? {
+                bail!(tr("the balance of an account would be too large"));
+            }
+        }
+        Ok(())
     }
 
     fn check_draft(&self, d: &Draft) -> Result<()> {
@@ -582,7 +658,7 @@ impl Db {
             .optional()?;
         if opening == 0 {
             if let Some(id) = old {
-                self.conn.execute("DELETE FROM entries WHERE id=?1", [id])?;
+                self.remove_entry(id)?;
             }
             return Ok(());
         }
@@ -691,10 +767,11 @@ impl Db {
 
     /// Deletes the entries of an account of the user, then its account in the chart. An entry that
     /// also touches another account with a balance of its own (the other side of a transfer) stays,
-    /// with the deleted side on "uncategorized": no other balance changes.
+    /// with the deleted side on the opening balances: no other balance changes, and nothing becomes
+    /// income or an expense.
     pub(crate) fn drop_money_ledger(&self, account: i64) -> Result<()> {
         let (ledger, _) = self.money_ledger(account)?;
-        let spare = self.system_ledger(UNCATEGORIZED)?;
+        let spare = self.system_ledger(OPENING)?;
         for entry in self.entries_on(ledger)? {
             let mut d = self.load_draft(entry)?;
             let mut stays = false;
@@ -703,7 +780,7 @@ impl Db {
                 stays |= !matches!(row.class, Class::Income | Class::Expense) && row.system.is_none();
             }
             if !stays || d.opening == Some(account) {
-                self.conn.execute("DELETE FROM entries WHERE id=?1", [entry])?;
+                self.remove_entry(entry)?;
                 continue;
             }
             for l in d.lines.iter_mut().filter(|l| l.account == ledger) {
@@ -733,7 +810,10 @@ impl Db {
             let mut fixed: HashSet<String> = HashSet::new();
             for l in &e.lines {
                 let own = self.ledger_row(l.ledger_account_id)?.currency;
-                let asked = l.currency.as_deref().map(normalize_currency);
+                let asked = match l.currency.as_deref().map(normalize_currency) {
+                    Some(c) if own.as_ref() != Some(&c) => Some(check_currency(&c)?),
+                    c => c,
+                };
                 fixed.extend(own.clone().or_else(|| asked.clone()));
                 lines.push((l, asked.or(own)));
             }
@@ -769,8 +849,62 @@ impl Db {
         if self.load_draft(id)?.opening.is_some() {
             bail!(tr("the opening balance is changed in the account"));
         }
+        self.remove_entry(id)
+    }
+
+    /// Every side of an entry goes, so the books stay balanced.
+    fn remove_entry(&self, id: i64) -> Result<()> {
         self.conn.execute("DELETE FROM entries WHERE id=?1", [id])?;
         Ok(())
+    }
+
+    /// Gives a posting on income or expenses to another category, or to none.
+    pub fn set_posting_category(&self, posting: i64, category: Option<i64>) -> Result<()> {
+        self.atomically(|| {
+            let entry: Option<i64> =
+                self.conn.query_row("SELECT entry_id FROM postings WHERE id=?1", [posting], |r| r.get(0)).optional()?;
+            let mut d = self.load_draft(entry.ok_or_else(|| no_posting(posting))?)?;
+            let account = self.category_ledger(category)?;
+            for l in d.lines.iter_mut().filter(|l| l.id == Some(posting)) {
+                let row = self.ledger_row(l.account)?;
+                if row.category.is_none() && row.system.as_deref() != Some(UNCATEGORIZED) {
+                    bail!(tr("only a posting on a category can be given another one"));
+                }
+                l.account = account;
+            }
+            self.save_entry(&d)?;
+            Ok(())
+        })
+    }
+
+    /// Changes the currency of an account of the user, with its side of every entry; refused when that
+    /// leaves one unbalanced.
+    pub fn set_account_currency(&self, account: i64, currency: &str) -> Result<()> {
+        let currency = check_currency(currency)?;
+        self.atomically(|| {
+            let (ledger, old) = self.money_ledger(account)?;
+            if old == currency {
+                return Ok(());
+            }
+            self.conn.execute("UPDATE accounts SET currency=?2 WHERE id=?1", params![account, currency])?;
+            self.conn.execute("UPDATE ledger_accounts SET currency=?2 WHERE id=?1", params![ledger, currency])?;
+            for entry in self.entries_on(ledger)? {
+                let mut d = self.load_draft(entry)?;
+                for l in d.lines.iter_mut().filter(|l| l.currency == old) {
+                    // The other side follows when it takes any currency.
+                    if l.account == ledger || self.ledger_row(l.account)?.currency.is_none() {
+                        l.currency.clone_from(&currency);
+                    }
+                }
+                self.save_entry(&d).with_context(|| {
+                    trf(
+                        "the currency cannot be changed: entry {id} of {date} also moves another account",
+                        &[("id", &entry), ("date", &d.date)],
+                    )
+                })?;
+            }
+            Ok(())
+        })
     }
 
     // -------------------------------------------------- chart of accounts
@@ -846,33 +980,33 @@ impl Db {
         if name.contains(':') {
             bail!(tr("the name of an account cannot contain a colon"));
         }
-        let all = self.ledger_accounts()?;
-        let above = match parent {
-            Some(p) => Some(all.iter().find(|a| a.id == p).ok_or_else(|| no_ledger_account(&p.to_string()))?),
-            None => None,
-        };
-        if above.is_some_and(|p| p.system.is_some()) {
-            bail!(tr("this account cannot have accounts under it"));
-        }
-        if above.is_some_and(|p| p.path.matches(':').count() + 2 > MAX_DEPTH) {
-            bail!(tr("there are too many levels of accounts"));
-        }
-        let class = match (class, above) {
-            (Some(c), Some(p)) if c != p.class => {
-                bail!(tr("an account has the class of the one above it"))
-            }
-            (Some(c), _) => c,
-            (None, Some(p)) => p.class,
-            (None, None) => bail!(tr("the account needs a class or an account above it")),
-        };
-        let lower = name.to_lowercase();
-        if all.iter().any(|a| a.parent_id == parent && a.class == class && a.name.to_lowercase() == lower) {
-            bail!(trf("is there already an account named \"{name}\"?", &[("name", &name)]));
-        }
-        if !code.is_empty() && all.iter().any(|a| a.code == code) {
-            bail!(trf("the code \"{code}\" is already in use", &[("code", &code)]));
-        }
         self.atomically(|| {
+            let all = self.ledger_accounts()?;
+            let above = match parent {
+                Some(p) => Some(all.iter().find(|a| a.id == p).ok_or_else(|| no_ledger_account(&p.to_string()))?),
+                None => None,
+            };
+            if above.is_some_and(|p| p.system.is_some()) {
+                bail!(tr("this account cannot have accounts under it"));
+            }
+            if above.is_some_and(|p| p.path.matches(':').count() + 2 > MAX_DEPTH) {
+                bail!(tr("there are too many levels of accounts"));
+            }
+            let class = match (class, above) {
+                (Some(c), Some(p)) if c != p.class => {
+                    bail!(tr("an account has the class of the one above it"))
+                }
+                (Some(c), _) => c,
+                (None, Some(p)) => p.class,
+                (None, None) => bail!(tr("the account needs a class or an account above it")),
+            };
+            let lower = name.to_lowercase();
+            if all.iter().any(|a| a.parent_id == parent && a.class == class && a.name.to_lowercase() == lower) {
+                bail!(trf("is there already an account named \"{name}\"?", &[("name", &name)]));
+            }
+            if !code.is_empty() && all.iter().any(|a| a.code == code) {
+                bail!(trf("the code \"{code}\" is already in use", &[("code", &code)]));
+            }
             let id = if matches!(class, Class::Income | Class::Expense) {
                 if currency.is_some_and(|c| !c.trim().is_empty()) {
                     bail!(tr("an income or expense account has no currency of its own"));
@@ -885,8 +1019,8 @@ impl Db {
             } else {
                 let inherited = above.and_then(|p| p.currency.clone());
                 let currency = match currency.filter(|c| !c.trim().is_empty()) {
-                    Some(c) => normalize_currency(c),
-                    None => inherited.unwrap_or_else(|| "EUR".into()),
+                    Some(c) => check_currency(c)?,
+                    None => check_currency(&inherited.unwrap_or_default())?,
                 };
                 self.conn.execute(
                     "INSERT INTO ledger_accounts(class,parent_id,name,currency) VALUES(?1,?2,?3,?4)",
@@ -896,6 +1030,57 @@ impl Db {
             };
             self.conn.execute("UPDATE ledger_accounts SET code=?2 WHERE id=?1", params![id, code])?;
             Ok(id)
+        })
+    }
+
+    /// An account added by hand, the only kind that is changed in the chart.
+    fn hand_made(&self, id: i64) -> Result<()> {
+        let row = self.ledger_row(id)?;
+        if row.money.is_some() || row.category.is_some() || row.system.is_some() {
+            bail!(tr("only accounts added to the chart by hand can be changed here"));
+        }
+        Ok(())
+    }
+
+    pub fn rename_ledger_account(&self, id: i64, name: &str) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!(tr("the account needs a name"));
+        }
+        if name.contains(':') {
+            bail!(tr("the name of an account cannot contain a colon"));
+        }
+        self.atomically(|| {
+            self.hand_made(id)?;
+            let all = self.ledger_accounts()?;
+            let lower = name.to_lowercase();
+            if let Some(me) = all.iter().find(|a| a.id == id)
+                && all.iter().any(|a| {
+                    a.id != id && a.parent_id == me.parent_id && a.class == me.class && a.name.to_lowercase() == lower
+                })
+            {
+                bail!(trf("is there already an account named \"{name}\"?", &[("name", &name)]));
+            }
+            self.conn.execute("UPDATE ledger_accounts SET name=?2 WHERE id=?1", params![id, name])?;
+            Ok(())
+        })
+    }
+
+    /// Deletes an account added by hand, when nothing is on it or under it.
+    pub fn delete_ledger_account(&self, id: i64) -> Result<()> {
+        self.atomically(|| {
+            self.hand_made(id)?;
+            let used: bool = self.conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM postings WHERE ledger_account_id=?1)
+                     OR EXISTS (SELECT 1 FROM ledger_accounts WHERE parent_id=?1)",
+                [id],
+                |r| r.get(0),
+            )?;
+            if used {
+                bail!(tr("the account is in use: it has entries or accounts under it"));
+            }
+            self.conn.execute("DELETE FROM ledger_accounts WHERE id=?1", [id])?;
+            Ok(())
         })
     }
 
@@ -946,11 +1131,12 @@ impl Db {
             "SELECT id FROM entries e
              WHERE (?1 IS NULL OR EXISTS (SELECT 1 FROM postings p WHERE p.entry_id=e.id AND p.ledger_account_id=?1))
                AND (?2 IS NULL OR date>=?2) AND (?3 IS NULL OR date<=?3)
-             ORDER BY date DESC, id DESC LIMIT ?4",
+             ORDER BY date DESC, id DESC LIMIT ?4 OFFSET ?5",
         )?;
         let limit = f.limit.map_or(-1, |n| i64::try_from(n).unwrap_or(-1));
+        let offset = i64::try_from(f.offset).unwrap_or(i64::MAX);
         let ids: Vec<i64> = st
-            .query_map(params![f.ledger_account_id, f.from.map(d2s), f.to.map(d2s), limit], |r| r.get(0))?
+            .query_map(params![f.ledger_account_id, f.from.map(d2s), f.to.map(d2s), limit, offset], |r| r.get(0))?
             .collect::<std::result::Result<_, _>>()?;
         let paths: HashMap<i64, String> = self.ledger_accounts()?.into_iter().map(|a| (a.id, a.path)).collect();
         ids.into_iter().map(|id| self.entry_with(id, &paths)).collect()
@@ -1032,6 +1218,11 @@ impl Db {
                           OR (l.money_account_id IS NOT NULL) + (l.category_id IS NOT NULL) + (l.system IS NOT NULL) > 1")?
         {
             problems.push(trf("account {id} of the chart of accounts stands for nothing", &[("id", &id)]));
+        }
+        for _ in ids("SELECT id FROM ledger_turnover WHERE
+                      total <> (SELECT COALESCE(SUM(abs(amount)),0) FROM postings)")?
+        {
+            problems.push(tr("the sum of the postings is not the one on record").into());
         }
         for key in [OPENING, UNCATEGORIZED] {
             if self.system_ledger(key).is_err() {

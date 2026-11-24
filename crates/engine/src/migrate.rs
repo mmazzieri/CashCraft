@@ -1,13 +1,18 @@
 //! From formats 0 (CashCraft 0.1) and 1 (0.2.0), where money was a table of transactions, to the
 //! double-entry ledger of format 2. `docs/ledger.md` describes what becomes what.
 
-use crate::db::{Cents, Db, SCHEMA};
+use crate::db::{Cents, Db, RENAMED, SCHEMA};
 use crate::i18n::{tr, trf};
-use crate::ledger::{Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED};
-use anyhow::{Context, Result, anyhow, bail};
-use rusqlite::{Connection, OpenFlags};
+use crate::ledger::{Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
+use anyhow::{Context, Result, bail};
+use rusqlite::backup::Backup;
+use rusqlite::{Connection, OpenFlags, params};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsStr;
+use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// A row of the table `transactions` of format 1.
 struct Row {
@@ -23,47 +28,97 @@ struct Row {
     import_hash: Option<String>,
 }
 
+/// Removes a file that must not stay when something fails.
+struct Temporary(PathBuf);
+impl Drop for Temporary {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn beside(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_stem().unwrap_or(OsStr::new("cashcraft")).to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
+/// The file of the first of these names that is not there, created empty.
+fn create_free(path: &Path) -> Result<PathBuf> {
+    for n in 0..1000 {
+        let p = beside(path, &format!(".v1-backup.{}-{n}.tmp", std::process::id()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        match options.open(&p) {
+            Ok(_) => return Ok(p),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    bail!(tr("there are too many backup copies"))
+}
+
 /// A copy of the old file beside it, with the first free name of `cashcraft.v1-backup.db`,
-/// `cashcraft.v1-backup-2.db`… An existing file is never overwritten.
+/// `cashcraft.v1-backup-2.db`… The name appears only on a complete copy; an existing file is never
+/// overwritten.
 fn backup(path: &Path) -> Result<PathBuf> {
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("cashcraft");
-    let target = (1..1000)
-        .map(|n| match n {
-            1 => path.with_file_name(format!("{stem}.v1-backup.db")),
-            n => path.with_file_name(format!("{stem}.v1-backup-{n}.db")),
-        })
-        .find(|p| !p.exists() && std::fs::symlink_metadata(p).is_err())
-        .ok_or_else(|| anyhow!(tr("there are too many backup copies")))?;
-    let name = target.to_str().ok_or_else(|| anyhow!(tr("the name of the folder is not valid text")))?;
-    // Another connection: ours holds the write lock and VACUUM cannot run inside a transaction.
+    let part = Temporary(create_free(path)?);
+    // Another connection: ours holds the write lock.
     let source = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    source.busy_timeout(std::time::Duration::from_secs(5))?;
-    source.execute("VACUUM INTO ?1", [name])?;
-    let count = |c: &Connection| -> Result<(String, i64)> {
-        let check: String = c.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
-        Ok((
-            check,
-            c.query_row("SELECT (SELECT COUNT(*) FROM accounts) + (SELECT COUNT(*) FROM categories)", [], |r| {
-                r.get(0)
-            })?,
-        ))
-    };
-    let copy = Connection::open_with_flags(&target, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let (check, rows) = count(&copy)?;
-    drop(copy);
-    if check != "ok" || rows != count(&source)?.1 {
+    source.busy_timeout(Duration::from_secs(5))?;
+    let mut copy = Connection::open(&part.0)?;
+    Backup::new(&source, &mut copy)?.run_to_completion(1000, Duration::from_millis(50), None)?;
+    // One file, without those of the write-ahead log.
+    copy.query_row("PRAGMA journal_mode = DELETE", [], |_| Ok(()))?;
+    let check: String = copy.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+    if check != "ok" || table_sizes(&copy)? != table_sizes(&source)? {
         bail!(tr("the backup copy is not sound"));
     }
-    std::fs::OpenOptions::new().write(true).open(&target)?.sync_all()?;
-    Ok(target)
+    copy.close().map_err(|(_, e)| e)?;
+    std::fs::set_permissions(&part.0, std::fs::metadata(path)?.permissions())?;
+    OpenOptions::new().read(true).open(&part.0)?.sync_all()?;
+    for n in 1..1000 {
+        let target = match n {
+            1 => beside(path, ".v1-backup.db"),
+            n => beside(path, &format!(".v1-backup-{n}.db")),
+        };
+        // A link never replaces a file.
+        match std::fs::hard_link(&part.0, &target) {
+            Ok(()) => return Ok(target),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            // A file system without links.
+            Err(_) if std::fs::symlink_metadata(&target).is_err() => {
+                std::fs::rename(&part.0, &target)?;
+                return Ok(target);
+            }
+            Err(_) => {}
+        }
+    }
+    bail!(tr("there are too many backup copies"))
+}
+
+/// How many rows each table has.
+fn table_sizes(c: &Connection) -> Result<Vec<(String, i64)>> {
+    let mut st = c.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")?;
+    let names: Vec<String> = st.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+    names
+        .into_iter()
+        .map(|n| {
+            let sql = format!("SELECT COUNT(*) FROM \"{}\"", n.replace('"', "\"\""));
+            let rows = c.query_row(&sql, [], |r| r.get(0))?;
+            Ok((n, rows))
+        })
+        .collect()
 }
 
 impl Db {
     /// Turns the tables of format 0 or 1 into format 2. Runs inside the transaction of `init`, which
     /// holds the write lock: nobody changes the file between the backup and the end.
     pub(crate) fn migrate(&self) -> Result<()> {
-        if self.has_table("postings")? {
-            return self.restore_version();
+        let again = self.has_table("postings")?;
+        if again && !self.has_leftovers()? {
+            return self.drop_leftovers();
         }
         let copy = match &self.path {
             Some(p) => Some(backup(p).with_context(|| {
@@ -71,7 +126,7 @@ impl Db {
             })?),
             None => None,
         };
-        let done = self.convert();
+        let done = if again { self.merge_leftovers() } else { self.convert() };
         if done.is_err()
             && let Some(p) = copy
         {
@@ -81,22 +136,76 @@ impl Db {
         done.context(tr("the data file cannot be updated to the new format; nothing was changed"))
     }
 
-    /// An older program can mark a file of format 2 with its own number, and add its empty table, when
-    /// both open the file at the same moment.
-    fn restore_version(&self) -> Result<()> {
-        if self.has_table("transactions")? {
-            let n: i64 = self.conn.query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))?;
-            if n > 0 {
-                bail!(tr("the data file has transactions in both the old and the new format"));
+    /// An older program can mark a file of format 2 with its own number, and add its tables, when both
+    /// open the file at the same moment. Whether it wrote in them.
+    fn has_leftovers(&self) -> Result<bool> {
+        for t in RENAMED.iter().map(|t| t.0).chain(["transactions"]) {
+            if self.has_table(t)? && self.conn.prepare(&format!("SELECT 1 FROM {t}"))?.exists([])? {
+                return Ok(true);
             }
-            self.conn.execute_batch("DROP TABLE transactions;")?;
+        }
+        Ok(false)
+    }
+
+    fn drop_leftovers(&self) -> Result<()> {
+        for t in RENAMED.iter().map(|t| t.0).chain(["transactions"]) {
+            self.conn.execute_batch(&format!("DROP TABLE IF EXISTS {t}"))?;
         }
         Ok(())
     }
 
+    /// Adds to the ledger what an older program wrote in its own tables after the update.
+    fn merge_leftovers(&self) -> Result<()> {
+        let mut rows = self.old_rows()?;
+        // Their ids are taken by now.
+        let used: i64 = self.conn.query_row("SELECT COALESCE(MAX(id),0) FROM postings", [], |r| r.get(0))?;
+        for r in &mut rows {
+            r.id = r.id.checked_add(used).ok_or_else(too_big)?;
+            r.peer = r.peer.map(|p| p.checked_add(used).ok_or_else(too_big)).transpose()?;
+        }
+        // A statement imported by both is in the ledger already.
+        let mut known = self.conn.prepare(
+            "SELECT 1 FROM postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+             WHERE l.money_account_id=?1 AND p.import_hash=?2",
+        )?;
+        let mut kept = Vec::new();
+        for r in rows {
+            if r.import_hash.is_none() || !known.exists(params![r.account, r.import_hash])? {
+                kept.push(r);
+            }
+        }
+        self.convert_rows(&kept)?;
+        for (old, new) in RENAMED {
+            if self.has_table(old)? {
+                let columns = match old {
+                    "budgets" => "category_id, monthly",
+                    "rules" => "pattern, category_id, rename_payee",
+                    _ => "account_id, to_account_id, amount, payee, memo, category_id, next_date, every, unit",
+                };
+                self.conn.execute_batch(&format!(
+                    "INSERT OR IGNORE INTO {new}({columns}) SELECT {columns} FROM {old} ORDER BY rowid"
+                ))?;
+            }
+        }
+        self.drop_leftovers()?;
+        match self.verify_ledger()?.problems.into_iter().next() {
+            Some(p) => bail!(p),
+            None => Ok(()),
+        }
+    }
+
     fn convert(&self) -> Result<()> {
+        for (old, new) in RENAMED {
+            if self.has_table(old)? {
+                self.conn.execute_batch(&format!("ALTER TABLE {old} RENAME TO {new}"))?;
+            }
+        }
         // Tables that a file of 0.1 may lack.
         self.conn.execute_batch(SCHEMA)?;
+        if !self.conn.prepare("SELECT 1 FROM pragma_table_info('accounts') WHERE name='opening_balance'")?.exists([])? {
+            self.conn.execute_batch("ALTER TABLE accounts ADD COLUMN opening_balance INTEGER NOT NULL DEFAULT 0")?;
+        }
+        self.normalize_currencies()?;
         self.conn.execute_batch(LEDGER_SCHEMA)?;
         // As the triggers do for new accounts and categories.
         self.conn.execute_batch(
@@ -127,6 +236,16 @@ impl Db {
         }
         self.conn
             .execute_batch("DROP TABLE IF EXISTS transactions; ALTER TABLE accounts DROP COLUMN opening_balance;")?;
+        Ok(())
+    }
+
+    fn normalize_currencies(&self) -> Result<()> {
+        let mut st = self.conn.prepare("SELECT id, currency FROM accounts")?;
+        let all: Vec<(i64, String)> =
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
+        for (id, c) in all {
+            self.conn.execute("UPDATE accounts SET currency=?2 WHERE id=?1", params![id, normalize_currency(&c)])?;
+        }
         Ok(())
     }
 
@@ -165,8 +284,7 @@ impl Db {
         }
         for r in rows {
             if let Some((_, balance)) = out.get_mut(&r.account) {
-                *balance =
-                    balance.checked_add(r.amount).ok_or_else(|| anyhow!(tr("the sum of the amounts is too large")))?;
+                *balance = balance.checked_add(r.amount).ok_or_else(too_big)?;
             }
         }
         Ok(out)
@@ -237,9 +355,8 @@ impl Db {
                         Some(_) => opening,
                         None => r.category.and_then(|c| categories.get(&c).copied()).unwrap_or(uncategorized),
                     };
-                    let amount =
-                        r.amount.checked_neg().ok_or_else(|| anyhow!(tr("the sum of the amounts is too large")))?;
-                    next = next.checked_add(1).ok_or_else(|| anyhow!(tr("the sum of the amounts is too large")))?;
+                    let amount = r.amount.checked_neg().ok_or_else(too_big)?;
+                    next = next.checked_add(1).ok_or_else(too_big)?;
                     lines.push(Line { id: Some(next), account: other, amount, currency, ..Default::default() });
                 }
             }

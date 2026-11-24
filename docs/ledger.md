@@ -28,7 +28,10 @@ so the class changes no figure. Equity would have hidden uncategorized money fro
 `Db::save_entry` is the only code that inserts or changes postings (a test scans the sources). It
 refuses, with nothing written: fewer than two or more than 1000 postings; an account that is not there;
 a posting in a currency other than its account's; an amount beyond `MAX_AMOUNT`; a sum that overflows;
-debits that differ from credits in any currency. There are no exchange rates: an entry across
+debits that differ from credits in any currency; a balance beyond `MAX_BALANCE` (10^15 cents) on an account
+it touches; postings that together, whatever their sign, go beyond `MAX_TURNOVER` (4·10^18 cents, kept up to
+date by triggers in `ledger_turnover`). No sum of some of the postings can be larger than that one, at any
+date, so every total fits in 64 bits. There are no exchange rates: an entry across
 currencies passes only if each currency balances on its own, and a transfer between accounts of
 different currencies is refused.
 
@@ -41,7 +44,32 @@ are unique in each account.
 
 An entry with more than two postings shows as **Split**. Its date, payee, notes and cleared mark can be
 edited from the register; its amount and category cannot. Reports and the category filter see each of
-its postings. Deleting any transaction deletes its whole entry.
+its postings. A posting on a category can be moved to another one from the entry (`set_posting_category`);
+the uncategorized filter lists the splits that need it. Deleting any transaction deletes its whole entry:
+the window asks first when it is a split, and says how many lines it has.
+
+## Reports
+
+An entry with one posting on a category or *Uncategorized* is income or spending by the sign of that posting,
+as before the ledger. With several, each stays on the side of its class: income accounts add up into income,
+expense accounts and *Uncategorized* into expenses, so that moving money between two categories is neither.
+The register counts a split once, for its categories only. The net worth is the sum of every asset and
+liability account, those added by hand and archived ones included; amounts of different currencies are added
+as they are.
+
+## Currencies
+
+Codes are kept in capitals; €, Euro and Euros are EUR. New accounts take a code of three letters. The
+migration leaves as it is what it does not know, like `$`. `set_account_currency` changes the currency of an
+account, its entries and the opposite postings on accounts of any currency, amounts unchanged; it is refused
+when an entry would no longer balance, that is when it also moves an account of another currency.
+
+## Names
+
+`ledger:5` is the account of the chart with that `ledger_account_id`, `code:3010` one with that code,
+`system:uncategorized` and `system:opening_balances` the two that every file has. Otherwise a code, path or
+name must be that of one account only. A bare number is refused: ids of accounts and of categories are
+different numbers.
 
 ## Opening balances
 
@@ -54,8 +82,10 @@ was opened. It is read and changed as `opening_balance` of the account.
 
 - A category, with those under it: its postings move to *Uncategorized*.
 - An account: its entries go, except those that also touch another account of the user, or an asset,
-  liability or equity account added by hand. There the deleted side moves to *Uncategorized*, so that no
-  other balance changes. As before, what was a transfer then counts in the reports.
+  liability or equity account added by hand. There the deleted side moves to *Opening balances*: no other
+  balance changes and nothing becomes income or an expense. 0.2.0 counted the other side of a transfer in
+  the reports.
+- An account added to the chart by hand, only while nothing is on it or under it.
 
 ## Checking
 
@@ -68,7 +98,8 @@ On the first opening, in one transaction that holds the write lock (the version 
 it, so that programs starting together migrate once):
 
 1. A copy of the old file is made beside it: `cashcraft.v1-backup.db`, or `-2`, `-3`… when that name is
-   taken; nothing is overwritten. Without a copy that passes a check, there is no migration.
+   taken; nothing is overwritten. The name appears only once the copy is complete, with as many rows in every
+   table and the permissions of the file. Without it, there is no migration.
 2. Each transaction becomes an entry, and its id the id of the posting on its account.
 3. The two sides of a transfer become one entry when they point at each other, on two accounts of the
    same currency, with the same date and opposite amounts. Anything else with a `transfer_peer` goes
@@ -80,9 +111,12 @@ it, so that programs starting together migrate once):
 5. Every balance is compared with the old one and the books are verified. Any difference undoes it all
    and leaves the old file as it was.
 
-0.2.0 refuses a file of format 2. If it already has the file open, its writes to money fail, because the
-table is gone.
-A number or an empty table that an older program leaves behind is put right at the next opening.
+The tables `budgets`, `rules` and `scheduled` are renamed (`category_budgets`, `category_rules`,
+`scheduled_items`) and `transactions` goes. 0.2.0 refuses a file of format 2. If it already has the file open,
+whatever it writes to them fails at the first statement; it can still add or rename categories and change its
+settings (`meta`), which harms nothing. If it starts during the update it can still mark the file as format 1
+and add its own empty tables: they are dropped at the next opening, or, if it wrote in them, a new copy is made
+and what is there is added to the ledger.
 
-A transfer between currencies scheduled with 0.2.0 stays in the list, but posting the scheduled
-transactions stops at it, names it and posts nothing until it is deleted.
+A scheduled transfer between currencies, which 0.2.0 allowed, cannot be posted: it is reported and stays due,
+and the others are posted.

@@ -5,10 +5,10 @@ use crate::gui::{
     category_combo, column_combo, cut, error_text, expense_toggle, form_row, kind_icon, money, primary_button,
 };
 use anyhow::Result;
-use cashcraft_engine::db::{Account, AccountKind, Cents, NewScheduled, NewTx, TxEdit};
+use cashcraft_engine::db::{Account, AccountKind, NewScheduled, NewTx, TxEdit};
 use cashcraft_engine::i18n::{tr, trf, trn};
 use cashcraft_engine::importer::{self, ImportResult};
-use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount, parse_date};
+use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount, parse_date, total};
 use egui::{self, Color32, CornerRadius, Frame, Id, Margin, RichText, Ui};
 
 impl App {
@@ -172,6 +172,9 @@ impl App {
                     form_row(ui, tr("Opening balance €"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.opening).desired_width(120.0));
                     });
+                    form_row(ui, tr("Currency"), |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut f.currency).hint_text("EUR").desired_width(80.0));
+                    });
                     form_row(ui, "IBAN", |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.iban).hint_text(tr("optional")).desired_width(260.0));
                     });
@@ -190,11 +193,17 @@ impl App {
                                 let opening = if f.opening.trim().is_empty() { 0 } else { parse_amount(&f.opening)? };
                                 match f.id {
                                     Some(id) => {
-                                        self.db.update_account(id, &f.name, f.kind, opening, &f.iban, f.archived)?;
+                                        self.db.atomically(|| {
+                                            self.db.update_account(id, &f.name, f.kind, opening, &f.iban, f.archived)?;
+                                            if f.currency.trim() != f.old_currency {
+                                                self.db.set_account_currency(id, &f.currency)?;
+                                            }
+                                            Ok(())
+                                        })?;
                                         Ok(tr("Account updated").into())
                                     }
                                     None => {
-                                        let id = self.db.add_account(&f.name, f.kind, "EUR", opening, &f.iban)?;
+                                        let id = self.db.add_account(&f.name, f.kind, &f.currency, opening, &f.iban)?;
                                         self.view = View::Register(Some(id));
                                         Ok(tr("Account created").into())
                                     }
@@ -325,13 +334,80 @@ impl App {
                 Dialog::LedgerAccount(f) => {
                     (keep, message) = self.ledger_account_dialog(ui, f);
                 }
+                Dialog::RenameLedgerAccount(id, name, error) => {
+                    ui.heading(tr("Rename the account"));
+                    form_row(ui, tr("Name"), |ui| {
+                        ui.add(egui::TextEdit::singleline(name).desired_width(260.0));
+                    });
+                    if !error.is_empty() {
+                        ui.label(RichText::new(&*error).color(RED));
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if primary_button(ui, tr("Save")).clicked() {
+                            match self.db.rename_ledger_account(*id, name) {
+                                Ok(()) => {
+                                    message = Some(Ok(tr("Account updated").into()));
+                                    keep = false;
+                                }
+                                Err(e) => *error = format!("{e:#}"),
+                            }
+                        }
+                        if ui.button(tr("Cancel")).clicked() {
+                            keep = false;
+                        }
+                    });
+                }
+                Dialog::ConfirmDeleteLedgerAccount(id, name) => {
+                    ui.heading(tr("Delete the account?"));
+                    ui.label(trf("\"{name}\" has no entries.", &[("name", name)]));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(RED))
+                            .clicked()
+                        {
+                            message = Some(self.db.delete_ledger_account(*id).map(|_| tr("Account deleted").into()));
+                            keep = false;
+                        }
+                        if ui.button(tr("Cancel")).clicked() {
+                            keep = false;
+                        }
+                    });
+                }
+                Dialog::EntryDetail(id) => {
+                    (keep, message) = self.entry_detail(ui, *id);
+                }
+                Dialog::ConfirmDeleteEntry(id, lines) => {
+                    ui.heading(tr("Delete the entry?"));
+                    ui.label(trn(
+                        *lines,
+                        "Its {n} line will be deleted. This cannot be undone.",
+                        "All of its {n} lines will be deleted, in every account they are on. This cannot be undone.",
+                    ));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(RED))
+                            .clicked()
+                        {
+                            message = Some(self.db.delete_entry(*id).map(|_| tr("Entry deleted").into()));
+                            keep = false;
+                        }
+                        if ui.button(tr("Cancel")).clicked() {
+                            keep = false;
+                        }
+                    });
+                }
                 Dialog::ConfirmDeleteAccount(id, name) => {
                     ui.heading(tr("Delete the account?"));
                     ui.label(trf(
                         "The account \"{name}\" and all its transactions will be deleted. This cannot be undone.",
                         &[("name", name)],
                     ));
-                    ui.label(tr("The other side of its transfers stays in the other account, uncategorized."));
+                    ui.label(tr(
+                        "The other side of its transfers stays in the other account, against the opening balances: no other balance changes.",
+                    ));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui
@@ -558,7 +634,7 @@ impl App {
                 st.reparse();
             }
             ui.add_space(8.0);
-            let total: Cents = st.rows.iter().map(|r| r.amount).sum();
+            let total = total(st.rows.iter().map(|r| r.amount));
             let mut summary = trn(st.rows.len(), "{n} transaction found", "{n} transactions found");
             if st.skipped > 0 {
                 summary.push(' ');

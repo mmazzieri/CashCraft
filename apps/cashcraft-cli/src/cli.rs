@@ -161,7 +161,12 @@ pub enum AccountsCmd {
         opening: String,
         #[arg(long)]
         iban: Option<String>,
+        /// Three-letter code
+        #[arg(long, default_value = "EUR")]
+        currency: String,
     },
+    /// Change the currency of an account, amounts unchanged
+    Currency { account: String, currency: String },
     /// Delete an account and its transactions
     Delete { account: String },
 }
@@ -336,6 +341,12 @@ pub enum LedgerCmd {
         #[arg(long)]
         currency: Option<String>,
     },
+    /// Rename an account added by hand
+    Rename { account: String, name: String },
+    /// Delete an account added by hand, when nothing is on it
+    Remove { account: String },
+    /// Give a posting of an entry another category (none: uncategorized)
+    Categorize { posting_id: i64, category: Option<String> },
     /// Post an entry; debits (positive) and credits (negative) must be equal
     Post {
         /// "Account=amount", at least twice
@@ -360,6 +371,9 @@ pub enum LedgerCmd {
         to: Option<String>,
         #[arg(long, default_value_t = 50)]
         limit: usize,
+        /// How many to skip
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
     },
     /// Delete an entry, every side of it
     Delete { id: i64 },
@@ -436,10 +450,19 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
         }
         Cmd::Accounts(c) => match c {
             AccountsCmd::List { all } => ("list_accounts", args(&[("include_archived", v(all))])),
-            AccountsCmd::Add { name, kind, opening, iban } => (
+            AccountsCmd::Add { name, kind, opening, iban, currency } => (
                 "create_account",
-                args(&[("name", v(name)), ("kind", v(kind)), ("opening_balance", v(opening)), ("iban", o(&iban))]),
+                args(&[
+                    ("name", v(name)),
+                    ("kind", v(kind)),
+                    ("opening_balance", v(opening)),
+                    ("iban", o(&iban)),
+                    ("currency", v(currency)),
+                ]),
             ),
+            AccountsCmd::Currency { account, currency } => {
+                ("set_account_currency", args(&[("account", v(account)), ("currency", v(currency))]))
+            }
             AccountsCmd::Delete { account } => ("delete_account", args(&[("account", v(account))])),
         },
         Cmd::Tx(c) => match c {
@@ -567,10 +590,23 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
                 ]),
             ),
             LedgerCmd::Show { id } => ("get_entry", args(&[("id", v(id))])),
-            LedgerCmd::Entries { account, from, to, limit } => (
+            LedgerCmd::Entries { account, from, to, limit, offset } => (
                 "list_entries",
-                args(&[("ledger_account", o(&account)), ("from", o(&from)), ("to", o(&to)), ("limit", v(limit))]),
+                args(&[
+                    ("ledger_account", o(&account)),
+                    ("from", o(&from)),
+                    ("to", o(&to)),
+                    ("limit", v(limit)),
+                    ("offset", v(offset)),
+                ]),
             ),
+            LedgerCmd::Rename { account, name } => {
+                ("rename_ledger_account", args(&[("ledger_account", v(account)), ("name", v(name))]))
+            }
+            LedgerCmd::Remove { account } => ("delete_ledger_account", args(&[("ledger_account", v(account))])),
+            LedgerCmd::Categorize { posting_id, category } => {
+                ("set_posting_category", args(&[("posting_id", v(posting_id)), ("category", o(&category))]))
+            }
             LedgerCmd::Delete { id } => ("delete_entry", args(&[("id", v(id))])),
             LedgerCmd::TrialBalance { date } => ("trial_balance", args(&[("date", o(&date))])),
             LedgerCmd::Verify => ("verify_ledger", json!({})),
@@ -607,7 +643,8 @@ fn print_entry(e: &Value) {
     println!("{:>5}  {}  {}", st(field(e, "id")), when, st(field(e, "payee")));
     for p in field(e, "postings").as_array().into_iter().flatten() {
         println!(
-            "       {:<44} {:>20}",
+            "  {:>5} {:<44} {:>20}",
+            st(field(p, "id")),
             cut(&st(field(p, "account")), 44),
             exact(field(p, "amount"), field(p, "currency"))
         );
@@ -780,7 +817,7 @@ fn print_human(tool: &str, r: &Value) {
                         .collect();
                     println!(
                         "{:>4}  {:<8} {:<44} {}",
-                        st(field(a, "id")),
+                        st(field(a, "ledger_account_id")),
                         cut(&st(field(a, "code")), 8),
                         cut(&st(field(a, "path")), 44),
                         balances.join(", ")

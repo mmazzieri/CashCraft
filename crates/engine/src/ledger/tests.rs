@@ -236,15 +236,17 @@ fn a_transfer_keeps_both_texts_and_ids() {
 }
 
 #[test]
-fn deleting_an_account_leaves_the_other_side_of_its_transfers_uncategorized() {
+fn deleting_an_account_leaves_the_other_side_of_its_transfers_out_of_the_reports() {
     let (db, a, b) = books();
     let (_, y) = db.add_transfer(a, b, day("2026-03-04"), 5_000, "").unwrap();
     let before = db.find_account("Card").unwrap().balance;
     db.delete_account(a).unwrap();
     assert_eq!(db.find_account("Card").unwrap().balance, before);
     let t = db.transaction(y).unwrap();
-    assert_eq!((t.kind, t.transfer_peer), (TxKind::Uncategorized, None));
-    assert_eq!(db.monthly_totals(1, day("2026-03-31")).unwrap()[0].income, 5_000);
+    assert_eq!((t.kind, t.transfer_peer), (TxKind::Other, None));
+    let m = db.monthly_totals(1, day("2026-03-31")).unwrap().remove(0);
+    assert_eq!((m.income, m.expense), (0, 0));
+    assert!(db.category_totals(day("2026-03-01"), day("2026-03-31")).unwrap().is_empty());
     assert_sound(&db, "account deleted");
     assert!(db.find_ledger_account("Bank").is_err());
 }
@@ -310,7 +312,7 @@ fn the_chart_of_accounts_grows() {
     let all = db.ledger_accounts().unwrap();
     let s = all.iter().find(|a| a.id == sub).unwrap();
     assert_eq!((s.class, s.path.as_str(), s.parent_id), (Class::Equity, "Capital:Reserves", Some(top)));
-    for key in ["3010", "capital:reserves", "Reserves", &sub.to_string()] {
+    for key in ["code:3010", "capital:reserves", "Reserves", &format!("ledger:{sub}")] {
         assert_eq!(db.find_ledger_account(key).unwrap().id, sub, "{key}");
     }
     let before = dump(&db.conn);
@@ -397,107 +399,254 @@ fn operations_take_exact_amounts() {
     assert!(ops::call(&db, "get_entry", &json!({"id": id}), None).is_err());
 }
 
-/// One random operation, sound or not; what it was.
-fn step(db: &Db, r: &mut Lcg, n: usize) -> (String, anyhow::Result<()>) {
+/// The books kept in a second, simpler way: each entry is a list of accounts and amounts. Everything that is
+/// neither an account of the user nor an asset, liability or equity account added by hand is account 0.
+#[derive(Default)]
+struct Model {
+    entries: std::collections::BTreeMap<i64, Vec<(i64, Cents)>>,
+    /// Opening balances, by account of the user.
+    openings: std::collections::BTreeMap<i64, Cents>,
+    hashes: std::collections::HashSet<(i64, String)>,
+    hash_of: std::collections::BTreeMap<i64, (i64, String)>,
+}
+
+impl Model {
+    fn balances(&self) -> std::collections::BTreeMap<i64, Cents> {
+        let mut out = std::collections::BTreeMap::new();
+        for (a, v) in self.openings.iter().chain(self.entries.values().flatten().map(|(a, v)| (a, v))) {
+            *out.entry(*a).or_default() += *v;
+        }
+        out.remove(&0);
+        out.retain(|_, v| *v != 0);
+        out
+    }
+
+    fn remove(&mut self, entry: i64) {
+        self.entries.remove(&entry);
+        if let Some(h) = self.hash_of.remove(&entry) {
+            self.hashes.remove(&h);
+        }
+    }
+}
+
+/// Accounts that the model follows: positive is an account of the user, negative one of the chart.
+fn followed(a: &LedgerAccount) -> i64 {
+    match a.money_account_id {
+        Some(m) => m,
+        None if a.system.is_none() && a.category_id.is_none() => -a.id,
+        None => 0,
+    }
+}
+
+/// One random operation, sound or not, on the books and on the model; what it was.
+fn step(db: &Db, m: &mut Model, r: &mut Lcg, n: usize) -> (String, anyhow::Result<()>) {
     let accounts: Vec<i64> = db.accounts(true).unwrap().iter().map(|a| a.id).collect();
     let categories: Vec<i64> = db.categories().unwrap().iter().map(|c| c.id).collect();
-    let chart: Vec<i64> = db.ledger_accounts().unwrap().iter().map(|a| a.id).collect();
-    let txs: Vec<i64> = db.transactions(&TxFilter::default()).unwrap().iter().map(|t| t.id).collect();
+    let chart: Vec<(i64, i64)> = db.ledger_accounts().unwrap().iter().map(|a| (a.id, followed(a))).collect();
+    let txs = db.transactions(&TxFilter::default()).unwrap();
     let date = day("2025-01-01") + chrono::Days::new(r.below(700) as u64);
     let category = if r.below(3) == 0 { None } else { r.pick(&categories) };
     let account = r.pick(&accounts).unwrap_or(0);
-    let tx = r.pick(&txs).unwrap_or(0);
-    let what = r.below(24);
-    let done = match what {
-        0 => {
-            let kind = AccountKind::ALL[r.below(6)];
-            let currency = if r.below(4) == 0 { "USD" } else { "EUR" };
-            db.add_account(&format!("A{n}"), kind, currency, r.amount(), "").map(|_| ())
+    let tx = if txs.is_empty() { None } else { Some(&txs[r.below(txs.len())]) };
+    let (tx_id, tx_entry) = tx.map_or((0, 0), |t| (t.id, t.entry_id));
+    let what = r.below(25);
+    let done: anyhow::Result<()> = (|| {
+        match what {
+            0 => {
+                let kind = AccountKind::ALL[r.below(6)];
+                let currency = if r.below(4) == 0 { "USD" } else { "EUR" };
+                let opening = r.amount();
+                let id = db.add_account(&format!("A{n}"), kind, currency, opening, "")?;
+                m.openings.insert(id, opening);
+            }
+            1 => {
+                db.delete_account(account)?;
+                m.openings.remove(&account);
+                let mut gone = Vec::new();
+                for (id, lines) in &mut m.entries {
+                    if !lines.iter().any(|l| l.0 == account) {
+                        continue;
+                    }
+                    for l in lines.iter_mut().filter(|l| l.0 == account) {
+                        l.0 = 0;
+                    }
+                    if lines.iter().all(|l| l.0 == 0) {
+                        gone.push(*id);
+                    }
+                }
+                for id in gone {
+                    m.remove(id);
+                }
+                m.hashes.retain(|h| h.0 != account);
+                m.hash_of.retain(|_, h| h.0 != account);
+            }
+            2 => {
+                let opening = if r.below(3) == 0 { 0 } else { r.amount() };
+                db.update_account(account, &format!("B{n}"), AccountKind::ALL[r.below(6)], opening, "", false)?;
+                if accounts.contains(&account) {
+                    m.openings.insert(account, opening);
+                }
+            }
+            3..=7 => {
+                let amount = r.amount();
+                let hash = if r.below(4) == 0 { Some(format!("h{}", r.below(20))) } else { None };
+                let known = hash.clone().is_some_and(|h| m.hashes.contains(&(account, h)));
+                let id = db.add_transaction(&NewTx {
+                    account_id: account,
+                    date,
+                    amount,
+                    payee: ["FARMACIA", "shop", "bar "][r.below(3)].into(),
+                    category_id: category,
+                    import_hash: hash.clone(),
+                    ..Default::default()
+                })?;
+                assert_eq!(id.is_none(), known);
+                if let Some(id) = id {
+                    let entry = db.transaction(id)?.entry_id;
+                    m.entries.insert(entry, vec![(account, amount), (0, -amount)]);
+                    if let Some(h) = hash {
+                        m.hashes.insert((account, h.clone()));
+                        m.hash_of.insert(entry, (account, h));
+                    }
+                }
+            }
+            8 | 9 => {
+                let (to, amount) = (r.pick(&accounts).unwrap_or(0), r.amount());
+                let (x, _) = db.add_transfer(account, to, date, amount, "t")?;
+                let amount = amount.abs();
+                m.entries.insert(db.transaction(x)?.entry_id, vec![(account, -amount), (to, amount)]);
+            }
+            10 | 11 => {
+                let amount = r.amount();
+                let edit = TxEdit { date, amount, payee: "e".into(), category_id: category, ..Default::default() };
+                db.update_transaction(tx_id, &edit)?;
+                let t = tx.unwrap();
+                let lines = m.entries.get_mut(&tx_entry).unwrap();
+                if t.kind != TxKind::Split {
+                    assert_eq!(lines.len(), 2);
+                    for l in lines {
+                        l.1 = if l.0 == t.account_id { amount } else { -amount };
+                    }
+                    if t.kind == TxKind::Other && category.is_some() {
+                        let account = t.account_id;
+                        m.entries.insert(tx_entry, vec![(account, amount), (0, -amount)]);
+                    }
+                }
+            }
+            12 => {
+                db.set_category(tx_id, category)?;
+                for l in m.entries.get_mut(&tx_entry).unwrap() {
+                    if l.0 != tx.unwrap().account_id {
+                        l.0 = 0;
+                    }
+                }
+            }
+            13 => db.set_cleared(tx_id, r.below(2) == 0)?,
+            14 => {
+                db.delete_transaction(tx_id)?;
+                m.remove(tx_entry);
+            }
+            15 => db.delete_category(r.pick(&categories).unwrap_or(0))?,
+            16 => {
+                db.category_by_path(&format!("C{}:D{n}", r.below(3)), r.below(2) == 0, true)?;
+            }
+            17 => {
+                db.apply_rules()?;
+            }
+            18 => {
+                let class = if r.below(2) == 0 { Some(Class::ALL[r.below(5)]) } else { None };
+                let parent = if r.below(2) == 0 { r.pick(&chart).map(|c| c.0) } else { None };
+                db.create_ledger_account(&format!("L{n}"), class, parent, "", None)?;
+            }
+            19 => {
+                let entries: Vec<i64> = db.entries(&EntryFilter::default())?.iter().map(|e| e.id).collect();
+                let id = r.pick(&entries).unwrap_or(0);
+                db.delete_entry(id)?;
+                m.remove(id);
+            }
+            20 => {
+                let c = r.pick(&chart).unwrap_or((0, 0)).0;
+                if r.below(2) == 0 {
+                    db.delete_ledger_account(c)?;
+                } else {
+                    db.rename_ledger_account(c, &format!("R{n}"))?;
+                }
+            }
+            21 => db.set_account_currency(account, ["USD", "EUR"][r.below(2)])?,
+            22 => {
+                let postings: Vec<i64> =
+                    db.entries(&EntryFilter::default())?.iter().flat_map(|e| e.postings.iter().map(|p| p.id)).collect();
+                db.set_posting_category(r.pick(&postings).unwrap_or(0), category)?;
+            }
+            _ => {
+                // Balanced but for the last case.
+                let mut lines: Vec<(i64, i64, Cents)> = (0..1 + r.below(5))
+                    .map(|_| {
+                        let (id, key) = r.pick(&chart).unwrap();
+                        (id, key, r.amount())
+                    })
+                    .collect();
+                let sum: Cents = lines.iter().map(|l| l.2).sum();
+                let off = if what == 24 { 1 } else { 0 };
+                let (id, key) = r.pick(&chart).unwrap();
+                lines.push((id, key, off - sum));
+                let new = lines.iter().map(|l| line(l.0, l.2)).collect();
+                let done = db.post_entry(&NewEntry { date, payee: "p".into(), memo: String::new(), lines: new });
+                assert!(what != 24 || done.is_err());
+                m.entries.insert(done?, lines.iter().map(|l| (l.1, l.2)).collect());
+            }
         }
-        1 => db.delete_account(account),
-        2 => db.update_account(
-            account,
-            &format!("B{n}"),
-            AccountKind::ALL[r.below(6)],
-            if r.below(3) == 0 { 0 } else { r.amount() },
-            "",
-            false,
-        ),
-        3..=7 => db
-            .add_transaction(&NewTx {
-                account_id: account,
-                date,
-                amount: r.amount(),
-                payee: ["FARMACIA", "shop", "bar "][r.below(3)].into(),
-                category_id: category,
-                import_hash: if r.below(4) == 0 { Some(format!("h{}", r.below(20))) } else { None },
-                ..Default::default()
-            })
-            .map(|_| ()),
-        8 | 9 => db.add_transfer(account, r.pick(&accounts).unwrap_or(0), date, r.amount(), "t").map(|_| ()),
-        10 | 11 => db.update_transaction(
-            tx,
-            &TxEdit { date, amount: r.amount(), payee: "e".into(), category_id: category, ..Default::default() },
-        ),
-        12 => db.set_category(tx, category),
-        13 => db.set_cleared(tx, r.below(2) == 0),
-        14 => db.delete_transaction(tx),
-        15 => db.delete_category(r.pick(&categories).unwrap_or(0)),
-        16 => db.category_by_path(&format!("C{}:D{n}", r.below(3)), r.below(2) == 0, true).map(|_| ()),
-        17 => db.apply_rules().map(|_| ()),
-        18 => {
-            let class = if r.below(2) == 0 { Some(Class::ALL[r.below(5)]) } else { None };
-            let parent = if r.below(2) == 0 { r.pick(&chart) } else { None };
-            db.create_ledger_account(&format!("L{n}"), class, parent, "", None).map(|_| ())
-        }
-        19 => {
-            let entries: Vec<i64> = db.entries(&EntryFilter::default()).unwrap().iter().map(|e| e.id).collect();
-            db.delete_entry(r.pick(&entries).unwrap_or(0))
-        }
-        _ => {
-            // Balanced but for the last case.
-            let mut lines: Vec<NewLine> =
-                (0..1 + r.below(5)).map(|_| line(r.pick(&chart).unwrap_or(0), r.amount())).collect();
-            let sum: Cents = lines.iter().map(|l| l.amount).sum();
-            let off = if what == 23 { 1 } else { 0 };
-            lines.push(line(r.pick(&chart).unwrap_or(0), off - sum));
-            let done = db.post_entry(&NewEntry { date, payee: "p".into(), memo: String::new(), lines }).map(|_| ());
-            assert!(what != 23 || done.is_err());
-            done
-        }
-    };
+        Ok(())
+    })();
     (format!("step {n}, operation {what}, account {account}"), done)
 }
 
 #[test]
-fn random_operations_keep_the_books_balanced() {
-    let mut worked = 0;
+fn random_operations_keep_the_books_balanced_and_as_the_model() {
+    let mut worked = [0; 25];
     for seed in 1..=25 {
         let mut r = Lcg(seed);
-        let (db, _, _) = books();
+        let (db, a, b) = books();
+        let mut model = Model::default();
+        model.openings.extend([(a, 100_000), (b, -5_000)]);
         for n in 0..120 {
             let before = dump(&db.conn);
-            let balances: Vec<(i64, Cents)> = db.accounts(true).unwrap().iter().map(|a| (a.id, a.balance)).collect();
-            let (what, done) = step(&db, &mut r, n);
+            let (what, done) = step(&db, &mut model, &mut r, n);
             let what = format!("seed {seed}, {what}");
             match done {
-                Ok(()) => worked += 1,
+                Ok(()) => {
+                    let op = what.split("operation ").nth(1).unwrap().split(',').next().unwrap();
+                    worked[op.parse::<usize>().unwrap()] += 1;
+                }
                 Err(_) => assert_eq!(dump(&db.conn), before, "{what}"),
             }
             assert_sound(&db, &what);
-            if what.contains("operation 1,") || what.contains("operation 15,") {
-                for a in db.accounts(true).unwrap() {
-                    assert!(balances.contains(&(a.id, a.balance)), "{what}");
+            let mut real = std::collections::BTreeMap::new();
+            for a in db.ledger_accounts().unwrap() {
+                let sum: Cents = a.balances.iter().map(|b| b.amount).sum();
+                if followed(&a) != 0 && sum != 0 {
+                    real.insert(followed(&a), sum);
                 }
             }
-            // The register agrees with the balance.
+            assert_eq!(real, model.balances(), "{what}");
+            // The register and the net worth agree with the balances.
             for a in db.accounts(true).unwrap() {
                 let txs = db.transactions(&TxFilter { account_id: Some(a.id), ..Default::default() }).unwrap();
                 assert_eq!(txs.first().and_then(|t| t.balance).unwrap_or(a.opening_balance), a.balance, "{what}");
             }
+            let owned: Cents = db
+                .ledger_accounts()
+                .unwrap()
+                .iter()
+                .filter(|a| matches!(a.class, Class::Asset | Class::Liability))
+                .flat_map(|a| a.balances.iter().map(|b| b.amount))
+                .sum();
+            assert_eq!(db.net_worth(None).unwrap(), owned, "{what}");
         }
     }
-    assert!(worked > 1500, "{worked}");
+    // Every operation was tried and some of each succeeded, but for the one that is never balanced.
+    assert!(worked.iter().take(24).all(|n| *n > 0) && worked[24] == 0, "{worked:?}");
+    assert!(worked.iter().sum::<i32>() > 1500, "{worked:?}");
 }
 
 /// Postings are written in one place: anything else could leave an entry unbalanced.
@@ -513,8 +662,10 @@ fn only_save_entry_writes_postings() {
                 let text = std::fs::read_to_string(&p).unwrap().to_lowercase();
                 for verb in ["insert into", "insert or ignore into", "insert or replace into", "update", "delete from"]
                 {
-                    for _ in text.matches(&format!("{verb} postings")) {
-                        out.push(format!("{name}: {verb}"));
+                    for table in ["postings", "entries"] {
+                        for _ in text.matches(&format!("{verb} {table}")) {
+                            out.push(format!("{name}: {verb} {table}"));
+                        }
                     }
                 }
             }
@@ -526,5 +677,300 @@ fn only_save_entry_writes_postings() {
         scan(&root.join(dir), &mut found);
     }
     found.sort();
-    assert_eq!(found, ["ledger.rs: delete from", "ledger.rs: insert into", "ledger.rs: update"]);
+    let expected = [
+        // Every account goes.
+        "db.rs: delete from entries",
+        // `remove_entry`.
+        "ledger.rs: delete from entries",
+        "ledger.rs: delete from postings",
+        "ledger.rs: insert into entries",
+        "ledger.rs: insert into postings",
+        "ledger.rs: update entries",
+        "ledger.rs: update postings",
+    ];
+    assert_eq!(found, expected);
+}
+
+/// S1: what would make a sum too large is refused, and everything still reads.
+#[test]
+fn balanced_huge_entries_are_refused_before_any_sum_overflows() {
+    let (db, _, _) = books();
+    let (bank, health) = (ledger(&db, "Bank"), ledger(&db, "Health"));
+    let max = crate::money::MAX_AMOUNT;
+    let post = |lines: Vec<NewLine>| {
+        let before = dump(&db.conn);
+        let done = db.post_entry(&entry(lines));
+        if done.is_err() {
+            assert_eq!(dump(&db.conn), before);
+        }
+        done.is_ok()
+    };
+    // One account, always on the same side.
+    let mut n = 0;
+    while post(vec![line(bank, max), line(health, -max)]) {
+        n += 1;
+        assert!(n < 100);
+    }
+    assert!(n >= 5);
+    // The other side is still open.
+    assert!(post(vec![line(bank, -max), line(health, max)]));
+    // No account grows, but their movements do: sums of one sign, or up to a date, must fit too.
+    let lines: Vec<NewLine> =
+        (0..MAX_LINES as i64).map(|i| line(health, if i % 2 == 0 { max } else { -max })).collect();
+    let mut n = 0;
+    while post(lines.clone()) {
+        n += 1;
+        assert!(n < 100);
+    }
+    assert!(n >= 10);
+    assert_sound(&db, "huge");
+    let all = json!({"account": "Bank", "month": "2026-03", "from": "2026-01-01", "to": "2026-12-31", "id": 1});
+    for tool in [
+        "list_accounts",
+        "list_transactions",
+        "spending_by_category",
+        "monthly_summary",
+        "net_worth",
+        "budget_status",
+        "list_ledger_accounts",
+        "list_entries",
+        "trial_balance",
+        "verify_ledger",
+    ] {
+        let a = if tool == "list_transactions" { json!({"account": "Bank"}) } else { all.clone() };
+        ops::call(&db, tool, &a, None).unwrap_or_else(|e| panic!("{tool}: {e:#}"));
+    }
+    let txs = db.transactions(&TxFilter::default()).unwrap();
+    db.register_totals(&txs, None).unwrap();
+    // What is there can always be taken away.
+    for e in db.entries(&EntryFilter::default()).unwrap() {
+        if !e.opening {
+            db.delete_entry(e.id).unwrap();
+        }
+    }
+    assert_sound(&db, "emptied");
+}
+
+/// S2 and S4: what a split counts for, in the register, by month and by category.
+#[test]
+fn a_split_counts_its_categories_once() {
+    let (db, bank_id, _) = books();
+    let id = |k: &str| ledger(&db, k);
+    let cash = db.add_account("Cash", AccountKind::Cash, "EUR", 0, "").unwrap();
+    let (from, to) = (day("2026-03-01"), day("2026-03-31"));
+    let check = |lines: Vec<NewLine>, income: Cents, expense: Cents, what: &str| {
+        let e = db.post_entry(&entry(lines)).unwrap();
+        let m = db.monthly_totals(1, to).unwrap().remove(0);
+        assert_eq!((m.income, m.expense), (income, expense), "{what}: month");
+        let totals = db.category_totals(from, to).unwrap();
+        assert_eq!(CategoryTotal::income_and_expense(&totals).unwrap(), (income, expense), "{what}: categories");
+        let txs = db.transactions(&TxFilter::default()).unwrap();
+        if !txs.is_empty() {
+            assert_eq!(db.register_totals(&txs, None).unwrap(), (income, expense), "{what}: register");
+        }
+        db.delete_entry(e).unwrap();
+    };
+    check(vec![line(id("Bank"), 150), line(id("Bank and taxes:Taxes"), 50), line(id("Salary"), -200)], 200, 50, "pay");
+    check(vec![line(id("Bank"), -60), line(id("Card"), -40), line(id("Groceries"), 100)], 0, 100, "paid twice");
+    check(vec![line(id("Bank"), -60), line(id("Card"), -40), line(id("Cash"), 100)], 0, 0, "own accounts");
+    // A refund of two categories is a smaller expense; money back on one is income, as in 0.2.0.
+    check(vec![line(id("Bank"), 30), line(id("Groceries"), -10), line(id("Health"), -20)], 0, -30, "refunds");
+    check(vec![line(id("Bank"), 30), line(id("Groceries"), -30)], 30, 0, "refund");
+    check(vec![line(id("Groceries"), 100), line(id("Health"), -100)], 0, 0, "between expenses");
+    check(vec![line(id("Salary"), 100), line(id("Groceries"), -100)], -100, -100, "between classes");
+    // Filtered by a category, only that part of it; in the register of one account, once.
+    db.post_entry(&entry(vec![line(id("Bank"), -60), line(id("Groceries"), 40), line(id("Health"), 20)])).unwrap();
+    let health = db.find_category("Health").unwrap().id;
+    let txs = db.transactions(&TxFilter { category_id: Some(health), ..Default::default() }).unwrap();
+    assert_eq!(db.register_totals(&txs, Some(health)).unwrap(), (0, 20));
+    let txs = db.transactions(&TxFilter { account_id: Some(bank_id), ..Default::default() }).unwrap();
+    assert_eq!(db.register_totals(&txs, None).unwrap(), (0, 60));
+    let txs = db.transactions(&TxFilter { account_id: Some(cash), ..Default::default() }).unwrap();
+    assert_eq!(db.register_totals(&txs, None).unwrap(), (0, 0));
+}
+
+/// S3: no income or expense appears when an account goes, not even from a split.
+#[test]
+fn deleting_an_account_never_makes_income_or_expense() {
+    let (db, a, _) = books();
+    let id = |k: &str| ledger(&db, k);
+    let capital = db.create_ledger_account("Capital", Some(Class::Equity), None, "", None).unwrap();
+    db.post_entry(&entry(vec![line(id("Bank"), 900), line(capital, -900)])).unwrap();
+    db.post_entry(&entry(vec![line(id("Bank"), -60), line(id("Card"), -40), line(id("Groceries"), 100)])).unwrap();
+    db.add_transfer(a, db.find_account("Card").unwrap().id, day("2026-03-04"), 700, "").unwrap();
+    let figures = || {
+        let m = db.monthly_totals(1, day("2026-03-31")).unwrap().remove(0);
+        (m.income, m.expense, db.find_account("Card").unwrap().balance)
+    };
+    let before = figures();
+    db.delete_account(a).unwrap();
+    assert_eq!(figures(), before);
+    assert_sound(&db, "deleted");
+}
+
+/// S5: part of a split can be categorized again, and is found.
+#[test]
+fn part_of_a_split_is_categorized_again() {
+    let (db, _, _) = books();
+    let id = |k: &str| ledger(&db, k);
+    let e =
+        db.post_entry(&entry(vec![line(id("Bank"), -60), line(id("Groceries"), 40), line(id("Health"), 20)])).unwrap();
+    db.delete_category(db.find_category("Health").unwrap().id).unwrap();
+    let uncategorized = || db.transactions(&TxFilter { uncategorized: true, ..Default::default() }).unwrap();
+    assert_eq!(uncategorized().len(), 1);
+    let find = |name: &str| db.entry(e).unwrap().postings.into_iter().find(|p| p.account == name).unwrap().id;
+    let posting = find("Uncategorized");
+    ops::call(&db, "set_posting_category", &json!({"posting_id": posting, "category": "Travel"}), None).unwrap();
+    assert!(uncategorized().is_empty());
+    assert_eq!(find("Travel"), posting);
+    let before = dump(&db.conn);
+    for bad in [find("Bank"), 999_999] {
+        assert!(db.set_posting_category(bad, None).is_err());
+    }
+    assert!(db.set_posting_category(posting, Some(999_999)).is_err());
+    assert_eq!(dump(&db.conn), before);
+    assert_sound(&db, "categorized");
+}
+
+/// S5: accounts added by hand.
+#[test]
+fn hand_made_accounts_are_renamed_and_deleted_when_unused() {
+    let (db, _, _) = books();
+    let top = db.create_ledger_account("Capital", Some(Class::Equity), None, "", None).unwrap();
+    let sub = db.create_ledger_account("Reserves", None, Some(top), "", None).unwrap();
+    db.create_ledger_account("Other", Some(Class::Equity), None, "", None).unwrap();
+    let before = dump(&db.conn);
+    for (id, name) in [(top, ""), (top, "a:b"), (top, "OTHER"), (ledger(&db, "Bank"), "x"), (999_999, "x")] {
+        assert!(db.rename_ledger_account(id, name).is_err(), "{name}");
+    }
+    for id in [top, ledger(&db, "Bank"), ledger(&db, "Health"), ledger(&db, "system:uncategorized"), 999_999] {
+        assert!(db.delete_ledger_account(id).is_err());
+    }
+    assert_eq!(dump(&db.conn), before);
+    let a = json!({"ledger_account": "Capital", "name": "Equity"});
+    ops::call(&db, "rename_ledger_account", &a, None).unwrap();
+    let e = db.post_entry(&entry(vec![line(ledger(&db, "Bank"), 5), line(sub, -5)])).unwrap();
+    assert!(db.delete_ledger_account(sub).is_err());
+    db.delete_entry(e).unwrap();
+    for key in ["Equity:Reserves", "Equity"] {
+        ops::call(&db, "delete_ledger_account", &json!({"ledger_account": key}), None).unwrap();
+    }
+    assert!(db.find_ledger_account("Equity").is_err());
+    assert_sound(&db, "hand made");
+}
+
+/// S6: currencies are written one way, and can be put right.
+#[test]
+fn currencies_are_normalized_and_can_be_changed() {
+    let (db, a, b) = books();
+    for euro in ["", " eur ", "€", "Euro", "EUROS"] {
+        assert_eq!(check_currency(euro).unwrap(), "EUR", "{euro}");
+    }
+    assert_eq!(check_currency("usd").unwrap(), "USD");
+    for bad in ["$", "EU", "EURR", "E1R", "ÀBC", "é"] {
+        assert!(check_currency(bad).is_err(), "{bad}");
+        assert!(db.add_account("X", AccountKind::Bank, bad, 0, "").is_err(), "{bad}");
+        assert!(db.create_ledger_account("X", Some(Class::Asset), None, "", Some(bad)).is_err(), "{bad}");
+    }
+    let c = db.add_account("E", AccountKind::Bank, "Euro", 0, "").unwrap();
+    assert_eq!(db.find_account("E").unwrap().currency, "EUR");
+    db.delete_account(c).unwrap();
+    let health = db.find_category("Health").unwrap().id;
+    let tx = NewTx { account_id: a, amount: -100, payee: "p".into(), category_id: Some(health), ..Default::default() };
+    db.add_transaction(&tx).unwrap();
+    ops::call(&db, "set_account_currency", &json!({"account": "Bank", "currency": "usd"}), None).unwrap();
+    let bank = db.find_account("Bank").unwrap();
+    assert_eq!((bank.currency.as_str(), bank.balance, bank.opening_balance), ("USD", 99_900, 100_000));
+    assert_sound(&db, "dollars");
+    assert!(db.entries(&EntryFilter::default()).unwrap().iter().flat_map(|e| &e.postings).any(|p| p.currency == "USD"));
+    db.set_account_currency(a, "EUR").unwrap();
+    db.add_transfer(a, b, day("2026-03-04"), 5, "").unwrap();
+    let before = dump(&db.conn);
+    assert!(db.set_account_currency(a, "USD").is_err());
+    assert!(db.set_account_currency(a, "$").is_err());
+    assert_eq!(dump(&db.conn), before);
+}
+
+/// M5: a number is never guessed, and neither is a name that two accounts have.
+#[test]
+fn lookups_in_the_chart_are_never_guesses() {
+    let (db, _, _) = books();
+    let bank = ledger(&db, "Bank");
+    let e = db.find_ledger_account(&bank.to_string()).unwrap_err().to_string();
+    assert!(e.contains(&format!("ledger:{bank}")), "{e}");
+    let two = |account: serde_json::Value| {
+        let postings = json!([{"account": account, "amount": 1}, {"account": "Health", "amount": -1}]);
+        ops::call(&db, "post_entry", &json!({"postings": postings}), None)
+    };
+    assert!(two(json!(bank)).is_err() && two(json!(bank.to_string())).is_err());
+    let v = two(json!(format!("ledger:{bank}"))).unwrap();
+    assert_eq!(v["entry"]["postings"][0]["ledger_account_id"], bank);
+    let all = ops::call(&db, "list_ledger_accounts", &json!({}), None).unwrap();
+    assert!(all["accounts"][0]["ledger_account_id"].is_i64() && all["accounts"][0].get("id").is_none());
+    // A category with the name of an account every file has.
+    for name in ["Uncategorized", "opening_balances"] {
+        db.category_by_path(name, false, true).unwrap();
+        let e = db.find_ledger_account(name).unwrap_err().to_string();
+        assert!(e.contains("ledger:"), "{e}");
+        assert!(db.find_ledger_account(&format!("system:{}", name.to_lowercase())).unwrap().system.is_some());
+    }
+}
+
+/// M7: what is owned or owed counts, whoever made the account.
+#[test]
+fn the_net_worth_has_every_asset_and_liability() {
+    let (db, _, _) = books();
+    let car = db.create_ledger_account("Car", Some(Class::Asset), None, "", None).unwrap();
+    let debt = db.create_ledger_account("Debt", Some(Class::Liability), None, "", None).unwrap();
+    db.post_entry(&entry(vec![line(car, 9_000), line(debt, -9_000)])).unwrap();
+    db.post_entry(&entry(vec![line(car, 500), line(ledger(&db, "system:opening_balances"), -500)])).unwrap();
+    assert_eq!(db.net_worth(None).unwrap(), 95_500);
+    assert_eq!(db.net_worth_history(1, day("2026-03-31")).unwrap()[0].1, 95_500);
+    assert_eq!(db.net_worth(Some(day("2026-03-03"))).unwrap(), 95_000);
+    for tool in ["net_worth", "list_accounts"] {
+        assert_eq!(ops::call(&db, tool, &json!({}), None).unwrap()["net_worth"], json!(955.0));
+    }
+}
+
+/// S6: one that fails does not stop the others.
+#[test]
+fn a_scheduled_transaction_that_fails_does_not_stop_the_others() {
+    let (db, a, b) = books();
+    let item = |payee: &str, to, amount| NewScheduled {
+        account_id: a,
+        to_account_id: to,
+        amount,
+        payee: payee.into(),
+        next_date: day("2026-01-01"),
+        every: 1,
+        unit: "month".into(),
+        ..Default::default()
+    };
+    db.add_scheduled(&item("Bad", Some(b), 5)).unwrap();
+    db.add_scheduled(&item("Good", None, -7)).unwrap();
+    // The card becomes a dollar one after that.
+    db.set_account_currency(b, "USD").unwrap();
+    let v = ops::call(&db, "post_scheduled", &json!({"until": "2026-02-15"}), None).unwrap();
+    assert_eq!((v["posted"].clone(), v["failed"][0]["payee"].clone()), (json!(2), json!("Bad")));
+    assert!(v["message"].as_str().unwrap().contains("Bad"));
+    let dates: Vec<_> = db.scheduled().unwrap().iter().map(|s| (s.payee.clone(), d2s(s.next_date))).collect();
+    assert_eq!(dates, [("Bad".into(), "2026-01-01".to_string()), ("Good".into(), "2026-03-01".to_string())]);
+    assert_eq!(db.transactions(&TxFilter::default()).unwrap().len(), 2);
+}
+
+/// Pages of the journal.
+#[test]
+fn entries_come_in_pages() {
+    let (db, _, _) = books();
+    let (bank, health) = (ledger(&db, "Bank"), ledger(&db, "Health"));
+    for _ in 0..7 {
+        db.post_entry(&entry(vec![line(bank, -1), line(health, 1)])).unwrap();
+    }
+    let page = |offset| {
+        let f = EntryFilter { ledger_account_id: Some(health), offset, limit: Some(3), ..Default::default() };
+        db.entries(&f).unwrap().iter().map(|e| e.id).collect::<Vec<_>>()
+    };
+    let all: Vec<i64> = [page(0), page(3), page(6), page(9)].concat();
+    assert_eq!(all.len(), 7);
+    assert!(all.windows(2).all(|w| w[0] > w[1]));
 }

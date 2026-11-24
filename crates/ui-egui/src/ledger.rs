@@ -1,13 +1,15 @@
 //! The chart of accounts, the trial balance and the form of an entry.
 
 use crate::gui::{
-    App, Dialog, MUTED, RED, TEXT, TRACK, card, error_text, form_row, or_report, primary_button, section_title,
-    small_caps,
+    App, Dialog, MUTED, RED, TEXT, TRACK, card, category_combo, cut, error_text, form_row, or_report, primary_button,
+    section_title, small_caps,
 };
 use anyhow::Result;
-use cashcraft_engine::db::{self, Cents};
+use cashcraft_engine::db::{self, Cents, Transaction, TxKind};
 use cashcraft_engine::i18n::{tr, trf};
-use cashcraft_engine::ledger::{Balance, Class, LedgerAccount, NewEntry, NewLine, TrialBalance};
+use cashcraft_engine::ledger::{
+    Balance, Class, Entry, EntryFilter, LedgerAccount, NewEntry, NewLine, TrialBalance, UNCATEGORIZED,
+};
 use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount_exact, parse_date};
 use egui::{self, Align, Layout, RichText, Ui, Vec2};
 use std::collections::{BTreeMap, HashSet};
@@ -15,8 +17,13 @@ use std::collections::{BTreeMap, HashSet};
 /// What the view shows, read once.
 pub struct LedgerData {
     pub accounts: Vec<LedgerAccount>,
-    pub trial: TrialBalance,
+    pub trial: Result<TrialBalance, String>,
+    /// A page of the entries of the chosen account, and whether there is another.
+    pub journal: Result<(Vec<Entry>, bool), String>,
 }
+
+/// Entries in a page of the journal.
+const PAGE: usize = 50;
 
 #[derive(Clone, Default)]
 pub struct EntryLine {
@@ -53,6 +60,9 @@ impl EntryLine {
     /// Debit minus credit.
     pub fn amount(&self) -> Result<Cents> {
         let side = |s: &str| if s.trim().is_empty() { Ok(0) } else { parse_amount_exact(s) };
+        if !self.debit.trim().is_empty() && !self.credit.trim().is_empty() {
+            anyhow::bail!(tr("a line is in debit or in credit, not both"));
+        }
         side(&self.debit)?
             .checked_sub(side(&self.credit)?)
             .ok_or_else(|| anyhow::anyhow!(tr("the amount is too large")))
@@ -195,17 +205,21 @@ impl App {
             Some(d) => d,
             None => LedgerData {
                 accounts: or_report(self.db.ledger_accounts(), &mut self.toast),
-                trial: or_report(self.db.trial_balance(until), &mut self.toast),
+                trial: self.db.trial_balance(until).map_err(|e| error_text(&e)),
+                journal: self.journal_page().map_err(|e| error_text(&e)),
             },
         };
+        if self.journal.is_some_and(|(id, _)| data.accounts.iter().all(|a| a.id != id)) {
+            self.journal = None;
+        }
         let mut changed = false;
-        let mut add: Option<LedgerAccountForm> = None;
+        let mut wanted: Option<Wanted> = None;
         ui.horizontal(|ui| {
             if primary_button(ui, tr("+ Entry")).on_hover_text(tr("New entry in the ledger (⌘J)")).clicked() {
                 self.open_entry();
             }
             if ui.button(tr("+ Account in the chart")).clicked() {
-                add = Some(LedgerAccountForm { class: Some(Class::Asset), ..Default::default() });
+                wanted = Some(Wanted::Add(LedgerAccountForm { class: Some(Class::Asset), ..Default::default() }));
             }
             if ui.button(tr("✔ Check the books")).clicked() {
                 let message = match self.db.verify_ledger() {
@@ -235,7 +249,7 @@ impl App {
                             ui.add_space(6.0);
                             small_caps(ui, class.label());
                             for row in tree(&data.accounts, class) {
-                                chart_row(ui, &row, &mut add);
+                                chart_row(ui, &row, self.journal.map(|j| j.0), &mut wanted);
                             }
                         }
                     });
@@ -244,6 +258,11 @@ impl App {
             ui.allocate_ui(Vec2::new(half, height), |ui| {
                 card(ui, |ui| {
                     ui.set_width(half - 30.0);
+                    if let Some((id, page)) = self.journal {
+                        let name = data.accounts.iter().find(|a| a.id == id).map(|a| a.path.as_str());
+                        journal_view(ui, name.unwrap_or_default(), id, page, &data.journal, &mut wanted);
+                        return;
+                    }
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
                         section_title(ui, tr("Trial balance"));
@@ -260,16 +279,116 @@ impl App {
                         ui.label(RichText::new(tr("the date is not valid")).color(RED));
                     }
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    trial_table(ui, &data.trial);
+                    match &data.trial {
+                        Ok(t) => trial_table(ui, t),
+                        Err(e) => {
+                            ui.label(RichText::new(e).color(RED));
+                        }
+                    }
                 });
             });
         });
         if !changed {
             self.ledger = Some(data);
         }
-        if let Some(f) = add {
-            self.dialog = Some(Dialog::LedgerAccount(f));
+        match wanted {
+            Some(Wanted::Add(f)) => self.dialog = Some(Dialog::LedgerAccount(f)),
+            Some(Wanted::Rename(id, name)) => {
+                self.dialog = Some(Dialog::RenameLedgerAccount(id, name, String::new()));
+            }
+            Some(Wanted::Delete(id, name)) => self.dialog = Some(Dialog::ConfirmDeleteLedgerAccount(id, name)),
+            Some(Wanted::Entry(id)) => self.dialog = Some(Dialog::EntryDetail(id)),
+            Some(Wanted::Journal(j)) => {
+                self.journal = j;
+                self.ledger = None;
+            }
+            None => {}
         }
+    }
+
+    fn journal_page(&self) -> Result<(Vec<Entry>, bool)> {
+        let Some((id, page)) = self.journal else { return Ok((Vec::new(), false)) };
+        let f = EntryFilter {
+            ledger_account_id: Some(id),
+            offset: page.saturating_mul(PAGE),
+            limit: Some(PAGE + 1),
+            ..Default::default()
+        };
+        let mut entries = self.db.entries(&f)?;
+        let more = entries.len() > PAGE;
+        entries.truncate(PAGE);
+        Ok((entries, more))
+    }
+
+    /// Asks before deleting a split; `false` when the transaction is not one.
+    pub fn confirm_split(&mut self, t: &Transaction) -> bool {
+        if t.kind != TxKind::Split {
+            return false;
+        }
+        match self.db.entry(t.entry_id) {
+            Ok(e) => self.dialog = Some(Dialog::ConfirmDeleteEntry(e.id, e.postings.len())),
+            Err(e) => self.toast = Some((error_text(&e), f64::INFINITY)),
+        }
+        true
+    }
+
+    /// An entry with its postings: categories can be changed, and the whole of it deleted.
+    pub fn entry_detail(&mut self, ui: &mut Ui, id: i64) -> (bool, Option<Result<String>>) {
+        ui.set_min_width(560.0);
+        let read = self.db.entry(id).and_then(|e| Ok((e, self.db.ledger_accounts()?)));
+        let (e, accounts) = match read {
+            Ok(x) => x,
+            Err(e) => return (false, Some(Err(e))),
+        };
+        ui.heading(tr("Entry"));
+        let when = if e.opening { tr("Opening balance").to_string() } else { fmt_date(e.date) };
+        ui.label(RichText::new(format!("{when} · {}", e.payee)).strong());
+        if !e.memo.is_empty() {
+            ui.label(RichText::new(&e.memo).color(MUTED));
+        }
+        ui.add_space(8.0);
+        let mut message = None;
+        let cats = self.categories.clone();
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            egui::Grid::new("entry_detail").num_columns(3).striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
+                for h in [tr("Account"), tr("Debit"), tr("Credit")] {
+                    ui.label(RichText::new(h.to_uppercase()).size(11.0).color(MUTED));
+                }
+                ui.end_row();
+                for p in &e.postings {
+                    let account = accounts.iter().find(|a| a.id == p.account_id);
+                    let category = account.and_then(|a| a.category_id);
+                    let spare = account.is_some_and(|a| a.system.as_deref() == Some(UNCATEGORIZED));
+                    if category.is_some() || spare {
+                        let mut c = category;
+                        let salt = format!("posting{}", p.id);
+                        if category_combo(ui, &salt, &cats, &mut c, tr("Uncategorized")) {
+                            let r = self.db.set_posting_category(p.id, c);
+                            message = Some(r.map(|_| tr("Category updated").to_string()));
+                        }
+                    } else {
+                        ui.label(&p.account);
+                    }
+                    let text = fmt_currency(p.amount.saturating_abs(), &p.currency);
+                    let (debit, credit) = if p.amount > 0 { (text, String::new()) } else { (String::new(), text) };
+                    ui.label(debit);
+                    ui.label(credit);
+                    ui.end_row();
+                }
+            });
+        });
+        ui.add_space(8.0);
+        let mut keep = true;
+        ui.horizontal(|ui| {
+            if !e.opening && ui.button(RichText::new(tr("🗑 Delete")).color(RED)).clicked() {
+                self.dialog = Some(Dialog::ConfirmDeleteEntry(id, e.postings.len()));
+                keep = false;
+            }
+            if ui.button(tr("Close")).clicked() {
+                keep = false;
+            }
+        });
+        (keep, message)
     }
 
     pub fn open_entry(&mut self) {
@@ -437,7 +556,16 @@ impl App {
     }
 }
 
-fn chart_row(ui: &mut Ui, row: &TreeRow, add: &mut Option<LedgerAccountForm>) {
+/// What was asked for in the view.
+enum Wanted {
+    Add(LedgerAccountForm),
+    Rename(i64, String),
+    Delete(i64, String),
+    Entry(i64),
+    Journal(Option<(i64, usize)>),
+}
+
+fn chart_row(ui: &mut Ui, row: &TreeRow, chosen: Option<i64>, wanted: &mut Option<Wanted>) {
     let a = row.account;
     ui.horizontal(|ui| {
         ui.add_space(row.depth as f32 * 18.0);
@@ -445,17 +573,90 @@ fn chart_row(ui: &mut Ui, row: &TreeRow, add: &mut Option<LedgerAccountForm>) {
             ui.label(RichText::new(&a.code).size(12.0).color(MUTED));
         }
         let name = RichText::new(&a.name).color(if a.system.is_some() { MUTED } else { TEXT });
-        ui.label(if row.depth == 0 { name.strong() } else { name });
+        let name = if row.depth == 0 { name.strong() } else { name };
+        if ui.selectable_label(chosen == Some(a.id), name).on_hover_text(tr("Show its entries")).clicked() {
+            *wanted = Some(Wanted::Journal(Some((a.id, 0))));
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let button = ui.add_enabled(a.system.is_none(), egui::Button::new("+").small());
-            let hint = trf("Add an account under \"{name}\"", &[("name", &a.path)]);
-            // The name of the button for screen readers.
-            button.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, hint.clone()));
-            if button.on_hover_text(hint.clone()).clicked() {
-                *add = Some(LedgerAccountForm { parent: Some(a.id), ..Default::default() });
+            let named = |ui: &mut Ui, text: &str, enabled: bool, hint: String| {
+                let button = ui.add_enabled(enabled, egui::Button::new(text).small());
+                // The name of the button for screen readers.
+                button.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, hint.clone()));
+                button.on_hover_text(hint.clone()).clicked()
+            };
+            if named(ui, "+", a.system.is_none(), trf("Add an account under \"{name}\"", &[("name", &a.path)])) {
+                *wanted = Some(Wanted::Add(LedgerAccountForm { parent: Some(a.id), ..Default::default() }));
+            }
+            if a.money_account_id.is_none() && a.category_id.is_none() && a.system.is_none() {
+                if named(ui, "🗑", true, trf("Delete \"{name}\"", &[("name", &a.path)])) {
+                    *wanted = Some(Wanted::Delete(a.id, a.path.clone()));
+                }
+                if named(ui, "✏", true, trf("Rename \"{name}\"", &[("name", &a.path)])) {
+                    *wanted = Some(Wanted::Rename(a.id, a.name.clone()));
+                }
             }
             ui.label(balance_text(&row.balances, a.class));
         });
+    });
+}
+
+fn journal_view(
+    ui: &mut Ui,
+    name: &str,
+    id: i64,
+    page: usize,
+    entries: &Result<(Vec<Entry>, bool), String>,
+    wanted: &mut Option<Wanted>,
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        section_title(ui, name);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui.button(tr("Trial balance")).clicked() {
+                *wanted = Some(Wanted::Journal(None));
+            }
+        });
+    });
+    ui.spacing_mut().item_spacing.x = 8.0;
+    let (entries, more) = match entries {
+        Ok(x) => x,
+        Err(e) => {
+            ui.label(RichText::new(e).color(RED));
+            return;
+        }
+    };
+    ui.horizontal(|ui| {
+        if ui.add_enabled(page > 0, egui::Button::new(tr("Newer"))).clicked() {
+            *wanted = Some(Wanted::Journal(Some((id, page.saturating_sub(1)))));
+        }
+        ui.label(RichText::new(trf("Page {n}", &[("n", &page.saturating_add(1))])).color(MUTED));
+        if ui.add_enabled(*more, egui::Button::new(tr("Older"))).clicked() {
+            *wanted = Some(Wanted::Journal(Some((id, page.saturating_add(1)))));
+        }
+    });
+    if entries.is_empty() {
+        ui.label(RichText::new(tr("Nothing has been recorded yet.")).color(MUTED));
+        return;
+    }
+    egui::ScrollArea::vertical().id_salt("journal").auto_shrink([false, false]).show(ui, |ui| {
+        for e in entries {
+            ui.horizontal(|ui| {
+                let when = if e.opening { tr("Opening balance").to_string() } else { fmt_date(e.date) };
+                let text = format!("{when} · {}", cut(&e.payee, 30));
+                if ui.link(text).on_hover_text(tr("Show the entry")).clicked() {
+                    *wanted = Some(Wanted::Entry(e.id));
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let mut sums: BTreeMap<&str, Cents> = BTreeMap::new();
+                    for p in e.postings.iter().filter(|p| p.account_id == id) {
+                        let sum = sums.entry(&p.currency).or_default();
+                        *sum = sum.saturating_add(p.amount);
+                    }
+                    let parts: Vec<String> = sums.iter().map(|(c, v)| fmt_currency(*v, c)).collect();
+                    ui.label(parts.join(" · "));
+                });
+            });
+        }
     });
 }
 

@@ -2,7 +2,7 @@ use crate::gui::{App, Dialog, LANGUAGES, short_eur};
 use crate::ledger::{EntryForm, tree};
 use cashcraft_engine::db::{AccountKind, Db, NewTx};
 use cashcraft_engine::i18n::{Lang, META_KEY, with_lang};
-use cashcraft_engine::ledger::Class;
+use cashcraft_engine::ledger::{Class, NewEntry, NewLine};
 use cashcraft_engine::money::{parse_amount, parse_date};
 
 #[test]
@@ -67,6 +67,9 @@ fn the_form_of_an_entry_shows_the_difference_until_zero() {
             f.lines.push(Default::default());
             assert_eq!(f.difference().unwrap(), 0);
             db.post_entry(&f.entry().unwrap()).unwrap();
+            f.lines[0].credit = "1".into();
+            assert!(f.difference().is_err() && f.entry().is_err());
+            f.lines[0].credit.clear();
             f.lines[1].credit = "1,2345".into();
             assert!(f.difference().is_err());
         });
@@ -180,4 +183,44 @@ fn an_entry_is_posted_with_the_keyboard() {
         assert!(app.dialog.is_none());
         assert_eq!(app.db.entries(&Default::default()).unwrap().len(), 1);
     });
+}
+
+/// Deleting a split asks first and says how many lines go; the detail of the entry draws every posting.
+#[test]
+fn deleting_a_split_asks_first() {
+    let db = Db::open_in_memory().unwrap();
+    let account_id = db.add_account("A", AccountKind::Bank, "EUR", 0, "").unwrap();
+    let id = |k: &str| db.find_ledger_account(k).unwrap().id;
+    let all = [("A", -30), ("system:uncategorized", 10), ("Health", 20)];
+    let lines = all.map(|(k, amount)| NewLine { ledger_account_id: id(k), amount, currency: None }).to_vec();
+    let entry = NewEntry { date: parse_date("2026-03-04").unwrap(), payee: "x".into(), memo: "".into(), lines };
+    let e = db.post_entry(&entry).unwrap();
+    let tx = NewTx { account_id, amount: -1, payee: "x".into(), ..Default::default() };
+    let simple = db.add_transaction(&tx).unwrap().unwrap();
+    let mut app = App::new(db, None);
+    let simple = app.db.transaction(simple).unwrap();
+    assert!(!app.confirm_split(&simple) && app.dialog.is_none());
+    let split = app.db.transactions(&Default::default()).unwrap().into_iter().find(|t| t.entry_id == e).unwrap();
+    assert!(app.confirm_split(&split));
+    assert!(matches!(app.dialog, Some(Dialog::ConfirmDeleteEntry(x, 3)) if x == e));
+    assert!(app.db.entry(e).is_ok());
+    let ctx = egui::Context::default();
+    for dialog in [Dialog::EntryDetail(e), Dialog::ConfirmDeleteEntry(e, 3)] {
+        app.dialog = Some(dialog);
+        for _ in 0..3 {
+            ctx.run_ui(Default::default(), |ui| app.dialogs(&ui.ctx().clone())).textures_delta.clear();
+        }
+        assert!(app.dialog.is_some());
+    }
+    // The journal and the trial balance draw too, and a failed read is not shown as empty.
+    app.journal = Some((app.db.find_ledger_account("A").unwrap().id, 0));
+    for _ in 0..2 {
+        ctx.run_ui(Default::default(), |ui| app.ledger_view(ui)).textures_delta.clear();
+    }
+    assert_eq!(app.ledger.as_ref().unwrap().journal.as_ref().unwrap().0.len(), 2);
+    app.db.conn.execute_batch("ALTER TABLE postings RENAME TO gone").unwrap();
+    app.ledger = None;
+    ctx.run_ui(Default::default(), |ui| app.ledger_view(ui)).textures_delta.clear();
+    let l = app.ledger.as_ref().unwrap();
+    assert!(l.trial.is_err() && l.journal.is_err());
 }

@@ -3,12 +3,13 @@
 //! Gli importi sono sempre in centesimi (i64): negativi = uscite, positivi = entrate.
 
 use crate::i18n::{Lang, lang, tr, trf, trn, with_lang};
-use crate::ledger::{self, Draft, LEDGER_SCHEMA, Line, PROFIT_AND_LOSS, UNCATEGORIZED};
+use crate::ledger::{self, COUNTED, Draft, LEDGER_SCHEMA, Line, PROFIT_AND_LOSS, UNCATEGORIZED};
+use crate::money::checked_total;
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{Datelike, Days, Local, Months, NaiveDate};
 use rusqlite::{Connection, OptionalExtension, Transaction as SqlTransaction, TransactionBehavior, params};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub type Cents = i64;
@@ -219,6 +220,54 @@ pub struct CategoryTotal {
     pub category: String,
     pub is_income: bool,
     pub total: Cents,
+    /// The part of it in entries with several categories.
+    #[serde(skip)]
+    pub shared: Cents,
+}
+
+impl CategoryTotal {
+    /// Income and expense: a category counts in the side its total falls on; what is in entries with
+    /// several categories stays in the side of its class, so that moving money between two categories
+    /// is neither.
+    pub fn income_and_expense(totals: &[CategoryTotal]) -> Result<(Cents, Cents)> {
+        let (mut income, mut expense): (Cents, Cents) = (0, 0);
+        for t in totals {
+            let own = t.total.checked_sub(t.shared).ok_or_else(ledger::too_big)?;
+            let class = t.is_income && t.category_id.is_some();
+            for (c, is_income) in [(own, own > 0), (t.shared, class)] {
+                let side = if is_income { &mut income } else { &mut expense };
+                let c = if is_income { Some(c) } else { c.checked_neg() };
+                *side = c.and_then(|c| side.checked_add(c)).ok_or_else(ledger::too_big)?;
+            }
+        }
+        Ok((income, expense))
+    }
+}
+
+/// What posting the scheduled transactions did.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Posted {
+    pub posted: usize,
+    pub failed: Vec<FailedScheduled>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FailedScheduled {
+    pub id: i64,
+    pub payee: String,
+    pub error: String,
+}
+
+impl Posted {
+    /// What to tell people.
+    pub fn message(&self) -> String {
+        let mut out = trn(self.posted, "{n} transaction recorded", "{n} transactions recorded");
+        for f in &self.failed {
+            out.push_str("; ");
+            out.push_str(&trf("\"{name}\" not recorded: {error}", &[("name", &f.payee), ("error", &f.error)]));
+        }
+        out
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -245,7 +294,12 @@ pub struct Db {
 /// the same tables, 2 the double-entry ledger: see `docs/ledger.md`).
 pub const SCHEMA_VERSION: i64 = 2;
 
-/// The tables beside the ledger, the same in every format but for `accounts.opening_balance`, gone in 2.
+/// Tables of formats 0 and 1 with their name in 2. A window of an older program that has the file open
+/// fails at once when it writes to one, instead of doing half of what it was asked.
+pub(crate) const RENAMED: [(&str, &str); 3] =
+    [("budgets", "category_budgets"), ("rules", "category_rules"), ("scheduled", "scheduled_items")];
+
+/// The tables beside the ledger. Formats 0 and 1 also had `accounts.opening_balance`.
 pub(crate) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS accounts (
@@ -263,17 +317,17 @@ CREATE TABLE IF NOT EXISTS categories (
     is_income INTEGER NOT NULL DEFAULT 0,
     UNIQUE(name, parent_id)
 );
-CREATE TABLE IF NOT EXISTS budgets (
+CREATE TABLE IF NOT EXISTS category_budgets (
     category_id INTEGER PRIMARY KEY REFERENCES categories(id) ON DELETE CASCADE,
     monthly INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS rules (
+CREATE TABLE IF NOT EXISTS category_rules (
     id INTEGER PRIMARY KEY,
     pattern TEXT NOT NULL,
     category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
     rename_payee TEXT NOT NULL DEFAULT ''
 );
-CREATE TABLE IF NOT EXISTS scheduled (
+CREATE TABLE IF NOT EXISTS scheduled_items (
     id INTEGER PRIMARY KEY,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     to_account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE,
@@ -361,7 +415,11 @@ impl Db {
                     &[("version", &version)]
                 ));
             }
-            if self.has_table("accounts")? {
+            let mut old = self.has_table("accounts")? || self.has_table("transactions")?;
+            for t in RENAMED.iter().map(|t| t.0).chain(["categories", "meta"]) {
+                old = old || self.has_table(t)?;
+            }
+            if old {
                 self.migrate()?;
             } else {
                 self.conn.execute_batch(SCHEMA)?;
@@ -499,6 +557,7 @@ impl Db {
         if name.is_empty() {
             bail!(tr("the account needs a name"));
         }
+        let currency = ledger::check_currency(currency)?;
         self.atomically(|| {
             self.conn
                 .execute(
@@ -530,7 +589,8 @@ impl Db {
         })
     }
 
-    /// Deletes an account and its transactions. The other side of its transfers stays, uncategorized.
+    /// Deletes an account and its transactions. The other side of its transfers stays in the other
+    /// account, against the opening balances.
     pub fn delete_account(&self, id: i64) -> Result<()> {
         self.atomically(|| {
             self.drop_money_ledger(id)?;
@@ -669,6 +729,12 @@ impl Db {
 
     pub fn transactions(&self, f: &TxFilter) -> Result<Vec<Transaction>> {
         let cats: HashMap<i64, String> = self.categories()?.into_iter().map(|c| (c.id, c.path)).collect();
+        let mut uncategorized: HashSet<i64> = HashSet::new();
+        if f.uncategorized {
+            let spare = self.system_ledger(UNCATEGORIZED)?;
+            let mut st = self.conn.prepare("SELECT entry_id FROM postings WHERE ledger_account_id=?1")?;
+            uncategorized = st.query_map([spare], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+        }
         let mut entry_categories: HashMap<i64, Vec<i64>> = HashMap::new();
         if f.category_id.is_some() {
             let mut st = self.conn.prepare(
@@ -748,7 +814,7 @@ impl Db {
         for row in rows {
             let mut t = row?;
             if f.account_id.is_some() {
-                let b = running.unwrap_or(opening) + t.amount;
+                let b = running.unwrap_or(opening).checked_add(t.amount).ok_or_else(ledger::too_big)?;
                 running = Some(b);
                 t.balance = Some(b);
             }
@@ -762,7 +828,7 @@ impl Db {
             {
                 continue;
             }
-            if f.uncategorized && t.kind != TxKind::Uncategorized {
+            if f.uncategorized && !uncategorized.contains(&t.entry_id) {
                 continue;
             }
             if let Some(c) = f.category_id {
@@ -909,8 +975,10 @@ impl Db {
 
     /// Deletes a transaction with every other side of its entry.
     pub fn delete_transaction(&self, id: i64) -> Result<()> {
-        let entry = self.entry_of_transaction(id)?.ok_or_else(|| no_transaction(id))?;
-        self.delete_entry(entry)
+        self.atomically(|| {
+            let entry = self.entry_of_transaction(id)?.ok_or_else(|| no_transaction(id))?;
+            self.delete_entry(entry)
+        })
     }
 
     /// The two accounts of a transfer must have the same currency.
@@ -962,7 +1030,8 @@ impl Db {
 
     pub fn rules(&self) -> Result<Vec<Rule>> {
         let cats: HashMap<i64, String> = self.categories()?.into_iter().map(|c| (c.id, c.path)).collect();
-        let mut st = self.conn.prepare("SELECT id, pattern, category_id, rename_payee FROM rules ORDER BY id")?;
+        let mut st =
+            self.conn.prepare("SELECT id, pattern, category_id, rename_payee FROM category_rules ORDER BY id")?;
         let rows = st.query_map([], |r| {
             Ok(Rule {
                 id: r.get(0)?,
@@ -986,14 +1055,14 @@ impl Db {
             bail!(tr("the rule needs a keyword"));
         }
         self.conn.execute(
-            "INSERT INTO rules(pattern,category_id,rename_payee) VALUES(?1,?2,?3)",
+            "INSERT INTO category_rules(pattern,category_id,rename_payee) VALUES(?1,?2,?3)",
             params![pattern.trim(), category_id, rename_payee.trim()],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
 
     pub fn delete_rule(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM rules WHERE id=?1", [id])?;
+        self.conn.execute("DELETE FROM category_rules WHERE id=?1", [id])?;
         Ok(())
     }
 
@@ -1015,6 +1084,10 @@ impl Db {
         self.atomically(|| {
             let mut n = 0;
             for t in self.transactions(&TxFilter { uncategorized: true, ..Default::default() })? {
+                // Splits are left to people.
+                if t.kind != TxKind::Uncategorized {
+                    continue;
+                }
                 let Some((cat, rename)) = self.match_rule(&t.payee, &t.memo)? else { continue };
                 let mut d = self.load_draft(t.entry_id)?;
                 let account = self.category_ledger(Some(cat))?;
@@ -1040,12 +1113,12 @@ impl Db {
 
     pub fn set_budget(&self, category_id: i64, monthly: Cents) -> Result<()> {
         if monthly == 0 {
-            self.conn.execute("DELETE FROM budgets WHERE category_id=?1", [category_id])?;
+            self.conn.execute("DELETE FROM category_budgets WHERE category_id=?1", [category_id])?;
         } else {
             self.conn.execute(
-                "INSERT INTO budgets(category_id,monthly) VALUES(?1,?2)
+                "INSERT INTO category_budgets(category_id,monthly) VALUES(?1,?2)
                  ON CONFLICT(category_id) DO UPDATE SET monthly=excluded.monthly",
-                params![category_id, monthly.abs()],
+                params![category_id, monthly.saturating_abs()],
             )?;
         }
         Ok(())
@@ -1056,7 +1129,7 @@ impl Db {
         let (from, to) = month_range(month);
         let cats = self.categories()?;
         let totals = self.category_totals(from, to)?;
-        let mut st = self.conn.prepare("SELECT category_id, monthly FROM budgets")?;
+        let mut st = self.conn.prepare("SELECT category_id, monthly FROM category_budgets")?;
         let budgets: Vec<(i64, i64)> =
             st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
         let mut out = Vec::new();
@@ -1065,12 +1138,11 @@ impl Db {
                 continue;
             };
             let prefix = format!("{}:", c.path);
-            let total: Cents = totals
+            let below = totals
                 .iter()
-                .filter(|t| t.category_id.is_some() && (t.category == c.path || t.category.starts_with(&prefix)))
-                .map(|t| t.total)
-                .sum();
-            let spent = if c.is_income { total } else { -total };
+                .filter(|t| t.category_id.is_some() && (t.category == c.path || t.category.starts_with(&prefix)));
+            let total = checked_total(below.map(|t| t.total)).ok_or_else(ledger::too_big)?;
+            let spent = if c.is_income { total } else { total.saturating_neg() };
             out.push(BudgetLine { category_id: cid, category: c.path.clone(), budget: monthly, spent });
         }
         out.sort_by_key(|a| a.category.to_lowercase());
@@ -1082,22 +1154,21 @@ impl Db {
     /// Totali per categoria nel periodo (giroconti esclusi). Le uscite sono negative.
     pub fn category_totals(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<CategoryTotal>> {
         let cats: HashMap<i64, Category> = self.categories()?.into_iter().map(|c| (c.id, c)).collect();
-        let mut st = self.conn.prepare(
-            "SELECT l.category_id, -SUM(p.amount) FROM postings p JOIN entries e ON e.id=p.entry_id
-             JOIN ledger_accounts l ON l.id=p.ledger_account_id
-             WHERE (l.category_id IS NOT NULL OR l.system='uncategorized') AND e.date>=?1 AND e.date<=?2
-             GROUP BY l.category_id",
-        )?;
-        let rows =
-            st.query_map(params![d2s(from), d2s(to)], |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut st = self.conn.prepare(&format!(
+            "{COUNTED} SELECT c.category_id, -SUM(c.amount), -COALESCE(SUM(CASE WHEN c.n>1 THEN c.amount END),0)
+                 FROM counted c GROUP BY c.category_id"
+        ))?;
+        let rows = st.query_map(params![d2s(from), d2s(to)], |r| {
+            Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+        })?;
         let mut out = Vec::new();
         for row in rows {
-            let (cid, total) = row?;
+            let (cid, total, shared) = row?;
             let (name, is_income) = match cid.and_then(|c| cats.get(&c)) {
                 Some(c) => (c.path.clone(), c.is_income),
                 None => (tr("Uncategorized").to_string(), total > 0),
             };
-            out.push(CategoryTotal { category_id: cid, category: name, is_income, total });
+            out.push(CategoryTotal { category_id: cid, category: name, is_income, total, shared });
         }
         out.sort_by_key(|c| c.total);
         Ok(out)
@@ -1112,35 +1183,85 @@ impl Db {
             let (from, to) = month_range(m);
             let (inc, exp): (i64, i64) = self.conn.query_row(
                 &format!(
-                    "SELECT COALESCE(SUM(CASE WHEN p.amount<0 THEN -p.amount END),0),
-                            COALESCE(SUM(CASE WHEN p.amount>0 THEN -p.amount END),0)
-                     FROM postings p JOIN entries e ON e.id=p.entry_id
-                     JOIN ledger_accounts l ON l.id=p.ledger_account_id
-                     WHERE {PROFIT_AND_LOSS} AND e.date>=?1 AND e.date<=?2"
+                    "{COUNTED} SELECT
+                        COALESCE(SUM(CASE WHEN CASE c.n WHEN 1 THEN c.amount<0 ELSE c.class='income' END
+                                     THEN -c.amount END),0),
+                        COALESCE(SUM(CASE WHEN CASE c.n WHEN 1 THEN c.amount>0 ELSE c.class='expense' END
+                                     THEN c.amount END),0)
+                     FROM counted c"
                 ),
                 params![d2s(from), d2s(to)],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
-            out.push(MonthTotal { month: m.format("%Y-%m").to_string(), income: inc, expense: -exp });
+            out.push(MonthTotal { month: m.format("%Y-%m").to_string(), income: inc, expense: exp });
         }
         Ok(out)
     }
 
-    /// Patrimonio netto (la somma dei conti) alla fine di ogni mese degli ultimi `months` mesi.
+    /// Income and expense of the transactions shown: those of the whole entry, once, when it is split.
+    /// With a category, only what is in it or under it.
+    pub fn register_totals(&self, txs: &[Transaction], category: Option<i64>) -> Result<(Cents, Cents)> {
+        let wanted: Option<HashSet<i64>> = match category {
+            None => None,
+            Some(c) => {
+                let all = self.categories()?;
+                let path = all.iter().find(|x| x.id == c).map(|x| x.path.clone()).unwrap_or_default();
+                let below = format!("{path}:");
+                let found = all.iter().filter(|x| x.id == c || x.path.starts_with(&below)).map(|x| x.id);
+                Some(found.collect())
+            }
+        };
+        let (mut income, mut expense): (Cents, Cents) = (0, 0);
+        let mut add = |is_income: bool, money_in: Cents| -> Result<()> {
+            let side = if is_income { &mut income } else { &mut expense };
+            let c = if is_income { Some(money_in) } else { money_in.checked_neg() };
+            *side = c.and_then(|c| side.checked_add(c)).ok_or_else(ledger::too_big)?;
+            Ok(())
+        };
+        let mut st = self.conn.prepare(&format!(
+            "SELECT l.class='income', l.category_id, p.amount FROM postings p
+             JOIN ledger_accounts l ON l.id=p.ledger_account_id WHERE p.entry_id=?1 AND {PROFIT_AND_LOSS}"
+        ))?;
+        let mut seen = HashSet::new();
+        for t in txs {
+            match t.kind {
+                TxKind::Category | TxKind::Uncategorized => add(t.amount > 0, t.amount)?,
+                TxKind::Split if seen.insert(t.entry_id) => {
+                    let rows: Vec<(bool, Option<i64>, Cents)> = st
+                        .query_map([t.entry_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                        .collect::<std::result::Result<_, _>>()?;
+                    for (class, c, amount) in &rows {
+                        if wanted.as_ref().is_some_and(|w| !c.is_some_and(|c| w.contains(&c))) {
+                            continue;
+                        }
+                        add(if rows.len() > 1 { *class } else { *amount < 0 }, amount.saturating_neg())?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok((income, expense))
+    }
+
+    /// Assets minus debts: every account of the chart of those classes, up to a date.
+    pub fn net_worth(&self, until: Option<NaiveDate>) -> Result<Cents> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM(p.amount),0) FROM postings p JOIN entries e ON e.id=p.entry_id
+             JOIN ledger_accounts l ON l.id=p.ledger_account_id
+             WHERE l.class IN ('asset','liability') AND (?1 IS NULL OR e.date<=?1)",
+            [until.map(d2s)],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Patrimonio netto alla fine di ogni mese degli ultimi `months` mesi.
     pub fn net_worth_history(&self, months: u32, until: NaiveDate) -> Result<Vec<(String, Cents)>> {
         let first = first_of_month(until);
         let mut out = Vec::new();
         for i in (0..months).rev() {
             let m = first.checked_sub_months(Months::new(i)).unwrap_or(first);
             let (_, to) = month_range(m);
-            let sum: i64 = self.conn.query_row(
-                "SELECT COALESCE(SUM(p.amount),0) FROM postings p JOIN entries e ON e.id=p.entry_id
-                 JOIN ledger_accounts l ON l.id=p.ledger_account_id
-                 WHERE l.money_account_id IS NOT NULL AND e.date<=?1",
-                [d2s(to)],
-                |r| r.get(0),
-            )?;
-            out.push((m.format("%Y-%m").to_string(), sum));
+            out.push((m.format("%Y-%m").to_string(), self.net_worth(Some(to))?));
         }
         Ok(out)
     }
@@ -1152,7 +1273,7 @@ impl Db {
         let mut st = self.conn.prepare(
             "SELECT s.id, s.account_id, a.name, s.to_account_id, s.amount, s.payee, s.memo, s.category_id,
                     s.next_date, s.every, s.unit
-             FROM scheduled s JOIN accounts a ON a.id=s.account_id ORDER BY s.next_date",
+             FROM scheduled_items s JOIN accounts a ON a.id=s.account_id ORDER BY s.next_date",
         )?;
         let rows = st.query_map([], |r| {
             Ok(Scheduled {
@@ -1188,7 +1309,7 @@ impl Db {
             self.check_transfer(s.account_id, to)?;
         }
         self.conn.execute(
-            "INSERT INTO scheduled(account_id,to_account_id,amount,payee,memo,category_id,next_date,every,unit)
+            "INSERT INTO scheduled_items(account_id,to_account_id,amount,payee,memo,category_id,next_date,every,unit)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             params![
                 s.account_id,
@@ -1206,12 +1327,13 @@ impl Db {
     }
 
     pub fn delete_scheduled(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM scheduled WHERE id=?1", [id])?;
+        self.conn.execute("DELETE FROM scheduled_items WHERE id=?1", [id])?;
         Ok(())
     }
 
-    /// Registra tutti i movimenti pianificati con scadenza fino a `until`.
-    pub fn post_scheduled(&self, until: NaiveDate) -> Result<usize> {
+    /// Registra tutti i movimenti pianificati con scadenza fino a `until`. One that fails records
+    /// nothing, stays due and is reported; the others are recorded.
+    pub fn post_scheduled(&self, until: NaiveDate) -> Result<Posted> {
         self.atomically(|| self.post_scheduled_until(until))
     }
 
@@ -1235,37 +1357,47 @@ impl Db {
         Ok(out)
     }
 
-    fn post_scheduled_until(&self, until: NaiveDate) -> Result<usize> {
-        let mut n = 0;
+    fn post_scheduled_until(&self, until: NaiveDate) -> Result<Posted> {
+        let mut out = Posted::default();
         for s in self.scheduled()? {
-            let mut date = s.next_date;
-            let mut guard = 0;
-            while date <= until && guard < 500 {
-                guard += 1;
-                match s.to_account_id {
-                    Some(to) => {
-                        self.add_transfer(s.account_id, to, date, s.amount, &s.memo)
-                            .with_context(|| trf("scheduled transaction \"{name}\"", &[("name", &s.payee)]))?;
-                    }
-                    None => {
-                        self.add_transaction(&NewTx {
-                            account_id: s.account_id,
-                            date,
-                            amount: s.amount,
-                            payee: s.payee.clone(),
-                            memo: s.memo.clone(),
-                            category_id: s.category_id,
-                            cleared: false,
-                            import_hash: None,
-                        })?;
-                    }
+            match self.atomically(|| self.post_one_scheduled(&s, until)) {
+                Ok(n) => out.posted += n,
+                Err(e) => {
+                    out.failed.push(FailedScheduled { id: s.id, payee: s.payee, error: format!("{e:#}") });
                 }
-                n += 1;
-                date = advance(date, s.every, &s.unit);
             }
-            if date != s.next_date {
-                self.conn.execute("UPDATE scheduled SET next_date=?2 WHERE id=?1", params![s.id, d2s(date)])?;
+        }
+        Ok(out)
+    }
+
+    fn post_one_scheduled(&self, s: &Scheduled, until: NaiveDate) -> Result<usize> {
+        let mut n = 0;
+        let mut date = s.next_date;
+        let mut guard = 0;
+        while date <= until && guard < 500 {
+            guard += 1;
+            match s.to_account_id {
+                Some(to) => {
+                    self.add_transfer(s.account_id, to, date, s.amount, &s.memo)?;
+                }
+                None => {
+                    self.add_transaction(&NewTx {
+                        account_id: s.account_id,
+                        date,
+                        amount: s.amount,
+                        payee: s.payee.clone(),
+                        memo: s.memo.clone(),
+                        category_id: s.category_id,
+                        cleared: false,
+                        import_hash: None,
+                    })?;
+                }
             }
+            n += 1;
+            date = advance(date, s.every, &s.unit);
+        }
+        if date != s.next_date {
+            self.conn.execute("UPDATE scheduled_items SET next_date=?2 WHERE id=?1", params![s.id, d2s(date)])?;
         }
         Ok(n)
     }
@@ -1274,9 +1406,9 @@ impl Db {
     pub fn clear_accounts(&self) -> Result<()> {
         self.atomically(|| {
             self.conn.execute_batch(
-                "DELETE FROM scheduled; DELETE FROM entries;
+                "DELETE FROM scheduled_items; DELETE FROM entries;
                  DELETE FROM ledger_accounts WHERE money_account_id IS NOT NULL;
-                 DELETE FROM accounts; DELETE FROM budgets;",
+                 DELETE FROM accounts; DELETE FROM category_budgets;",
             )?;
             self.set_meta("demo", "0")
         })

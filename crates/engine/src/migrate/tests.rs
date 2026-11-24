@@ -576,6 +576,7 @@ fn an_older_program_with_the_file_open_is_kept_out() {
     let dir = Dir::new("older-open");
     let old = seed_v1(&dir.file(), 1, 10);
     old.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+    old.execute("INSERT OR IGNORE INTO budgets VALUES (1,5)", []).unwrap();
     let n: i64 = old.query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0)).unwrap();
     assert!(n > 0);
     let (db, _) = Db::open(&dir.file()).unwrap();
@@ -588,12 +589,16 @@ fn an_older_program_with_the_file_open_is_kept_out() {
         "INSERT INTO accounts(name,kind,currency,opening_balance,iban) VALUES('n','bank','EUR',5,'')",
         "DELETE FROM accounts WHERE id=1",
         "DELETE FROM categories WHERE id=1",
+        "DELETE FROM scheduled WHERE id=1",
+        "INSERT INTO budgets(category_id,monthly) VALUES(1,5)",
+        "DELETE FROM budgets WHERE category_id=1",
+        "INSERT INTO rules(pattern,category_id,rename_payee) VALUES('x',1,'')",
+        "DELETE FROM rules WHERE id=1",
         "DELETE FROM scheduled; DELETE FROM transactions; DELETE FROM accounts; DELETE FROM budgets;",
     ] {
-        // As the window does it, each change on its own.
-        let _ = old.execute_batch("BEGIN");
+        // As 0.2.0 does it: each statement commits on its own, `clear_accounts` too.
         assert!(old.execute_batch(sql).is_err(), "{sql}");
-        old.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(dump(&db.conn), before, "{sql}");
     }
     assert_eq!(dump(&db.conn), before);
     // What it can still write stays sound.
@@ -618,10 +623,38 @@ fn the_number_written_by_an_older_program_is_put_right() {
     drop(db);
     old.execute_batch(V1_SCHEMA).unwrap();
     old.pragma_update(None, "user_version", 1).unwrap();
-    add(&old, Tx { account: 1, date: "2026-01-01", amount: 5, category: None, peer: None });
-    let stamped = dump(&old);
-    assert!(Db::open(&dir.file()).is_err());
-    assert_eq!(dump(&old), stamped);
+    // What it wrote in its own tables is added to the ledger, and nothing twice.
+    let x = add(&old, Tx { account: 1, date: "2026-01-01", amount: -5, category: Some(3), peer: None });
+    let y = add(&old, Tx { account: 2, date: "2026-01-01", amount: 5, category: None, peer: Some(x) });
+    let z = add(&old, Tx { account: 1, date: "2026-01-01", amount: -5, category: None, peer: Some(y) });
+    link(&old, y, z);
+    old.execute("UPDATE transactions SET category_id=3 WHERE id=?1", [x]).unwrap();
+    let (_, amount, _, hash) = imported().remove(0);
+    old.execute(
+        "INSERT INTO transactions(account_id,date,amount,import_hash) VALUES(1,'2026-02-01',?1,?2)",
+        params![amount, hash],
+    )
+    .unwrap();
+    old.execute("INSERT INTO rules(pattern,category_id) VALUES('late',3)", []).unwrap();
+    old.execute_batch("INSERT INTO budgets VALUES (3,1), (2,7)").unwrap();
+    let backups = || {
+        std::fs::read_dir(&dir.0)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().file_name().to_str().unwrap().contains("backup"))
+            .count()
+    };
+    assert_eq!(backups(), 1);
+    let (db, _) = Db::open(&dir.file()).unwrap();
+    assert_eq!(backups(), 2);
+    assert_sound(&db, "leftovers");
+    let now = v2_figures(&db);
+    assert_eq!(now.register.len(), before.register.len() + 3);
+    assert_eq!(now.accounts[0].2, before.accounts[0].2 - 10);
+    assert_eq!(now.accounts[1].2, before.accounts[1].2 + 5);
+    assert!(db.rules().unwrap().iter().any(|r| r.pattern == "late"));
+    assert!(now.budgets["2026-01"].iter().any(|b| (b.0, b.1) == (2, 7)));
+    assert!(now.budgets["2026-01"].iter().any(|b| (b.0, b.1) == (3, 40_000)));
+    assert!(!db.has_table("rules").unwrap() && !db.has_table("transactions").unwrap());
 }
 
 #[test]
@@ -641,9 +674,9 @@ fn programs_that_open_the_file_together_migrate_it_once() {
     assert!(!dir.0.join("books.v1-backup-2.db").exists());
 }
 
-/// 0.2.0 let people schedule a transfer between currencies. Posting says which one, and posts nothing.
+/// 0.2.0 let people schedule a transfer between currencies.
 #[test]
-fn a_scheduled_transfer_between_currencies_is_named_and_can_be_deleted() {
+fn a_scheduled_transfer_between_currencies_does_not_stop_the_others() {
     let dir = Dir::new("scheduled");
     let old = seed_v1(&dir.file(), 1, 13);
     old.execute_batch(
@@ -653,11 +686,125 @@ fn a_scheduled_transfer_between_currencies_is_named_and_can_be_deleted() {
     .unwrap();
     drop(old);
     let (db, _) = Db::open(&dir.file()).unwrap();
-    let before = dump(&db.conn);
-    let e = db.post_scheduled(s2d("2026-01-02")).unwrap_err();
-    assert!(format!("{e:#}").contains("To dollars"), "{e:#}");
-    assert_eq!(dump(&db.conn), before);
-    db.delete_scheduled(90).unwrap();
-    assert_eq!(db.post_scheduled(s2d("2026-01-02")).unwrap(), 1);
+    let p = db.post_scheduled(s2d("2026-01-02")).unwrap();
+    assert_eq!((p.posted, p.failed.len(), p.failed[0].payee.as_str()), (1, 1, "To dollars"));
     assert_sound(&db, "scheduled");
+}
+
+#[test]
+fn a_file_without_some_of_its_tables_opens() {
+    for (n, gone) in
+        ["categories", "budgets", "rules", "scheduled", "meta", "transactions", "accounts"].iter().enumerate()
+    {
+        for version in [0, 1] {
+            let dir = Dir::new(&format!("gone-{n}-{version}"));
+            let c = create(&dir.file(), version);
+            c.execute_batch(
+                "INSERT INTO accounts(id,name,kind,opening_balance) VALUES (1,'A','bank',10);
+                 INSERT INTO transactions(account_id,date,amount) VALUES (1,'2026-01-01',5);",
+            )
+            .unwrap();
+            c.execute_batch(&format!("DROP TABLE {gone}")).unwrap();
+            drop(c);
+            let (db, _) = Db::open(&dir.file()).unwrap_or_else(|e| panic!("{gone}: {e:#}"));
+            assert_sound(&db, gone);
+            let balance = db.find_account("A").map(|a| a.balance).unwrap_or(0);
+            assert_eq!(
+                balance,
+                match *gone {
+                    "accounts" => 0,
+                    "transactions" => 10,
+                    _ => 15,
+                },
+                "{gone}"
+            );
+            db.budget_status(today()).unwrap();
+            assert!(db.rules().unwrap().is_empty() && db.scheduled().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn currencies_are_normalized() {
+    let dir = Dir::new("currencies");
+    let c = create(&dir.file(), 1);
+    for (id, cur) in ["€", " euro ", "EUROS", "Euro", "", "eur", "$", "usd"].iter().enumerate() {
+        c.execute(
+            "INSERT INTO accounts(id,name,kind,currency) VALUES(?1,?2,'bank',?3)",
+            params![id as i64 + 1, format!("A{id}"), cur],
+        )
+        .unwrap();
+    }
+    let a = add(&c, Tx { account: 1, date: "2026-01-01", amount: -500, category: None, peer: None });
+    let b = add(&c, Tx { account: 4, date: "2026-01-01", amount: 500, category: None, peer: Some(a) });
+    link(&c, a, b);
+    drop(c);
+    let (db, _) = Db::open(&dir.file()).unwrap();
+    let mut all: Vec<_> = db.accounts(true).unwrap().into_iter().map(|a| (a.id, a.currency)).collect();
+    all.sort();
+    let all: Vec<_> = all.into_iter().map(|a| a.1).collect();
+    assert_eq!(all, ["EUR", "EUR", "EUR", "EUR", "EUR", "EUR", "$", "USD"]);
+    assert_eq!(db.transaction(a).unwrap().transfer_peer, Some(b));
+    // What cannot be guessed is put right by hand.
+    db.set_account_currency(7, "USD").unwrap();
+    assert_sound(&db, "currencies");
+}
+
+fn names(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> =
+        std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    v.retain(|n| !n.ends_with("-wal") && !n.ends_with("-shm"));
+    v.sort();
+    v
+}
+
+#[test]
+fn a_backup_that_fails_leaves_no_file() {
+    let dir = Dir::new("backup-fails");
+    let c = Connection::open(dir.file()).unwrap();
+    c.execute_batch(V1_SCHEMA).unwrap();
+    for i in 0..3000 {
+        c.execute("INSERT INTO categories(name) VALUES(?1)", [format!("{i:0200}")]).unwrap();
+    }
+    c.execute_batch("INSERT INTO accounts(id,name,kind) VALUES(1,'A','bank')").unwrap();
+    drop(c);
+    // A page in the middle is spoiled: the copy is made but is not sound.
+    let mut bytes = std::fs::read(dir.file()).unwrap();
+    let at = bytes.len() / 2 / 4096 * 4096;
+    bytes[at..at + 4096].fill(0xff);
+    std::fs::write(dir.file(), &bytes).unwrap();
+    assert!(Db::open(&dir.file()).is_err());
+    assert_eq!(names(&dir.0), ["books.db"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_backup_has_the_permissions_of_the_file() {
+    use std::os::unix::fs::PermissionsExt;
+    for mode in [0o600, 0o640] {
+        let dir = Dir::new(&format!("mode-{mode:o}"));
+        drop(seed_v1(&dir.file(), 1, 14));
+        std::fs::set_permissions(dir.file(), std::fs::Permissions::from_mode(mode)).unwrap();
+        Db::open(&dir.file()).unwrap();
+        assert_eq!(names(&dir.0), ["books.db", "books.v1-backup.db"]);
+        let m = std::fs::metadata(dir.0.join("books.v1-backup.db")).unwrap().permissions().mode();
+        assert_eq!(m & 0o777, mode);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_path_that_is_not_utf8_is_migrated() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = Dir::new("bytes");
+    let folder = dir.0.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    std::fs::create_dir(&folder).unwrap();
+    let file = folder.join(std::ffi::OsStr::from_bytes(b"b\xff.db"));
+    let old = seed_v1(&file, 1, 15);
+    let before = v1_figures(&old);
+    let old_dump = dump(&old);
+    drop(old);
+    assert_eq!(v2_figures(&Db::open(&file).unwrap().0), before);
+    let copy = folder.join(std::ffi::OsStr::from_bytes(b"b\xff.v1-backup.db"));
+    assert_eq!(dump(&Connection::open(copy).unwrap()), old_dump);
 }

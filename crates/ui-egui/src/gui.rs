@@ -6,7 +6,7 @@ use anyhow::Result;
 use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Db, Scheduled, Transaction, TxFilter, TxKind};
 use cashcraft_engine::i18n::{self, Lang, lang, tr, trf};
 use cashcraft_engine::importer::{self, ImportResult, Mapping, ParsedRow, Table};
-use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_number, month_short};
+use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_number, month_short, total};
 use cashcraft_engine::{demo, ops};
 use chrono::{Datelike, NaiveDate};
 use egui::{self, Align2, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
@@ -70,11 +70,6 @@ pub fn or_report<T: Default>(r: Result<T>, toast: &mut Option<(String, f64)>) ->
 /// Whether a transaction has one category, or may be given one.
 pub fn has_category(t: &Transaction) -> bool {
     matches!(t.kind, TxKind::Category | TxKind::Uncategorized)
-}
-
-/// Whether a transaction counts as income or expense.
-pub fn is_income_or_expense(t: &Transaction) -> bool {
-    has_category(t) || t.kind == TxKind::Split
 }
 
 /// The colour of the `i`-th series of a chart.
@@ -191,6 +186,9 @@ pub struct AccountForm {
     pub kind: AccountKind,
     pub opening: String,
     pub iban: String,
+    pub currency: String,
+    /// The currency it has now.
+    pub old_currency: String,
     pub archived: bool,
     pub error: String,
 }
@@ -257,6 +255,12 @@ pub enum Dialog {
     Scheduled(SchedForm),
     Entry(EntryForm),
     LedgerAccount(LedgerAccountForm),
+    RenameLedgerAccount(i64, String, String),
+    ConfirmDeleteLedgerAccount(i64, String),
+    /// An entry with its postings.
+    EntryDetail(i64),
+    /// The entry, and how many lines it has.
+    ConfirmDeleteEntry(i64, usize),
     ConfirmDeleteAccount(i64, String),
     ConfirmClearDemo,
 }
@@ -284,6 +288,9 @@ pub struct App {
     pub accounts: Vec<Account>,
     pub categories: Vec<Category>,
     pub txs: Vec<Transaction>,
+    /// Income and expense of `txs`.
+    pub tx_totals: (Cents, Cents),
+    pub net_worth: Cents,
     pub period: Period,
     pub search: String,
     pub cat_filter: Option<i64>,
@@ -303,6 +310,8 @@ pub struct App {
     pub ledger: Option<LedgerData>,
     /// The trial balance up to this date, as it is typed.
     pub ledger_date: String,
+    /// The account of the chart whose entries are shown, and the page.
+    pub journal: Option<(i64, usize)>,
     /// The language chosen in the window, `None` for the system's.
     pub language: Option<Lang>,
     data_version: i64,
@@ -423,6 +432,8 @@ impl App {
             accounts: vec![],
             categories: vec![],
             txs: vec![],
+            tx_totals: (0, 0),
+            net_worth: 0,
             period: Period::Last3,
             search: String::new(),
             cat_filter: None,
@@ -441,6 +452,7 @@ impl App {
             report: None,
             ledger: None,
             ledger_date: String::new(),
+            journal: None,
             language,
             data_version: 0,
             last_check: 0.0,
@@ -492,6 +504,7 @@ impl App {
 
     pub fn reload(&mut self) {
         self.accounts = or_report(self.db.accounts(true), &mut self.toast);
+        self.net_worth = or_report(self.db.net_worth(None), &mut self.toast);
         self.categories = or_report(self.db.categories(), &mut self.toast);
         self.demo = self.db.meta("demo").as_deref() == Some("1");
         self.reload_txs();
@@ -516,6 +529,7 @@ impl App {
             limit: None,
         };
         self.txs = or_report(self.db.transactions(&f), &mut self.toast);
+        self.tx_totals = or_report(self.db.register_totals(&self.txs, self.cat_filter), &mut self.toast);
     }
 
     pub fn notify(&mut self, ui: &Ui, msg: impl Into<String>) {
@@ -600,8 +614,7 @@ impl App {
         let t = db::today();
         let (from, to) = db::month_range(t);
         let totals = or_report(self.db.category_totals(from, to), &mut self.toast);
-        let month_income = totals.iter().filter(|c| c.total > 0).map(|c| c.total).sum();
-        let month_expense = -totals.iter().filter(|c| c.total < 0).map(|c| c.total).sum::<Cents>();
+        let (month_income, month_expense) = or_report(db::CategoryTotal::income_and_expense(&totals), &mut self.toast);
         let mut top: Vec<(String, Cents)> =
             totals.iter().filter(|c| c.total < 0).map(|c| (c.category.clone(), -c.total)).collect();
         top.sort_by_key(|x| -x.1);
@@ -824,6 +837,10 @@ pub fn category_combo(ui: &mut Ui, id: &str, cats: &[Category], value: &mut Opti
             }
         }
     });
+    if changed {
+        // Choosing with the keyboard leaves the list open.
+        egui::Popup::close_all(ui.ctx());
+    }
     changed
 }
 
@@ -996,7 +1013,7 @@ pub fn hbars(ui: &mut Ui, items: &[(String, Cents)]) {
 pub fn donut(ui: &mut Ui, items: &[(String, Cents)], size: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
     let p = ui.painter_at(rect);
-    let total: Cents = items.iter().map(|x| x.1).sum();
+    let total = total(items.iter().map(|x| x.1));
     let c = rect.center();
     let r_out = size / 2.0 - 4.0;
     let r_in = r_out * 0.62;
