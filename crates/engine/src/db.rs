@@ -3,9 +3,10 @@
 //! Gli importi sono sempre in centesimi (i64): negativi = uscite, positivi = entrate.
 
 use crate::i18n::{Lang, lang, tr, trf, trn, with_lang};
+use crate::ledger::{self, Draft, LEDGER_SCHEMA, Line, PROFIT_AND_LOSS, UNCATEGORIZED};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{Datelike, Days, Local, Months, NaiveDate};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction as SqlTransaction, TransactionBehavior, params};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -105,9 +106,27 @@ pub struct Category {
     pub path: String,
 }
 
+/// What is on the other side of a transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TxKind {
+    Category,
+    Uncategorized,
+    /// Another account of the user.
+    Transfer,
+    /// An account of the chart that is neither an account of the user nor a category.
+    Other,
+    /// Several postings.
+    Split,
+}
+
+/// A posting on an account of the user. The opening balance is not one.
 #[derive(Clone, Debug, Serialize)]
 pub struct Transaction {
+    /// The id of the posting.
     pub id: i64,
+    pub entry_id: i64,
+    pub kind: TxKind,
     pub account_id: i64,
     pub account: String,
     pub date: NaiveDate,
@@ -222,17 +241,18 @@ pub struct Db {
     pub path: Option<PathBuf>,
 }
 
-/// Version of the data file format, kept in `PRAGMA user_version` (0 is CashCraft 0.1, same tables).
-pub const SCHEMA_VERSION: i64 = 1;
+/// Version of the data file format, kept in `PRAGMA user_version` (0 is CashCraft 0.1, 1 is 0.2.0 with
+/// the same tables, 2 the double-entry ledger: see `docs/ledger.md`).
+pub const SCHEMA_VERSION: i64 = 2;
 
-const SCHEMA: &str = r#"
+/// The tables beside the ledger, the same in every format but for `accounts.opening_balance`, gone in 2.
+pub(crate) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE COLLATE NOCASE,
     kind TEXT NOT NULL,
     currency TEXT NOT NULL DEFAULT 'EUR',
-    opening_balance INTEGER NOT NULL DEFAULT 0,
     iban TEXT NOT NULL DEFAULT '',
     archived INTEGER NOT NULL DEFAULT 0
 );
@@ -243,20 +263,6 @@ CREATE TABLE IF NOT EXISTS categories (
     is_income INTEGER NOT NULL DEFAULT 0,
     UNIQUE(name, parent_id)
 );
-CREATE TABLE IF NOT EXISTS transactions (
-    id INTEGER PRIMARY KEY,
-    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    date TEXT NOT NULL,
-    amount INTEGER NOT NULL,
-    payee TEXT NOT NULL DEFAULT '',
-    memo TEXT NOT NULL DEFAULT '',
-    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
-    cleared INTEGER NOT NULL DEFAULT 0,
-    transfer_peer INTEGER,
-    import_hash TEXT
-);
-CREATE INDEX IF NOT EXISTS tx_account_date ON transactions(account_id, date);
-CREATE UNIQUE INDEX IF NOT EXISTS tx_import_hash ON transactions(account_id, import_hash) WHERE import_hash IS NOT NULL;
 CREATE TABLE IF NOT EXISTS budgets (
     category_id INTEGER PRIMARY KEY REFERENCES categories(id) ON DELETE CASCADE,
     monthly INTEGER NOT NULL
@@ -298,11 +304,11 @@ pub fn today() -> NaiveDate {
     Local::now().date_naive()
 }
 
-fn d2s(d: NaiveDate) -> String {
+pub(crate) fn d2s(d: NaiveDate) -> String {
     d.format("%Y-%m-%d").to_string()
 }
 
-fn s2d(s: &str) -> NaiveDate {
+pub(crate) fn s2d(s: &str) -> NaiveDate {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap_or_else(|_| today())
 }
 
@@ -336,20 +342,47 @@ impl Db {
         Ok(db)
     }
 
-    fn init(&self) -> Result<()> {
+    pub(crate) fn init(&self) -> Result<()> {
         self.conn.busy_timeout(std::time::Duration::from_secs(5))?;
         self.conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         let _ = self.conn.execute_batch("PRAGMA journal_mode = WAL;");
-        let version: i64 = self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > SCHEMA_VERSION {
-            bail!(trf(
-                "the data file was written by a newer version of CashCraft (format {version})",
-                &[("version", &version)]
-            ));
+        if self.format()? == SCHEMA_VERSION {
+            return Ok(());
         }
-        self.conn.execute_batch(SCHEMA)?;
-        self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        Ok(())
+        // One process at a time: the version is read again once the file is ours.
+        self.atomically(|| {
+            let version = self.format()?;
+            if version == SCHEMA_VERSION {
+                return Ok(());
+            }
+            if version > SCHEMA_VERSION {
+                bail!(trf(
+                    "the data file was written by a newer version of CashCraft (format {version})",
+                    &[("version", &version)]
+                ));
+            }
+            if self.has_table("accounts")? {
+                self.migrate()?;
+            } else {
+                self.conn.execute_batch(SCHEMA)?;
+                self.conn.execute_batch(LEDGER_SCHEMA)?;
+            }
+            self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            Ok(())
+        })
+    }
+
+    fn format(&self) -> Result<i64> {
+        Ok(self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+    }
+
+    pub(crate) fn has_table(&self, name: &str) -> Result<bool> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name=?1 COLLATE NOCASE",
+            [name],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
     }
 
     /// Cambia ogni volta che un altro processo (CLI, MCP) modifica l'archivio.
@@ -424,9 +457,13 @@ impl Db {
 
     pub fn accounts(&self, include_archived: bool) -> Result<Vec<Account>> {
         let mut st = self.conn.prepare(
-            "SELECT a.id, a.name, a.kind, a.currency, a.opening_balance, a.iban, a.archived,
-                    a.opening_balance + COALESCE((SELECT SUM(amount) FROM transactions t WHERE t.account_id=a.id),0)
-             FROM accounts a ORDER BY a.name COLLATE NOCASE",
+            "SELECT a.id, a.name, a.kind, a.currency,
+                    COALESCE((SELECT SUM(p.amount) FROM postings p JOIN entries e ON e.id=p.entry_id
+                              WHERE p.ledger_account_id=l.id AND e.opening_account_id=a.id),0),
+                    a.iban, a.archived,
+                    COALESCE((SELECT SUM(p.amount) FROM postings p WHERE p.ledger_account_id=l.id),0)
+             FROM accounts a LEFT JOIN ledger_accounts l ON l.money_account_id=a.id
+             ORDER BY a.name COLLATE NOCASE",
         )?;
         let rows = st.query_map([], |r| {
             Ok(Account {
@@ -462,13 +499,17 @@ impl Db {
         if name.is_empty() {
             bail!(tr("the account needs a name"));
         }
-        self.conn
-            .execute(
-                "INSERT INTO accounts(name,kind,currency,opening_balance,iban) VALUES(?1,?2,?3,?4,?5)",
-                params![name, kind.code(), currency, opening, iban],
-            )
-            .with_context(|| trf("is there already an account named \"{name}\"?", &[("name", &name)]))?;
-        Ok(self.conn.last_insert_rowid())
+        self.atomically(|| {
+            self.conn
+                .execute(
+                    "INSERT INTO accounts(name,kind,currency,iban) VALUES(?1,?2,?3,?4)",
+                    params![name, kind.code(), currency, iban],
+                )
+                .with_context(|| trf("is there already an account named \"{name}\"?", &[("name", &name)]))?;
+            let id = self.conn.last_insert_rowid();
+            self.set_opening(id, opening)?;
+            Ok(id)
+        })
     }
 
     pub fn update_account(
@@ -480,21 +521,22 @@ impl Db {
         iban: &str,
         archived: bool,
     ) -> Result<()> {
-        self.conn.execute(
-            "UPDATE accounts SET name=?2, kind=?3, opening_balance=?4, iban=?5, archived=?6 WHERE id=?1",
-            params![id, name.trim(), kind.code(), opening, iban, archived as i64],
-        )?;
-        Ok(())
+        self.atomically(|| {
+            self.conn.execute(
+                "UPDATE accounts SET name=?2, kind=?3, iban=?4, archived=?5 WHERE id=?1",
+                params![id, name.trim(), kind.code(), iban, archived as i64],
+            )?;
+            self.set_opening(id, opening)
+        })
     }
 
+    /// Deletes an account and its transactions. The other side of its transfers stays, uncategorized.
     pub fn delete_account(&self, id: i64) -> Result<()> {
-        // I giroconti verso questo conto perdono il collegamento.
-        self.conn.execute(
-            "UPDATE transactions SET transfer_peer=NULL WHERE transfer_peer IN (SELECT id FROM transactions WHERE account_id=?1)",
-            [id],
-        )?;
-        self.conn.execute("DELETE FROM accounts WHERE id=?1", [id])?;
-        Ok(())
+        self.atomically(|| {
+            self.drop_money_ledger(id)?;
+            self.conn.execute("DELETE FROM accounts WHERE id=?1", [id])?;
+            Ok(())
+        })
     }
 
     /// Trova un conto per id o per nome (senza distinguere maiuscole).
@@ -607,58 +649,104 @@ impl Db {
         Ok(())
     }
 
+    /// Deletes a category and those under it; their transactions become uncategorized.
     pub fn delete_category(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM categories WHERE id=?1", [id])?;
-        Ok(())
+        self.atomically(|| {
+            let mut st = self.conn.prepare(
+                "WITH RECURSIVE sub(id) AS (SELECT ?1 UNION SELECT c.id FROM categories c JOIN sub ON c.parent_id=sub.id)
+                 SELECT id FROM sub",
+            )?;
+            let all: Vec<i64> = st.query_map([id], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+            for c in all {
+                self.drop_category_ledger(c)?;
+            }
+            self.conn.execute("DELETE FROM categories WHERE id=?1", [id])?;
+            Ok(())
+        })
     }
 
     // ------------------------------------------------------------ movimenti
 
     pub fn transactions(&self, f: &TxFilter) -> Result<Vec<Transaction>> {
         let cats: HashMap<i64, String> = self.categories()?.into_iter().map(|c| (c.id, c.path)).collect();
+        let mut entry_categories: HashMap<i64, Vec<i64>> = HashMap::new();
+        if f.category_id.is_some() {
+            let mut st = self.conn.prepare(
+                "SELECT p.entry_id, l.category_id FROM postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                 WHERE l.category_id IS NOT NULL",
+            )?;
+            for row in st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))? {
+                let (entry, category) = row?;
+                entry_categories.entry(entry).or_default().push(category);
+            }
+        }
+        let opening = match f.account_id {
+            Some(a) => self.accounts(true)?.iter().find(|x| x.id == a).map_or(0, |x| x.opening_balance),
+            None => 0,
+        };
         let mut sql = String::from(
-            "SELECT t.id, t.account_id, a.name, t.date, t.amount, t.payee, t.memo, t.category_id,
-                    t.cleared, t.transfer_peer, a.opening_balance,
-                    (SELECT name FROM accounts x JOIN transactions p ON p.account_id=x.id WHERE p.id=t.transfer_peer)
-             FROM transactions t JOIN accounts a ON a.id=t.account_id WHERE 1=1",
+            "SELECT p.id, a.id, a.name, e.date, p.amount, COALESCE(p.payee, e.payee), COALESCE(p.memo, e.memo),
+                    ol.category_id, p.cleared, o.id, e.id, oa.id, oa.name, ol.system, ol.name
+             FROM postings p JOIN entries e ON e.id=p.entry_id
+             JOIN ledger_accounts l ON l.id=p.ledger_account_id JOIN accounts a ON a.id=l.money_account_id
+             LEFT JOIN postings o ON o.entry_id=p.entry_id AND o.id<>p.id
+                  AND (SELECT COUNT(*) FROM postings x WHERE x.entry_id=p.entry_id)=2
+             LEFT JOIN ledger_accounts ol ON ol.id=o.ledger_account_id
+             LEFT JOIN accounts oa ON oa.id=ol.money_account_id
+             WHERE e.opening_account_id IS NULL",
         );
         let mut args: Vec<rusqlite::types::Value> = Vec::new();
         if let Some(a) = f.account_id {
-            sql.push_str(" AND t.account_id=?");
+            sql.push_str(" AND a.id=?");
             args.push(a.into());
         }
-        sql.push_str(" ORDER BY t.date ASC, t.id ASC");
+        sql.push_str(" ORDER BY e.date ASC, p.id ASC");
         let mut st = self.conn.prepare(&sql)?;
         let rows = st.query_map(rusqlite::params_from_iter(args), |r| {
-            let cat_id: Option<i64> = r.get(7)?;
-            let peer_name: Option<String> = r.get(11)?;
-            Ok((
-                Transaction {
-                    id: r.get(0)?,
-                    account_id: r.get(1)?,
-                    account: r.get(2)?,
-                    date: s2d(&r.get::<_, String>(3)?),
-                    amount: r.get(4)?,
-                    payee: r.get(5)?,
-                    memo: r.get(6)?,
-                    category_id: cat_id,
-                    category: match (&peer_name, cat_id) {
-                        (Some(p), _) => trf("[Transfer] {account}", &[("account", p)]),
-                        (None, Some(c)) => cats.get(&c).cloned().unwrap_or_default(),
-                        (None, None) => String::new(),
-                    },
-                    cleared: r.get::<_, i64>(8)? != 0,
-                    transfer_peer: r.get(9)?,
-                    balance: None,
+            let account_id: i64 = r.get(1)?;
+            let category_id: Option<i64> = r.get(7)?;
+            let peer: Option<i64> = r.get(9)?;
+            let peer_account: Option<i64> = r.get(11)?;
+            let peer_name: Option<String> = r.get(12)?;
+            let system: Option<String> = r.get(13)?;
+            let other_name: Option<String> = r.get(14)?;
+            let kind = match (peer, peer_account, category_id) {
+                (None, _, _) => TxKind::Split,
+                (_, Some(a), _) if a == account_id => TxKind::Split,
+                (_, Some(_), _) => TxKind::Transfer,
+                (_, None, Some(_)) => TxKind::Category,
+                _ if system.as_deref() == Some(UNCATEGORIZED) => TxKind::Uncategorized,
+                _ => TxKind::Other,
+            };
+            Ok(Transaction {
+                id: r.get(0)?,
+                entry_id: r.get(10)?,
+                kind,
+                account_id,
+                account: r.get(2)?,
+                date: s2d(&r.get::<_, String>(3)?),
+                amount: r.get(4)?,
+                payee: r.get(5)?,
+                memo: r.get(6)?,
+                category_id,
+                category: match kind {
+                    TxKind::Transfer => trf("[Transfer] {account}", &[("account", &peer_name.unwrap_or_default())]),
+                    TxKind::Category => category_id.and_then(|c| cats.get(&c)).cloned().unwrap_or_default(),
+                    TxKind::Uncategorized => String::new(),
+                    TxKind::Other if system.is_some() => format!("[{}]", tr("Opening balances")),
+                    TxKind::Other => format!("[{}]", other_name.unwrap_or_default()),
+                    TxKind::Split => tr("Split").into(),
                 },
-                r.get::<_, i64>(10)?,
-            ))
+                cleared: r.get::<_, i64>(8)? != 0,
+                transfer_peer: peer.filter(|_| kind == TxKind::Transfer),
+                balance: None,
+            })
         })?;
         let mut out = Vec::new();
         let mut running: Option<Cents> = None;
         let needle = f.search.trim().to_lowercase();
         for row in rows {
-            let (mut t, opening) = row?;
+            let mut t = row?;
             if f.account_id.is_some() {
                 let b = running.unwrap_or(opening) + t.amount;
                 running = Some(b);
@@ -674,17 +762,16 @@ impl Db {
             {
                 continue;
             }
-            if f.uncategorized && (t.category_id.is_some() || t.transfer_peer.is_some()) {
+            if f.uncategorized && t.kind != TxKind::Uncategorized {
                 continue;
             }
             if let Some(c) = f.category_id {
                 // Include le sottocategorie.
                 let path = cats.get(&c).cloned().unwrap_or_default();
-                let ok = t.category_id == Some(c)
-                    || t.category_id
-                        .and_then(|x| cats.get(&x))
-                        .map(|p| p.starts_with(&format!("{path}:")))
-                        .unwrap_or(false);
+                let below = format!("{path}:");
+                let ok = entry_categories
+                    .get(&t.entry_id)
+                    .is_some_and(|l| l.iter().any(|x| *x == c || cats.get(x).is_some_and(|p| p.starts_with(&below))));
                 if !ok {
                     continue;
                 }
@@ -711,11 +798,16 @@ impl Db {
     }
 
     pub fn transaction(&self, id: i64) -> Result<Transaction> {
-        let t: Option<(i64, String)> = self
+        let acc: Option<i64> = self
             .conn
-            .query_row("SELECT account_id, date FROM transactions WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row(
+                "SELECT l.money_account_id FROM postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                 WHERE p.id=?1 AND l.money_account_id IS NOT NULL",
+                [id],
+                |r| r.get(0),
+            )
             .optional()?;
-        let (acc, _) = t.ok_or_else(|| no_transaction(id))?;
+        let acc = acc.ok_or_else(|| no_transaction(id))?;
         let all = self.transactions(&TxFilter { account_id: Some(acc), ..Default::default() })?;
         all.into_iter().find(|t| t.id == id).ok_or_else(|| no_transaction(id))
     }
@@ -735,75 +827,100 @@ impl Db {
                 tx.payee = rename;
             }
         }
-        let n = self.conn.execute(
-            "INSERT OR IGNORE INTO transactions(account_id,date,amount,payee,memo,category_id,cleared,import_hash)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![
-                tx.account_id,
-                d2s(tx.date),
-                tx.amount,
-                tx.payee.trim(),
-                tx.memo.trim(),
-                tx.category_id,
-                tx.cleared as i64,
-                tx.import_hash
-            ],
-        )?;
-        Ok(if n == 0 { None } else { Some(self.conn.last_insert_rowid()) })
+        let credit = tx.amount.checked_neg().ok_or_else(|| anyhow!(tr("the amount is too large")))?;
+        self.atomically(|| {
+            let (account, currency) = self.money_ledger(tx.account_id)?;
+            if let Some(hash) = &tx.import_hash {
+                let known: i64 = self.conn.query_row(
+                    "SELECT COUNT(*) FROM postings WHERE ledger_account_id=?1 AND import_hash=?2",
+                    params![account, hash],
+                    |r| r.get(0),
+                )?;
+                if known > 0 {
+                    return Ok(None);
+                }
+            }
+            let (_, ids) = self.save_entry(&Draft {
+                id: None,
+                date: d2s(tx.date),
+                payee: tx.payee.trim().into(),
+                memo: tx.memo.trim().into(),
+                opening: None,
+                lines: vec![
+                    Line {
+                        account,
+                        amount: tx.amount,
+                        currency: currency.clone(),
+                        cleared: tx.cleared,
+                        import_hash: tx.import_hash.clone(),
+                        ..Default::default()
+                    },
+                    Line {
+                        account: self.category_ledger(tx.category_id)?,
+                        amount: credit,
+                        currency,
+                        ..Default::default()
+                    },
+                ],
+            })?;
+            Ok(ids.first().copied())
+        })
     }
 
-    pub fn update_transaction(&self, id: i64, tx: &TxEdit) -> Result<()> {
-        let peer: Option<i64> = self
-            .conn
-            .query_row("SELECT transfer_peer FROM transactions WHERE id=?1", [id], |r| r.get(0))
-            .optional()?
-            .ok_or_else(|| no_transaction(id))?;
-        self.conn.execute(
-            "UPDATE transactions SET date=?2, amount=?3, payee=?4, memo=?5, category_id=?6, cleared=?7 WHERE id=?1",
-            params![
-                id,
-                d2s(tx.date),
-                tx.amount,
-                tx.payee.trim(),
-                tx.memo.trim(),
-                if peer.is_some() { None } else { tx.category_id },
-                tx.cleared as i64
-            ],
-        )?;
-        if let Some(p) = peer {
-            self.conn.execute(
-                "UPDATE transactions SET date=?2, amount=?3, memo=?4 WHERE id=?1",
-                params![p, d2s(tx.date), -tx.amount, tx.memo.trim()],
-            )?;
+    /// The category of a transaction that has one only.
+    pub(crate) fn category_of(&self, id: i64) -> Result<Option<i64>> {
+        Ok(self.transaction_side(id)?.and_then(|r| r.category))
+    }
+
+    fn transaction_side(&self, id: i64) -> Result<Option<ledger::LedgerRow>> {
+        let Some(entry) = self.entry_of_transaction(id)? else { return Ok(None) };
+        let d = self.load_draft(entry)?;
+        let others: Vec<&Line> = d.lines.iter().filter(|l| l.id != Some(id)).collect();
+        match others.as_slice() {
+            [one] => self.ledger_row(one.account).map(Some),
+            _ => Ok(None),
         }
-        Ok(())
+    }
+
+    /// Changes a transaction, on both accounts when it is a transfer. The amount and the category of
+    /// a split one are refused; `category_id: None` leaves an account of the chart as it is.
+    pub fn update_transaction(&self, id: i64, tx: &TxEdit) -> Result<()> {
+        if self.atomically(|| self.edit_transaction(id, tx))? { Ok(()) } else { Err(no_transaction(id)) }
     }
 
     pub fn set_category(&self, id: i64, category_id: Option<i64>) -> Result<()> {
-        let n = self.conn.execute(
-            "UPDATE transactions SET category_id=?2 WHERE id=?1 AND transfer_peer IS NULL",
-            params![id, category_id],
-        )?;
-        if n == 0 {
+        if !self.atomically(|| self.move_to_category(id, category_id))? {
             bail!(trf("transaction {id} not found (or it is a transfer)", &[("id", &id)]));
         }
         Ok(())
     }
 
     pub fn set_cleared(&self, id: i64, cleared: bool) -> Result<()> {
-        self.conn.execute("UPDATE transactions SET cleared=?2 WHERE id=?1", params![id, cleared as i64])?;
-        Ok(())
+        self.atomically(|| {
+            let Some(entry) = self.entry_of_transaction(id)? else { return Ok(()) };
+            let mut d = self.load_draft(entry)?;
+            for l in d.lines.iter_mut().filter(|l| l.id == Some(id)) {
+                l.cleared = cleared;
+            }
+            self.save_entry(&d)?;
+            Ok(())
+        })
     }
 
+    /// Deletes a transaction with every other side of its entry.
     pub fn delete_transaction(&self, id: i64) -> Result<()> {
-        let peer: Option<i64> = self
-            .conn
-            .query_row("SELECT transfer_peer FROM transactions WHERE id=?1", [id], |r| r.get(0))
-            .optional()?
-            .ok_or_else(|| no_transaction(id))?;
-        self.conn.execute("DELETE FROM transactions WHERE id=?1", [id])?;
-        if let Some(p) = peer {
-            self.conn.execute("DELETE FROM transactions WHERE id=?1", [p])?;
+        let entry = self.entry_of_transaction(id)?.ok_or_else(|| no_transaction(id))?;
+        self.delete_entry(entry)
+    }
+
+    /// The two accounts of a transfer must have the same currency.
+    fn check_transfer(&self, from: i64, to: i64) -> Result<()> {
+        let ((_, a), (_, b)) = (self.money_ledger(from)?, self.money_ledger(to)?);
+        if a != b {
+            bail!(trf(
+                "a transfer between accounts in different currencies ({from} and {to}) is not supported",
+                &[("from", &a), ("to", &b)]
+            ));
         }
         Ok(())
     }
@@ -813,22 +930,32 @@ impl Db {
         if from == to {
             bail!(tr("the two accounts of the transfer are the same"));
         }
-        let amount = amount.abs();
+        let too_large = || anyhow!(tr("the amount is too large"));
+        let amount = amount.checked_abs().ok_or_else(too_large)?;
         let names: HashMap<i64, String> = self.accounts(true)?.into_iter().map(|a| (a.id, a.name)).collect();
         let to_name = names.get(&to).ok_or_else(|| anyhow!(tr("the account to transfer to does not exist")))?;
         let from_name = names.get(&from).ok_or_else(|| anyhow!(tr("the account to transfer from does not exist")))?;
-        self.conn.execute(
-            "INSERT INTO transactions(account_id,date,amount,payee,memo) VALUES(?1,?2,?3,?4,?5)",
-            params![from, d2s(date), -amount, trf("Transfer to {account}", &[("account", to_name)]), memo],
-        )?;
-        let a = self.conn.last_insert_rowid();
-        self.conn.execute(
-            "INSERT INTO transactions(account_id,date,amount,payee,memo,transfer_peer) VALUES(?1,?2,?3,?4,?5,?6)",
-            params![to, d2s(date), amount, trf("Transfer from {account}", &[("account", from_name)]), memo, a],
-        )?;
-        let b = self.conn.last_insert_rowid();
-        self.conn.execute("UPDATE transactions SET transfer_peer=?2 WHERE id=?1", params![a, b])?;
-        Ok((a, b))
+        self.check_transfer(from, to)?;
+        let (out_text, in_text) = (
+            trf("Transfer to {account}", &[("account", to_name)]),
+            trf("Transfer from {account}", &[("account", from_name)]),
+        );
+        let side = |account: i64, amount: Cents, payee: &str| -> Result<Line> {
+            let (account, currency) = self.money_ledger(account)?;
+            Ok(Line { account, amount, currency, payee: Some(payee.into()), ..Default::default() })
+        };
+        let (_, ids) = self.save_entry(&Draft {
+            id: None,
+            date: d2s(date),
+            payee: out_text.clone(),
+            memo: memo.into(),
+            opening: None,
+            lines: vec![side(from, -amount, &out_text)?, side(to, amount, &in_text)?],
+        })?;
+        match ids.as_slice() {
+            [a, b] => Ok((*a, *b)),
+            _ => Err(anyhow!(tr("the transaction was not saved"))),
+        }
     }
 
     // --------------------------------------------------------------- regole
@@ -885,27 +1012,28 @@ impl Db {
 
     /// Applica le regole ai movimenti senza categoria. Restituisce quanti ne ha categorizzati.
     pub fn apply_rules(&self) -> Result<usize> {
-        let mut st = self
-            .conn
-            .prepare("SELECT id, payee, memo FROM transactions WHERE category_id IS NULL AND transfer_peer IS NULL")?;
-        let rows: Vec<(i64, String, String)> =
-            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
-        let mut n = 0;
-        for (id, payee, memo) in rows {
-            if let Some((cat, rename)) = self.match_rule(&payee, &memo)? {
-                if rename.is_empty() {
-                    self.conn.execute("UPDATE transactions SET category_id=?2 WHERE id=?1", params![id, cat])?;
-                } else {
-                    let memo = if memo.is_empty() { payee.clone() } else { memo };
-                    self.conn.execute(
-                        "UPDATE transactions SET category_id=?2, payee=?3, memo=?4 WHERE id=?1",
-                        params![id, cat, rename, memo],
-                    )?;
+        self.atomically(|| {
+            let mut n = 0;
+            for t in self.transactions(&TxFilter { uncategorized: true, ..Default::default() })? {
+                let Some((cat, rename)) = self.match_rule(&t.payee, &t.memo)? else { continue };
+                let mut d = self.load_draft(t.entry_id)?;
+                let account = self.category_ledger(Some(cat))?;
+                for l in &mut d.lines {
+                    if l.id != Some(t.id) {
+                        l.account = account;
+                    } else if !rename.is_empty() {
+                        (l.payee, l.memo) = (None, None);
+                    }
                 }
+                if !rename.is_empty() {
+                    d.memo = if t.memo.is_empty() { t.payee } else { t.memo };
+                    d.payee = rename;
+                }
+                self.save_entry(&d)?;
                 n += 1;
             }
-        }
-        Ok(n)
+            Ok(n)
+        })
     }
 
     // --------------------------------------------------------------- budget
@@ -955,9 +1083,10 @@ impl Db {
     pub fn category_totals(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<CategoryTotal>> {
         let cats: HashMap<i64, Category> = self.categories()?.into_iter().map(|c| (c.id, c)).collect();
         let mut st = self.conn.prepare(
-            "SELECT category_id, SUM(amount), SUM(CASE WHEN amount>0 THEN 1 ELSE 0 END), COUNT(*)
-             FROM transactions WHERE transfer_peer IS NULL AND date>=?1 AND date<=?2
-             GROUP BY category_id",
+            "SELECT l.category_id, -SUM(p.amount) FROM postings p JOIN entries e ON e.id=p.entry_id
+             JOIN ledger_accounts l ON l.id=p.ledger_account_id
+             WHERE (l.category_id IS NOT NULL OR l.system='uncategorized') AND e.date>=?1 AND e.date<=?2
+             GROUP BY l.category_id",
         )?;
         let rows =
             st.query_map(params![d2s(from), d2s(to)], |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?)))?;
@@ -982,9 +1111,13 @@ impl Db {
             let m = first.checked_sub_months(Months::new(i)).unwrap_or(first);
             let (from, to) = month_range(m);
             let (inc, exp): (i64, i64) = self.conn.query_row(
-                "SELECT COALESCE(SUM(CASE WHEN amount>0 THEN amount END),0),
-                        COALESCE(SUM(CASE WHEN amount<0 THEN amount END),0)
-                 FROM transactions WHERE transfer_peer IS NULL AND date>=?1 AND date<=?2",
+                &format!(
+                    "SELECT COALESCE(SUM(CASE WHEN p.amount<0 THEN -p.amount END),0),
+                            COALESCE(SUM(CASE WHEN p.amount>0 THEN -p.amount END),0)
+                     FROM postings p JOIN entries e ON e.id=p.entry_id
+                     JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                     WHERE {PROFIT_AND_LOSS} AND e.date>=?1 AND e.date<=?2"
+                ),
                 params![d2s(from), d2s(to)],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
@@ -993,21 +1126,21 @@ impl Db {
         Ok(out)
     }
 
-    /// Patrimonio netto alla fine di ogni mese degli ultimi `months` mesi.
+    /// Patrimonio netto (la somma dei conti) alla fine di ogni mese degli ultimi `months` mesi.
     pub fn net_worth_history(&self, months: u32, until: NaiveDate) -> Result<Vec<(String, Cents)>> {
-        let opening: i64 =
-            self.conn.query_row("SELECT COALESCE(SUM(opening_balance),0) FROM accounts", [], |r| r.get(0))?;
         let first = first_of_month(until);
         let mut out = Vec::new();
         for i in (0..months).rev() {
             let m = first.checked_sub_months(Months::new(i)).unwrap_or(first);
             let (_, to) = month_range(m);
             let sum: i64 = self.conn.query_row(
-                "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE date<=?1",
+                "SELECT COALESCE(SUM(p.amount),0) FROM postings p JOIN entries e ON e.id=p.entry_id
+                 JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                 WHERE l.money_account_id IS NOT NULL AND e.date<=?1",
                 [d2s(to)],
                 |r| r.get(0),
             )?;
-            out.push((m.format("%Y-%m").to_string(), opening + sum));
+            out.push((m.format("%Y-%m").to_string(), sum));
         }
         Ok(out)
     }
@@ -1051,6 +1184,9 @@ impl Db {
         if !(1..=1000).contains(&s.every) {
             bail!(tr("the repetition goes from 1 to 1000"));
         }
+        if let Some(to) = s.to_account_id {
+            self.check_transfer(s.account_id, to)?;
+        }
         self.conn.execute(
             "INSERT INTO scheduled(account_id,to_account_id,amount,payee,memo,category_id,next_date,every,unit)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -1079,12 +1215,21 @@ impl Db {
         self.atomically(|| self.post_scheduled_until(until))
     }
 
-    /// Runs `f` in one database transaction: all of it, or nothing. Nested calls join the outer one.
+    /// Runs `f` in one database transaction: all of it, or nothing. A nested call that fails undoes its
+    /// own part, even when the outer one goes on. Takes the write lock at once, so that what `f` reads
+    /// cannot change before it writes.
     pub fn atomically<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
         if !self.conn.is_autocommit() {
-            return f();
+            self.conn.execute_batch("SAVEPOINT nested")?;
+            let out = f();
+            let end = if out.is_ok() { "RELEASE nested" } else { "ROLLBACK TO nested; RELEASE nested" };
+            let ended = self.conn.execute_batch(end);
+            if out.is_ok() {
+                ended?;
+            }
+            return out;
         }
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = SqlTransaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let out = f()?;
         tx.commit()?;
         Ok(out)
@@ -1099,7 +1244,8 @@ impl Db {
                 guard += 1;
                 match s.to_account_id {
                     Some(to) => {
-                        self.add_transfer(s.account_id, to, date, s.amount, &s.memo)?;
+                        self.add_transfer(s.account_id, to, date, s.amount, &s.memo)
+                            .with_context(|| trf("scheduled transaction \"{name}\"", &[("name", &s.payee)]))?;
                     }
                     None => {
                         self.add_transaction(&NewTx {
@@ -1126,11 +1272,14 @@ impl Db {
 
     /// Cancella conti, movimenti e pianificati (tiene categorie e regole).
     pub fn clear_accounts(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "DELETE FROM scheduled; DELETE FROM transactions; DELETE FROM accounts; DELETE FROM budgets;",
-        )?;
-        self.set_meta("demo", "0")?;
-        Ok(())
+        self.atomically(|| {
+            self.conn.execute_batch(
+                "DELETE FROM scheduled; DELETE FROM entries;
+                 DELETE FROM ledger_accounts WHERE money_account_id IS NOT NULL;
+                 DELETE FROM accounts; DELETE FROM budgets;",
+            )?;
+            self.set_meta("demo", "0")
+        })
     }
 }
 

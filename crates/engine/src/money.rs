@@ -167,6 +167,27 @@ pub fn parse_amount(s: &str) -> Result<Cents> {
     parse_amount_with(s, Some(decimal_comma))
 }
 
+/// [`parse_amount`] without rounding: more than two decimals are refused.
+pub fn parse_amount_exact(s: &str) -> Result<Cents> {
+    let c = parse_amount(s)?;
+    check_exact(s, c)?;
+    Ok(c)
+}
+
+/// Whether `c` is all of the amount written in `s`, with nothing rounded away.
+pub fn check_exact(s: &str, c: Cents) -> Result<()> {
+    let digits: String = s.chars().filter(char::is_ascii_digit).collect();
+    let digits = digits.trim_start_matches('0');
+    let n: i128 = if digits.is_empty() { 0 } else { digits.parse().unwrap_or(-1) };
+    let cents = i128::from(c.unsigned_abs());
+    // The digits are cents, tenths or units.
+    let exact = [1, 10, 100].into_iter().any(|k| n.checked_mul(k) == Some(cents));
+    if !exact {
+        return Err(anyhow!(trf("\"{amount}\" has more than two decimals", &[("amount", &s)])));
+    }
+    Ok(())
+}
+
 /// Dates: 31/12/2024, 31-12-24, 31.12.2024, 2024-12-31, 2024/12/31, with a time after them too.
 pub fn parse_date(s: &str) -> Option<NaiveDate> {
     let s = s.trim().trim_matches('"');

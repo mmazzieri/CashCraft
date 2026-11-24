@@ -2,9 +2,10 @@
 //! returns JSON. Amounts come out in euros (numbers with two decimals). The descriptions of the
 //! operations are English in every language; messages and errors are in the language in use.
 
-use crate::db::{self, AccountKind, Cents, Db, NewScheduled, NewTx, TxEdit, TxFilter};
+use crate::db::{self, AccountKind, Cents, Db, NewScheduled, NewTx, TxEdit, TxFilter, TxKind};
 use crate::i18n::{Lang, lang, tr, trf, trn};
 use crate::importer;
+use crate::ledger::{Class, Entry, EntryFilter, MAX_LINES, NewEntry, NewLine, TrialBalance, find_ledger_account};
 use crate::money::{fmt_date, fmt_eur, fmt_machine, fmt_plain, parse_amount, parse_date};
 use anyhow::{Result, anyhow, bail};
 use chrono::{Datelike, Months, NaiveDate};
@@ -33,6 +34,7 @@ fn obj(props: Value, required: &[&str]) -> Value {
 const AMOUNT: &str = "Amount in euros: a number (-12.5), or text in the English (\"-1,234.50\") or Italian (\"-1.234,50\") style. Negative = money out, positive = money in. Prefer numbers: text with one separator before exactly three digits (\"1,234\" or \"1.234\") is read in the language in use, English over MCP.";
 const DATE: &str = "Date: YYYY-MM-DD or DD/MM/YYYY (default: today).";
 const ACCOUNT: &str = "Account: numeric id or name.";
+const LEDGER_ACCOUNT: &str = "Account of the chart of accounts: code, id of list_ledger_accounts, path \"Parent:Child\" or name; \"opening_balances\" and \"uncategorized\" name the two accounts every file has.";
 const CATEGORY: &str = "Category: id, name or path \"Parent:Child\" (e.g. \"Home:Utilities\").";
 
 pub fn tools() -> Vec<ToolDef> {
@@ -225,6 +227,63 @@ pub fn tools() -> Vec<ToolDef> {
                 &["path"],
             ),
         },
+        ToolDef {
+            name: "list_ledger_accounts",
+            description: "Lists the chart of accounts of the double-entry ledger, with balances (exact decimal text, debit positive). Every account and every category is in it.",
+            schema: obj(json!({}), &[]),
+        },
+        ToolDef {
+            name: "create_ledger_account",
+            description: "Adds an account to the chart of accounts. An income or expense account is a category.",
+            schema: obj(
+                json!({"name": s("Name, without colons."), "class": s("asset, liability, equity, income or expense (default: that of the parent)."),
+                "parent": s("Account above it, of the same class (optional). Code, id, path or name."), "code": s("Code, unique (optional)."),
+                "currency": s("Currency (default: that of the parent, or EUR); not for income and expense.")}),
+                &["name"],
+            ),
+        },
+        ToolDef {
+            name: "post_entry",
+            description: "Posts a double entry. Debits (positive) and credits (negative) must be equal in each currency, or it is refused and nothing is written.",
+            schema: obj(
+                json!({"date": s(DATE), "payee": s("Payee or description."), "memo": s("Notes."),
+                "postings": {"type": "array", "description": "At least two.", "items": obj(
+                    json!({"account": s(LEDGER_ACCOUNT), "amount": s("Exact amount with at most two decimals, a number or text like \"-12.50\": debit positive, credit negative."),
+                    "currency": s("Only for entries in several currencies.")}),
+                    &["account", "amount"],
+                )}}),
+                &["postings"],
+            ),
+        },
+        ToolDef {
+            name: "get_entry",
+            description: "One entry of the ledger with its postings.",
+            schema: obj(json!({"id": n("Id of the entry (entry_id of a transaction).")}), &["id"]),
+        },
+        ToolDef {
+            name: "list_entries",
+            description: "Lists the entries of the ledger with their postings, newest first, opening balances included (dated 0001-01-01).",
+            schema: obj(
+                json!({"ledger_account": s(LEDGER_ACCOUNT), "from": s("From this date."), "to": s("Up to this date."),
+                "limit": n("Maximum number of entries (default 100).")}),
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "delete_entry",
+            description: "Deletes a whole entry, every side of it. Opening balances are changed in their account instead.",
+            schema: obj(json!({"id": n("Id of the entry.")}), &["id"]),
+        },
+        ToolDef {
+            name: "trial_balance",
+            description: "Trial balance: the debit or credit balance of every account, with equal totals.",
+            schema: obj(json!({"date": s("Up to this date, included (default: everything).")}), &[]),
+        },
+        ToolDef {
+            name: "verify_ledger",
+            description: "Checks that the books are sound: every entry balances, every posting has its account. Changes nothing.",
+            schema: obj(json!({}), &[]),
+        },
     ]
 }
 
@@ -275,6 +334,58 @@ fn amount_of(v: &Value) -> Result<Cents> {
         Value::String(s) => parse_amount(s),
         _ => bail!(tr("the amount is not valid")),
     }
+}
+
+/// [`amount_of`] without rounding: more than two decimals are refused.
+fn exact_amount(v: &Value) -> Result<Cents> {
+    let c = amount_of(v)?;
+    let text = match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    crate::money::check_exact(&text, c)?;
+    Ok(c)
+}
+
+/// An account of the chart, given as text or as a whole number.
+fn ledger_account_arg(db: &Db, a: &Value, k: &str) -> Result<Option<i64>> {
+    match opt_str(a, k) {
+        Some(key) if !key.trim().is_empty() => Ok(Some(db.find_ledger_account(&key)?.id)),
+        _ => Ok(None),
+    }
+}
+
+fn entry_json(e: &Entry) -> Value {
+    let postings: Vec<Value> = e
+        .postings
+        .iter()
+        .map(|p| {
+            json!({"id": p.id, "account_id": p.account_id, "account": p.account, "amount": fmt_machine(p.amount),
+                   "currency": p.currency, "cleared": p.cleared})
+        })
+        .collect();
+    json!({"id": e.id, "date": e.date, "payee": e.payee, "memo": e.memo, "opening": e.opening, "postings": postings})
+}
+
+fn trial_json(t: &TrialBalance, until: Option<NaiveDate>) -> Value {
+    let side = |c: Cents, debit: bool| if (c > 0) == debit { fmt_machine(c.saturating_abs()) } else { fmt_machine(0) };
+    let lines: Vec<Value> = t
+        .lines
+        .iter()
+        .map(|l| {
+            json!({"account_id": l.account_id, "account": l.account, "code": l.code, "class": l.class,
+                   "currency": l.currency, "debit": side(l.amount, true), "credit": side(l.amount, false)})
+        })
+        .collect();
+    let totals: Vec<Value> = t
+        .totals
+        .iter()
+        .map(|x| {
+            json!({"currency": x.currency, "debit": fmt_machine(x.debit), "credit": fmt_machine(x.credit),
+                   "difference": fmt_machine(x.debit.saturating_sub(x.credit))})
+        })
+        .collect();
+    json!({"date": until, "lines": lines, "totals": totals, "balanced": t.is_zero()})
 }
 
 fn opt_amount(a: &Value, k: &str) -> Result<Option<Cents>> {
@@ -517,17 +628,23 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 Some(c) => Some(db.find_category(&c)?.id),
                 None => t.category_id,
             };
-            db.update_transaction(
-                id,
-                &TxEdit {
-                    date: opt_date(a, "date")?.unwrap_or(t.date),
-                    amount: opt_amount(a, "amount")?.unwrap_or(t.amount),
-                    payee: opt_str(a, "payee").unwrap_or(t.payee),
-                    memo: opt_str(a, "memo").unwrap_or(t.memo),
-                    category_id,
-                    cleared: if a.get("cleared").is_some() { opt_bool(a, "cleared") } else { t.cleared },
-                },
-            )?;
+            db.atomically(|| {
+                if opt_str(a, "category").is_some() && matches!(t.kind, TxKind::Other | TxKind::Split) {
+                    // Also without a category: asked for, it is not left as it is.
+                    db.set_category(id, category_id)?;
+                }
+                db.update_transaction(
+                    id,
+                    &TxEdit {
+                        date: opt_date(a, "date")?.unwrap_or(t.date),
+                        amount: opt_amount(a, "amount")?.unwrap_or(t.amount),
+                        payee: opt_str(a, "payee").unwrap_or(t.payee),
+                        memo: opt_str(a, "memo").unwrap_or(t.memo),
+                        category_id,
+                        cleared: if a.get("cleared").is_some() { opt_bool(a, "cleared") } else { t.cleared },
+                    },
+                )
+            })?;
             json!({"transaction": db.transaction(id)?})
         }
         "delete_transaction" => {
@@ -694,6 +811,100 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             };
             let n = export_csv(db, &f, &path)?;
             json!({"exported": n, "path": path})
+        }
+        "list_ledger_accounts" => {
+            let accounts: Vec<Value> = db
+                .ledger_accounts()?
+                .iter()
+                .map(|l| {
+                    let balances: Vec<Value> = l
+                        .balances
+                        .iter()
+                        .map(|b| json!({"currency": b.currency, "amount": fmt_machine(b.amount)}))
+                        .collect();
+                    json!({"id": l.id, "class": l.class, "parent_id": l.parent_id, "name": l.name, "path": l.path,
+                           "code": l.code, "currency": l.currency, "money_account_id": l.money_account_id,
+                           "category_id": l.category_id, "system": l.system, "balances": balances})
+                })
+                .collect();
+            json!({"accounts": accounts})
+        }
+        "create_ledger_account" => {
+            let class = match opt_str(a, "class") {
+                Some(c) if !c.trim().is_empty() => Some(
+                    Class::from_code(&c)
+                        .ok_or_else(|| anyhow!(trf("unknown class of account \"{class}\"", &[("class", &c)])))?,
+                ),
+                _ => None,
+            };
+            let id = db.create_ledger_account(
+                &req_str(a, "name")?,
+                class,
+                ledger_account_arg(db, a, "parent")?,
+                &opt_str(a, "code").unwrap_or_default(),
+                opt_str(a, "currency").as_deref(),
+            )?;
+            json!({"id": id, "message": tr("account created")})
+        }
+        "post_entry" => {
+            let postings = a.get("postings").and_then(Value::as_array).ok_or_else(|| missing("postings"))?;
+            if postings.len() > MAX_LINES {
+                bail!(trf("an entry has at most {n} postings", &[("n", &MAX_LINES)]));
+            }
+            let chart = db.ledger_accounts()?;
+            let account = |p: &Value| match opt_str(p, "account") {
+                Some(k) if !k.trim().is_empty() => Ok(find_ledger_account(&chart, &k)?.id),
+                _ => Err(missing("account")),
+            };
+            let lines = postings
+                .iter()
+                .map(|p| {
+                    Ok(NewLine {
+                        ledger_account_id: account(p)?,
+                        amount: exact_amount(p.get("amount").ok_or_else(|| missing("amount"))?)?,
+                        currency: opt_str(p, "currency").filter(|c| !c.trim().is_empty()),
+                    })
+                })
+                .collect::<Result<_>>()?;
+            let id = db.post_entry(&NewEntry {
+                date: opt_date(a, "date")?.unwrap_or_else(db::today),
+                payee: opt_str(a, "payee").unwrap_or_default(),
+                memo: opt_str(a, "memo").unwrap_or_default(),
+                lines,
+            })?;
+            json!({"id": id, "entry": entry_json(&db.entry(id)?), "message": tr("entry posted")})
+        }
+        "get_entry" => json!({"entry": entry_json(&db.entry(req_i64(a, "id")?)?)}),
+        "list_entries" => {
+            let entries = db.entries(&EntryFilter {
+                ledger_account_id: ledger_account_arg(db, a, "ledger_account")?,
+                from: opt_date(a, "from")?,
+                to: opt_date(a, "to")?,
+                limit: Some(opt_i64(a, "limit").unwrap_or(100).max(1) as usize),
+            })?;
+            json!({"count": entries.len(), "entries": entries.iter().map(entry_json).collect::<Vec<_>>()})
+        }
+        "delete_entry" => {
+            let id = req_i64(a, "id")?;
+            db.delete_entry(id)?;
+            json!({"message": trf("entry {id} deleted", &[("id", &id)])})
+        }
+        "trial_balance" => {
+            let until = opt_date(a, "date")?;
+            trial_json(&db.trial_balance(until)?, until)
+        }
+        "verify_ledger" => {
+            let v = db.verify_ledger()?;
+            let message = if v.problems.is_empty() {
+                trf(
+                    "The books are sound: {entries} entries, {postings} postings",
+                    &[("entries", &v.entries), ("postings", &v.postings)],
+                )
+            } else {
+                trn(v.problems.len(), "{n} problem found in the books", "{n} problems found in the books")
+            };
+            json!({"ok": v.problems.is_empty(), "entries": v.entries, "postings": v.postings,
+                   "problems": v.problems, "message": message})
         }
         other => bail!(trf("unknown operation \"{name}\"", &[("name", &other)])),
     })
@@ -884,12 +1095,29 @@ mod tests {
                     let mut a = json!({"account": "Conto corrente", "from": "Conto corrente", "to": "Portafoglio",
                         "from_account": "Conto corrente", "to_account": "Portafoglio", "name": "x", "payee": "x",
                         "category": "Svago", "amount": 1, "monthly_amount": 1, "date": "2025-01-31",
-                        "next_date": "2025-01-31", "id": 1, "path": "out.csv", "pattern": "x", "unit": "month"});
+                        "next_date": "2025-01-31", "id": 1, "class": "asset",
+                        "parent": "Conto corrente", "ledger_account": "Conto corrente", "code": "1",
+                        "postings": [{"account": "Conto corrente", "amount": "1,00"}, {"account": "Svago", "amount": -1}],
+                        "path": "out.csv", "pattern": "x", "unit": "month"});
                     a[hostile.as_str()] = v.clone();
                     let _ = call(&db, tool.name, &a, Some(&roots));
                 }
             }
             let _ = call(&db, tool.name, &json!("not an object"), Some(&roots));
+            assert!(db.verify_ledger().unwrap().problems.is_empty(), "{}", tool.name);
+            // Hostile postings, alone and in pairs.
+            for v in &values {
+                for p in [
+                    json!([v]),
+                    json!([{"account": v, "amount": v, "currency": v}, {"account": "Svago", "amount": v}]),
+                    json!([{"account": "Conto corrente", "amount": v, "currency": v}, {"account": "Svago", "amount": -1}]),
+                ] {
+                    let _ = call(&db, tool.name, &json!({"postings": p}), Some(&roots));
+                }
+            }
+            let many: Vec<Value> = vec![json!({"account": "Svago", "amount": 1_000_000_000_000_i64}); 2000];
+            let _ = call(&db, tool.name, &json!({"postings": many}), Some(&roots));
+            assert!(db.verify_ledger().unwrap().problems.is_empty(), "{}", tool.name);
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

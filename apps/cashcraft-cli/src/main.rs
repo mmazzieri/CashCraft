@@ -63,6 +63,7 @@ mod tests {
             ("rules", "regole"),
             ("scheduled", "pianificati"),
             ("export", "esporta"),
+            ("ledger", "contabilita"),
         ] {
             let cli = Cli::command();
             let name = |n: &str| cli.find_subcommand(n).map(|c| c.get_name().to_string());
