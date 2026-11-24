@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CashCraft MSI (WiX Toolset v5: the .NET tool "wix", version 5.0.2). Built by
+  package.ps1:
+
+    wix build cashcraft.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
+
+  Dual scope: for everyone on the computer (ALLUSERS=1, into Program Files\CashCraft) or for
+  the current user only (ALLUSERS=2 MSIINSTALLPERUSER=1, into %LOCALAPPDATA%\Programs), which is
+  what the ArtCraft Launcher asks for. INSTALLFOLDER can be given on the command line. Installs a
+  Start menu shortcut. No setup wizard: the package has nothing
+  to choose and no licence to accept (MIT OR Apache-2.0).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="CashCraft"
+      Manufacturer="Mauro Mazzieri"
+      Version="$(var.Version)"
+      UpgradeCode="9ED3657C-9249-471B-B751-C782712F80DF"
+      Scope="perUserOrMachine"
+      Compressed="yes"
+      Language="1033">
+    <SummaryInformation Description="CashCraft: personal finance with bank statement import" Manufacturer="Mauro Mazzieri" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="A newer version of CashCraft is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="CashCraftIcon.exe" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="CashCraftIcon.exe" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/mmazzieri/CashCraft" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/mmazzieri/CashCraft/releases" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="CashCraft" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main" Title="CashCraft" Level="1">
+      <ComponentGroupRef Id="CashCraftFiles" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="CashCraftFiles">
+      <Component Id="CashCraftApp" Directory="INSTALLFOLDER" Guid="0EC0E0BF-0AB7-4922-9127-8C33EE50F9DF">
+        <File Id="CashCraftExe" Source="$(var.BinDir)\cashcraft.exe" KeyPath="yes" />
+        <File Id="CashCraftNotice" Source="$(var.BinDir)\NOTICE" />
+        <File Id="CashCraftLicenseMit" Source="$(var.BinDir)\LICENSE-MIT" />
+        <File Id="CashCraftLicenseApache" Source="$(var.BinDir)\LICENSE-APACHE" />
+        <File Id="CashCraftAttribution" Source="$(var.BinDir)\ATTRIBUTION.md" />
+        <File Id="CashCraftThirdParty" Source="$(var.BinDir)\THIRD-PARTY-LICENSES.txt" />
+        <!-- Win+R "cashcraft". -->
+        <RegistryValue Root="HKMU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\cashcraft.exe" Value="[#CashCraftExe]" Type="string" />
+      </Component>
+      <Component Id="CashCraftCli" Directory="INSTALLFOLDER" Guid="2835A7A3-8D30-488D-9BA6-13D5BD63A395">
+        <File Id="CashCraftCliExe" Source="$(var.BinDir)\cashcraft-cli.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="CashCraftShortcut" Directory="ProgramMenuFolder" Guid="DAEC26B2-42B7-4992-8F28-506FFD3A9449">
+        <Shortcut Id="StartMenuShortcut" Name="CashCraft" Description="Personal finance with bank statement import"
+            Target="[#CashCraftExe]" WorkingDirectory="INSTALLFOLDER" Icon="CashCraftIcon.exe">
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="it.mauromazzieri.cashcraft" />
+        </Shortcut>
+        <RegistryValue Root="HKMU" Key="Software\Mauro Mazzieri\CashCraft" Name="StartMenuShortcut" Value="1" Type="integer" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

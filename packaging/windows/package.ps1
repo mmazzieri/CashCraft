@@ -1,51 +1,94 @@
-# Builds the Windows release files:
-#   dist\cashcraft-<ver>-windows-x64.msi            installer (cargo-packager + WiX)
-#   dist\cashcraft-<ver>-windows-x64-portable.zip   both programs, no installation
-#
-# Usage: pwsh packaging/windows/package.ps1     (needs: cargo install cargo-packager --locked)
-# Signing: with WINDOWS_CERTIFICATE (base64 .pfx) and WINDOWS_CERTIFICATE_PASSWORD set, the
-# programs and the installer are signed with signtool; without them they are unsigned.
+<#
+.SYNOPSIS
+  Build and package CashCraft for Windows x64.
+
+.DESCRIPTION
+  Produces, in $env:DIST (default: dist/release):
+    cashcraft-<version>-windows-x64.msi            installer (WiX v5), for all users or one
+    cashcraft-<version>-windows-x64-portable.zip   cashcraft.exe, cashcraft-cli.exe and the licence files
+
+  The binary links the C runtime statically, so no Visual C++ redistributable is needed. The
+  files are not signed: CashCraft has no Windows code-signing certificate yet.
+
+  Needs: Rust (MSVC toolchain) and WiX v5: dotnet tool install --global wix --version 5.0.2
+  Adapted from storytold/craft-launcher (packaging/windows/package.ps1, MIT OR Apache-2.0).
+
+.EXAMPLE
+  pwsh packaging/windows/package.ps1
+#>
+param([switch] $SkipBuild)
 $ErrorActionPreference = 'Stop'
-Set-Location (Join-Path $PSScriptRoot '..\..')
+$Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$Pkg = 'cashcraft'
 
-$version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
-$arch = 'x64'
-$name = "cashcraft-$version-windows-$arch"
-New-Item -ItemType Directory -Force dist | Out-Null
-
-Write-Host "-> Building CashCraft $version ($arch)"
-cargo build --release --bins
-if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
-
-$pfx = $null
-if ($env:WINDOWS_CERTIFICATE) {
-    $pfx = Join-Path $env:RUNNER_TEMP 'cashcraft-signing.pfx'
-    [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+function Invoke-Native([string] $What, [scriptblock] $Block) {
+  Write-Output "==> $What"
+  & $Block
+  if ($LASTEXITCODE -ne 0) { throw "$What failed with exit code $LASTEXITCODE" }
 }
-function Sign-File($path) {
-    if ($pfx) {
-        signtool sign /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $path
-        if ($LASTEXITCODE -ne 0) { throw "signing $path failed" }
-    }
+
+$Version = $env:CASHCRAFT_VERSION
+if (-not $Version) {
+  $inPkg = $false
+  foreach ($line in Get-Content (Join-Path $Root 'Cargo.toml')) {
+    if ($line -match '^\s*\[') { $inPkg = ($line.Trim() -eq '[workspace.package]'); continue }
+    if ($inPkg -and $line -match '^\s*version\s*=\s*"([^"]+)"') { $Version = $Matches[1]; break }
+  }
 }
-Sign-File target\release\cashcraft.exe
-Sign-File target\release\cashcraft-cli.exe
+if (-not $Version) { throw 'could not read [workspace.package] version from Cargo.toml' }
+# MSI ProductVersion is numeric: a pre-release tag is dropped there.
+$MsiVersion = ($Version -split '-')[0]
 
-Write-Host "-> Creating dist\$name-portable.zip"
-$stage = "dist\$name-portable"
-if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-New-Item -ItemType Directory -Force $stage | Out-Null
-Copy-Item target\release\cashcraft.exe, target\release\cashcraft-cli.exe, LICENSE-MIT, LICENSE-APACHE, NOTICE, README.md $stage
-Compress-Archive -Path "$stage\*" -DestinationPath "dist\$name-portable.zip" -Force
-Remove-Item -Recurse -Force $stage
+$Target = 'x86_64-pc-windows-msvc'
+$Dist = if ($env:DIST) { $env:DIST } else { Join-Path $Root 'dist\release' }
+$TargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $Root 'target' }
+New-Item -ItemType Directory -Force -Path $Dist | Out-Null
+Write-Output "CashCraft $Version for Windows x64"
 
-Write-Host "-> Creating dist\$name.msi"
-if (Test-Path target\packager) { Remove-Item -Recurse -Force target\packager }
-cargo packager --release --formats wix
-if ($LASTEXITCODE -ne 0) { throw 'cargo packager failed' }
-$msi = Get-ChildItem target\packager -Recurse -Filter *.msi | Select-Object -First 1
-Copy-Item $msi.FullName "dist\$name.msi"
-Sign-File "dist\$name.msi"
-if (-not $pfx) { Write-Warning 'unsigned build (no WINDOWS_CERTIFICATE): Windows SmartScreen may warn' }
+if (-not $SkipBuild) {
+  $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = '-C target-feature=+crt-static'
+  Invoke-Native 'cargo build' { cargo build --release --locked -p $Pkg -p "$Pkg-cli" --target $Target }
+}
+$Exe = Join-Path $TargetDir "$Target\release\$Pkg.exe"
 
-Get-ChildItem "dist\$name*"
+$Cli = Join-Path $TargetDir "$Target\release\$Pkg-cli.exe"
+
+# The PE headers must say x64 (machine 0x8664); the app is Windows GUI (subsystem 2: no console
+# window), the command line is a console program (3).
+foreach ($check in @(@($Exe, 2), @($Cli, 3))) {
+  $bytes = [System.IO.File]::ReadAllBytes($check[0])
+  $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+  $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+  $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 0x5C)
+  if ($machine -ne 0x8664) { throw "$($check[0]) is for machine 0x$('{0:X}' -f $machine), expected x64" }
+  if ($subsystem -ne $check[1]) { throw "$($check[0]) has PE subsystem $subsystem, expected $($check[1])" }
+}
+
+$Stage = Join-Path $TargetDir 'windows-package\stage'
+Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+Copy-Item $Exe, $Cli $Stage
+foreach ($f in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUTION.md', 'THIRD-PARTY-LICENSES.txt') {
+  Copy-Item -LiteralPath (Join-Path $Root $f) -Destination $Stage
+}
+
+$Msi = Join-Path $Dist "$Pkg-$Version-windows-x64.msi"
+Invoke-Native 'wix build' {
+  wix build (Join-Path $PSScriptRoot "$Pkg.wxs") -arch x64 `
+    -d "Version=$MsiVersion" -d "BinDir=$Stage" -d "IconPath=$(Join-Path $Root 'assets\app-icon\cashcraft.ico')" `
+    -o $Msi
+}
+Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Msi, '.wixpdb'))
+
+$Portable = Join-Path $TargetDir "windows-package\$Pkg-$Version-windows-x64-portable"
+Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $Portable | Out-Null
+Copy-Item $Exe, $Cli $Portable
+foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUTION.md', 'THIRD-PARTY-LICENSES.txt') {
+  $p = Join-Path $Root $f
+  if (Test-Path $p) { Copy-Item $p $Portable }
+}
+$Zip = Join-Path $Dist "$Pkg-$Version-windows-x64-portable.zip"
+Remove-Item -Force $Zip -ErrorAction SilentlyContinue
+Compress-Archive -Path $Portable -DestinationPath $Zip
+Get-Item $Msi, $Zip | Format-Table Name, Length

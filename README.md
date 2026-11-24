@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icons/256x256.png" width="128" height="128" alt="CashCraft icon: a white coin with a green euro sign on a teal rounded square">
+  <img src="assets/app-icon/hicolor/256x256/apps/it.mauromazzieri.cashcraft.png" width="128" height="128" alt="CashCraft icon: a white coin with a green euro sign on a teal rounded square">
 </p>
 
 <h1 align="center">CashCraft</h1>
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mmazzieri/cashcraft/releases/latest"><b>Download CashCraft</b></a> ·
+  <a href="https://github.com/mmazzieri/CashCraft/releases/latest"><b>Download CashCraft</b></a> ·
   <a href="docs/mcp.md">MCP server</a> ·
   <a href="docs/artcraft-launcher.md">ArtCraft Launcher</a> ·
   <a href="#italiano">Italiano</a>
@@ -44,17 +44,21 @@
 
 The interface is in Italian. Data stays on your computer in a single SQLite file.
 
-## Downloads
+## Install
 
-Get the file for your computer from the [latest release](https://github.com/mmazzieri/cashcraft/releases/latest).
-Every release has a `SHA256SUMS.txt` to check the files against.
+Each [release](https://github.com/mmazzieri/CashCraft/releases) has these files, listed with their checksums in `SHA256SUMS.txt`:
 
 | System | File |
 |---|---|
-| macOS (Apple silicon and Intel) | `cashcraft-<ver>-macos-universal.dmg` |
-| Windows x64 | `cashcraft-<ver>-windows-x64.msi` or `cashcraft-<ver>-windows-x64-portable.zip` |
-| Linux x86_64 / aarch64 | `cashcraft-<ver>-linux-<arch>.AppImage`, `.deb` or `.tar.gz` |
-| Command line only (macOS) | `cashcraft-cli-<ver>-macos-universal.zip` |
+| Windows 10 and 11, x64 | `cashcraft-<version>-windows-x64.msi` (installer) or `-windows-x64-portable.zip` |
+| macOS 11 or newer, Intel and Apple silicon | `cashcraft-<version>-macos-universal.dmg` |
+| Debian, Ubuntu and derivatives | `cashcraft-<version>-linux-<arch>.deb` |
+| Fedora, openSUSE, RHEL | `cashcraft-<version>-linux-<arch>.rpm` |
+| Any Linux with glibc 2.35 or newer | `cashcraft-<version>-linux-<arch>.tar.gz` |
+
+`<arch>` is `x86_64` or `aarch64`. Every package also contains `cashcraft-cli`. The MSI installs for the current user or for every user of the computer. The Windows files are not signed yet, so SmartScreen may ask for a confirmation the first time.
+
+On macOS, drag CashCraft to Applications. Until a release is signed with a Developer ID and notarized, macOS blocks it the first time. On macOS 15 or newer, open it once, close the warning, then go to **System Settings › Privacy & Security** and choose **Open Anyway** next to CashCraft; on older versions, right-click it, choose **Open** and confirm. From Terminal, `xattr -dr com.apple.quarantine /Applications/CashCraft.app` does the same.
 
 ## Command line
 
@@ -82,16 +86,14 @@ use `--db <file>` or `CASHCRAFT_DB` to pick another.
 Both folders are required: the agent may only import CSV files from the read folder and only
 write exports into the write folder. See [docs/mcp.md](docs/mcp.md).
 
-## Build from source
+## Building
 
-Needs Rust 1.85 or newer.
+Needs Rust 1.92 or newer.
 
-    cargo build --release          # target/release/cashcraft and cashcraft-cli
-    cargo test
+    cargo run --release -p cashcraft
+    cargo xtask ci      # fmt, clippy -D warnings, tests
 
-Packages: `packaging/macos/package.sh`, `packaging/windows/package.ps1`,
-`packaging/linux/package.sh`; see [docs/releasing.md](docs/releasing.md). On a Mac,
-double-click **Installa CashCraft.command** to build and install the app into Applications.
+The packages are built by `packaging/linux/package.sh`, `packaging/macos/package.sh` and `packaging/windows/package.ps1`, and by the Release workflow for every pull request that touches them; a tag `vX.Y.Z` opens a draft release with all of them.
 
 ## Clean room
 
@@ -108,4 +110,4 @@ MIT OR Apache-2.0, at your option: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](
 CashCraft è un programma libero per gestire le finanze personali: conti, movimenti, categorie,
 budget, report, movimenti ricorrenti e importazione dei CSV delle banche italiane. Funziona su
 macOS, Windows e Linux, anche da terminale (`cashcraft-cli`) e con gli assistenti AI tramite MCP.
-Scarica il file per il tuo computer dalla [pagina delle release](https://github.com/mmazzieri/cashcraft/releases/latest).
+Scarica il file per il tuo computer dalla [pagina delle release](https://github.com/mmazzieri/CashCraft/releases/latest).

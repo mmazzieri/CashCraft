@@ -1,18 +1,8 @@
 CashCraft
-Copyright (c) 2026 the CashCraft contributors
+Copyright (c) 2026 Mauro Mazzieri and the CashCraft contributors
 
-Licensed under either of the Apache License, Version 2.0 (LICENSE-APACHE) or the MIT
-license (LICENSE-MIT), at your option.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option.
+Third-party material and its licenses are listed in ATTRIBUTION.md.
 
-CashCraft is an independent, clean-room personal finance application. It is not affiliated
-with, endorsed by or derived from any other personal finance product. No code, artwork,
-text or data from another product was used.
-
-Third-party Rust crates are used under their own licences (MIT, Apache-2.0, BSD-3-Clause,
-Unlicense, Zlib, Unicode-3.0 and similar permissive licences); see Cargo.lock for the list.
-The bundled SQLite library is in the public domain.
-
-The interface fonts embedded by egui (crate `epaint_default_fonts`) are under the SIL Open
-Font License 1.1 and the Ubuntu Font Licence 1.0. The crate `option-ext` (used unmodified
-through `dirs`) is under the Mozilla Public License 2.0; its source is available at
-https://crates.io/crates/option-ext.
+The app bundles SQLite (public domain) and, through egui, the Ubuntu Light font (Ubuntu Font Licence 1.0),
+Hack (MIT, with Bitstream Vera parts) and Noto Emoji (SIL Open Font License 1.1); see ATTRIBUTION.md.
