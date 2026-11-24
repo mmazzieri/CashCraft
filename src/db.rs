@@ -1,0 +1,1299 @@
+//! Archivio dati di CashCraft (SQLite): conti, movimenti, categorie, budget,
+//! regole di categorizzazione automatica e movimenti pianificati.
+//! Gli importi sono sempre in centesimi (i64): negativi = uscite, positivi = entrate.
+
+use anyhow::{anyhow, bail, Context, Result};
+use chrono::{Datelike, Duration, Local, Months, NaiveDate};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+pub type Cents = i64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountKind {
+    Bank,
+    Cash,
+    CreditCard,
+    Savings,
+    Investment,
+    Loan,
+}
+
+impl AccountKind {
+    pub const ALL: [AccountKind; 6] = [
+        AccountKind::Bank,
+        AccountKind::Cash,
+        AccountKind::CreditCard,
+        AccountKind::Savings,
+        AccountKind::Investment,
+        AccountKind::Loan,
+    ];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            AccountKind::Bank => "bank",
+            AccountKind::Cash => "cash",
+            AccountKind::CreditCard => "credit_card",
+            AccountKind::Savings => "savings",
+            AccountKind::Investment => "investment",
+            AccountKind::Loan => "loan",
+        }
+    }
+
+    pub fn from_code(s: &str) -> Option<Self> {
+        let s = s.trim().to_lowercase();
+        Some(match s.as_str() {
+            "bank" | "banca" | "conto" | "conto corrente" | "checking" => AccountKind::Bank,
+            "cash" | "contanti" | "portafoglio" => AccountKind::Cash,
+            "credit_card" | "credit card" | "carta" | "carta di credito" | "card" => {
+                AccountKind::CreditCard
+            }
+            "savings" | "risparmio" | "risparmi" | "deposito" | "conto deposito" => {
+                AccountKind::Savings
+            }
+            "investment" | "investimenti" | "investimento" | "titoli" => AccountKind::Investment,
+            "loan" | "prestito" | "mutuo" | "debito" => AccountKind::Loan,
+            _ => return None,
+        })
+    }
+
+    /// Titolo del gruppo nella barra laterale.
+    pub fn group_label(self) -> &'static str {
+        match self {
+            AccountKind::Bank => "Conti correnti",
+            AccountKind::Cash => "Contanti",
+            AccountKind::CreditCard => "Carte di credito",
+            AccountKind::Savings => "Risparmi",
+            AccountKind::Investment => "Investimenti",
+            AccountKind::Loan => "Prestiti e mutui",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AccountKind::Bank => "Conto corrente",
+            AccountKind::Cash => "Contanti",
+            AccountKind::CreditCard => "Carta di credito",
+            AccountKind::Savings => "Risparmio",
+            AccountKind::Investment => "Investimento",
+            AccountKind::Loan => "Prestito / mutuo",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Account {
+    pub id: i64,
+    pub name: String,
+    pub kind: AccountKind,
+    pub currency: String,
+    pub opening_balance: Cents,
+    pub iban: String,
+    pub archived: bool,
+    pub balance: Cents,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Category {
+    pub id: i64,
+    pub name: String,
+    pub parent_id: Option<i64>,
+    pub is_income: bool,
+    /// Nome completo "Padre:Figlio".
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Transaction {
+    pub id: i64,
+    pub account_id: i64,
+    pub account: String,
+    pub date: NaiveDate,
+    pub amount: Cents,
+    pub payee: String,
+    pub memo: String,
+    pub category_id: Option<i64>,
+    pub category: String,
+    pub cleared: bool,
+    pub transfer_peer: Option<i64>,
+    /// Saldo progressivo (solo quando si filtra per un conto).
+    pub balance: Option<Cents>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct NewTx {
+    pub account_id: i64,
+    pub date: NaiveDate,
+    pub amount: Cents,
+    pub payee: String,
+    pub memo: String,
+    pub category_id: Option<i64>,
+    pub cleared: bool,
+    pub import_hash: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TxFilter {
+    pub account_id: Option<i64>,
+    pub category_id: Option<i64>,
+    pub uncategorized: bool,
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+    pub search: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Rule {
+    pub id: i64,
+    pub pattern: String,
+    pub category_id: i64,
+    pub category: String,
+    pub rename_payee: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Scheduled {
+    pub id: i64,
+    pub account_id: i64,
+    pub account: String,
+    pub to_account_id: Option<i64>,
+    pub amount: Cents,
+    pub payee: String,
+    pub memo: String,
+    pub category_id: Option<i64>,
+    pub category: String,
+    pub next_date: NaiveDate,
+    pub every: i64,
+    pub unit: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CategoryTotal {
+    pub category_id: Option<i64>,
+    pub category: String,
+    pub is_income: bool,
+    pub total: Cents,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MonthTotal {
+    pub month: String,
+    pub income: Cents,
+    pub expense: Cents,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BudgetLine {
+    pub category_id: i64,
+    pub category: String,
+    pub budget: Cents,
+    pub spent: Cents,
+}
+
+pub struct Db {
+    pub conn: Connection,
+    pub path: Option<PathBuf>,
+}
+
+const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    kind TEXT NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'EUR',
+    opening_balance INTEGER NOT NULL DEFAULT 0,
+    iban TEXT NOT NULL DEFAULT '',
+    archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    parent_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
+    is_income INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(name, parent_id)
+);
+CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    payee TEXT NOT NULL DEFAULT '',
+    memo TEXT NOT NULL DEFAULT '',
+    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+    cleared INTEGER NOT NULL DEFAULT 0,
+    transfer_peer INTEGER,
+    import_hash TEXT
+);
+CREATE INDEX IF NOT EXISTS tx_account_date ON transactions(account_id, date);
+CREATE UNIQUE INDEX IF NOT EXISTS tx_import_hash ON transactions(account_id, import_hash) WHERE import_hash IS NOT NULL;
+CREATE TABLE IF NOT EXISTS budgets (
+    category_id INTEGER PRIMARY KEY REFERENCES categories(id) ON DELETE CASCADE,
+    monthly INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rules (
+    id INTEGER PRIMARY KEY,
+    pattern TEXT NOT NULL,
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+    rename_payee TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS scheduled (
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    to_account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE,
+    amount INTEGER NOT NULL,
+    payee TEXT NOT NULL DEFAULT '',
+    memo TEXT NOT NULL DEFAULT '',
+    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+    next_date TEXT NOT NULL,
+    every INTEGER NOT NULL DEFAULT 1,
+    unit TEXT NOT NULL DEFAULT 'month'
+);
+"#;
+
+pub fn default_db_path() -> PathBuf {
+    if let Ok(p) = std::env::var("CASHCRAFT_DB") {
+        if !p.trim().is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    let base = dirs::data_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("CashCraft").join("cashcraft.db")
+}
+
+pub fn today() -> NaiveDate {
+    Local::now().date_naive()
+}
+
+fn d2s(d: NaiveDate) -> String {
+    d.format("%Y-%m-%d").to_string()
+}
+
+fn s2d(s: &str) -> NaiveDate {
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap_or_else(|_| today())
+}
+
+impl Db {
+    /// Apre (o crea) l'archivio. Restituisce anche `true` se il file è nuovo.
+    pub fn open(path: &Path) -> Result<(Db, bool)> {
+        let is_new = !path.exists();
+        if let Some(dir) = path.parent() {
+            if !dir.as_os_str().is_empty() {
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("impossibile creare {}", dir.display()))?;
+            }
+        }
+        let conn = Connection::open(path)
+            .with_context(|| format!("impossibile aprire {}", path.display()))?;
+        let db = Db {
+            conn,
+            path: Some(path.to_path_buf()),
+        };
+        db.init()?;
+        if is_new {
+            db.seed_defaults()?;
+        }
+        Ok((db, is_new))
+    }
+
+    pub fn open_in_memory() -> Result<Db> {
+        let db = Db {
+            conn: Connection::open_in_memory()?,
+            path: None,
+        };
+        db.init()?;
+        db.seed_defaults()?;
+        Ok(db)
+    }
+
+    fn init(&self) -> Result<()> {
+        self.conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        self.conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        let _ = self.conn.execute_batch("PRAGMA journal_mode = WAL;");
+        self.conn.execute_batch(SCHEMA)?;
+        Ok(())
+    }
+
+    /// Cambia ogni volta che un altro processo (CLI, MCP) modifica l'archivio.
+    pub fn data_version(&self) -> i64 {
+        self.conn
+            .query_row("PRAGMA data_version", [], |r| r.get(0))
+            .unwrap_or(0)
+    }
+
+    pub fn meta(&self, key: &str) -> Option<String> {
+        self.conn
+            .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0))
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    fn seed_defaults(&self) -> Result<()> {
+        let expense: &[&str] = &[
+            "Casa:Affitto e mutuo",
+            "Casa:Bollette",
+            "Casa:Manutenzione",
+            "Alimentari",
+            "Ristoranti e bar",
+            "Trasporti:Carburante",
+            "Trasporti:Mezzi pubblici",
+            "Trasporti:Auto",
+            "Salute",
+            "Svago",
+            "Abbigliamento",
+            "Viaggi",
+            "Abbonamenti",
+            "Banca e tasse:Commissioni",
+            "Banca e tasse:Imposte",
+            "Istruzione",
+            "Regali",
+            "Altre spese",
+        ];
+        let income: &[&str] = &["Stipendio", "Rimborsi", "Interessi", "Altre entrate"];
+        for p in expense {
+            self.category_by_path(p, false, true)?;
+        }
+        for p in income {
+            self.category_by_path(p, true, true)?;
+        }
+        let rules: &[(&str, &str)] = &[
+            (
+                "supermercato|alimentari|market|discount|ipermercato",
+                "Alimentari",
+            ),
+            (
+                "ristorante|pizzeria|bar |trattoria|osteria|caffe",
+                "Ristoranti e bar",
+            ),
+            (
+                "carburante|benzina|distributore|rifornimento",
+                "Trasporti:Carburante",
+            ),
+            (
+                "treno|autobus|metro|biglietto|trasporto pubblico",
+                "Trasporti:Mezzi pubblici",
+            ),
+            ("farmacia|medico|ospedale|ticket sanitario", "Salute"),
+            (
+                "energia|luce e gas|gas |acqua|bolletta|utenza",
+                "Casa:Bollette",
+            ),
+            (
+                "affitto|canone locazione|rata mutuo",
+                "Casa:Affitto e mutuo",
+            ),
+            (
+                "commissione|commissioni|canone conto|spese tenuta",
+                "Banca e tasse:Commissioni",
+            ),
+            ("imposta di bollo|f24|imposta", "Banca e tasse:Imposte"),
+            ("stipendio|emolumenti|retribuzione", "Stipendio"),
+            ("interessi creditori|interessi", "Interessi"),
+            ("abbonamento|streaming", "Abbonamenti"),
+        ];
+        for (pat, cat) in rules {
+            let cid = self.category_by_path(cat, false, false)?;
+            self.add_rule(pat, cid, "")?;
+        }
+        self.set_meta("created", &d2s(today()))?;
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------- conti
+
+    pub fn accounts(&self, include_archived: bool) -> Result<Vec<Account>> {
+        let mut st = self.conn.prepare(
+            "SELECT a.id, a.name, a.kind, a.currency, a.opening_balance, a.iban, a.archived,
+                    a.opening_balance + COALESCE((SELECT SUM(amount) FROM transactions t WHERE t.account_id=a.id),0)
+             FROM accounts a ORDER BY a.name COLLATE NOCASE",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(Account {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                kind: AccountKind::from_code(&r.get::<_, String>(2)?).unwrap_or(AccountKind::Bank),
+                currency: r.get(3)?,
+                opening_balance: r.get(4)?,
+                iban: r.get(5)?,
+                archived: r.get::<_, i64>(6)? != 0,
+                balance: r.get(7)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for a in rows {
+            let a = a?;
+            if include_archived || !a.archived {
+                out.push(a);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn add_account(
+        &self,
+        name: &str,
+        kind: AccountKind,
+        currency: &str,
+        opening: Cents,
+        iban: &str,
+    ) -> Result<i64> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("il nome del conto è obbligatorio");
+        }
+        self.conn
+            .execute(
+                "INSERT INTO accounts(name,kind,currency,opening_balance,iban) VALUES(?1,?2,?3,?4,?5)",
+                params![name, kind.code(), currency, opening, iban],
+            )
+            .with_context(|| format!("esiste già un conto chiamato \"{name}\"?"))?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn update_account(
+        &self,
+        id: i64,
+        name: &str,
+        kind: AccountKind,
+        opening: Cents,
+        iban: &str,
+        archived: bool,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET name=?2, kind=?3, opening_balance=?4, iban=?5, archived=?6 WHERE id=?1",
+            params![id, name.trim(), kind.code(), opening, iban, archived as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_account(&self, id: i64) -> Result<()> {
+        // I giroconti verso questo conto perdono il collegamento.
+        self.conn.execute(
+            "UPDATE transactions SET transfer_peer=NULL WHERE transfer_peer IN (SELECT id FROM transactions WHERE account_id=?1)",
+            [id],
+        )?;
+        self.conn
+            .execute("DELETE FROM accounts WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    /// Trova un conto per id o per nome (senza distinguere maiuscole).
+    pub fn find_account(&self, key: &str) -> Result<Account> {
+        let key = key.trim();
+        let all = self.accounts(true)?;
+        if let Ok(id) = key.parse::<i64>() {
+            if let Some(a) = all.iter().find(|a| a.id == id) {
+                return Ok(a.clone());
+            }
+        }
+        let lk = key.to_lowercase();
+        if let Some(a) = all.iter().find(|a| a.name.to_lowercase() == lk) {
+            return Ok(a.clone());
+        }
+        let partial: Vec<_> = all
+            .iter()
+            .filter(|a| a.name.to_lowercase().contains(&lk))
+            .collect();
+        if partial.len() == 1 {
+            return Ok(partial[0].clone());
+        }
+        Err(anyhow!("conto \"{key}\" non trovato"))
+    }
+
+    // ------------------------------------------------------------ categorie
+
+    pub fn categories(&self) -> Result<Vec<Category>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id, name, parent_id, is_income FROM categories")?;
+        let raw: Vec<(i64, String, Option<i64>, bool)> = st
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        let names: HashMap<i64, (String, Option<i64>)> = raw
+            .iter()
+            .map(|(id, n, p, _)| (*id, (n.clone(), *p)))
+            .collect();
+        let mut out: Vec<Category> = raw
+            .into_iter()
+            .map(|(id, name, parent_id, is_income)| {
+                let mut path = name.clone();
+                let mut cur = parent_id;
+                let mut guard = 0;
+                while let Some(p) = cur {
+                    guard += 1;
+                    if guard > 16 {
+                        break;
+                    }
+                    if let Some((pn, pp)) = names.get(&p) {
+                        path = format!("{pn}:{path}");
+                        cur = *pp;
+                    } else {
+                        break;
+                    }
+                }
+                Category {
+                    id,
+                    name,
+                    parent_id,
+                    is_income,
+                    path,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            (a.is_income, a.path.to_lowercase()).cmp(&(b.is_income, b.path.to_lowercase()))
+        });
+        Ok(out)
+    }
+
+    /// Restituisce l'id della categoria "Padre:Figlio", creandola se serve e se `create`.
+    pub fn category_by_path(&self, path: &str, is_income: bool, create: bool) -> Result<i64> {
+        let mut parent: Option<i64> = None;
+        let parts: Vec<&str> = path
+            .split(':')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if parts.is_empty() {
+            bail!("nome di categoria vuoto");
+        }
+        for part in parts {
+            let found: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT id FROM categories WHERE name = ?1 COLLATE NOCASE AND parent_id IS ?2",
+                    params![part, parent],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            parent = Some(match found {
+                Some(id) => id,
+                None if create => {
+                    self.conn.execute(
+                        "INSERT INTO categories(name,parent_id,is_income) VALUES(?1,?2,?3)",
+                        params![part, parent, is_income as i64],
+                    )?;
+                    self.conn.last_insert_rowid()
+                }
+                None => bail!("categoria \"{path}\" non trovata"),
+            });
+        }
+        Ok(parent.unwrap())
+    }
+
+    /// Trova una categoria per id, percorso completo o nome (anche parziale se univoco).
+    pub fn find_category(&self, key: &str) -> Result<Category> {
+        let key = key.trim();
+        let all = self.categories()?;
+        if let Ok(id) = key.parse::<i64>() {
+            if let Some(c) = all.iter().find(|c| c.id == id) {
+                return Ok(c.clone());
+            }
+        }
+        let lk = key.to_lowercase();
+        if let Some(c) = all.iter().find(|c| c.path.to_lowercase() == lk) {
+            return Ok(c.clone());
+        }
+        let by_name: Vec<_> = all.iter().filter(|c| c.name.to_lowercase() == lk).collect();
+        if by_name.len() == 1 {
+            return Ok(by_name[0].clone());
+        }
+        let partial: Vec<_> = all
+            .iter()
+            .filter(|c| c.path.to_lowercase().contains(&lk))
+            .collect();
+        if partial.len() == 1 {
+            return Ok(partial[0].clone());
+        }
+        Err(anyhow!("categoria \"{key}\" non trovata"))
+    }
+
+    pub fn rename_category(&self, id: i64, name: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE categories SET name=?2 WHERE id=?1",
+            params![id, name.trim()],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_category(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM categories WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ movimenti
+
+    pub fn transactions(&self, f: &TxFilter) -> Result<Vec<Transaction>> {
+        let cats: HashMap<i64, String> = self
+            .categories()?
+            .into_iter()
+            .map(|c| (c.id, c.path))
+            .collect();
+        let mut sql = String::from(
+            "SELECT t.id, t.account_id, a.name, t.date, t.amount, t.payee, t.memo, t.category_id,
+                    t.cleared, t.transfer_peer, a.opening_balance,
+                    (SELECT name FROM accounts x JOIN transactions p ON p.account_id=x.id WHERE p.id=t.transfer_peer)
+             FROM transactions t JOIN accounts a ON a.id=t.account_id WHERE 1=1",
+        );
+        let mut args: Vec<rusqlite::types::Value> = Vec::new();
+        if let Some(a) = f.account_id {
+            sql.push_str(" AND t.account_id=?");
+            args.push(a.into());
+        }
+        sql.push_str(" ORDER BY t.date ASC, t.id ASC");
+        let mut st = self.conn.prepare(&sql)?;
+        let rows = st.query_map(rusqlite::params_from_iter(args), |r| {
+            let cat_id: Option<i64> = r.get(7)?;
+            let peer_name: Option<String> = r.get(11)?;
+            Ok((
+                Transaction {
+                    id: r.get(0)?,
+                    account_id: r.get(1)?,
+                    account: r.get(2)?,
+                    date: s2d(&r.get::<_, String>(3)?),
+                    amount: r.get(4)?,
+                    payee: r.get(5)?,
+                    memo: r.get(6)?,
+                    category_id: cat_id,
+                    category: match (&peer_name, cat_id) {
+                        (Some(p), _) => format!("[Giroconto] {p}"),
+                        (None, Some(c)) => cats.get(&c).cloned().unwrap_or_default(),
+                        (None, None) => String::new(),
+                    },
+                    cleared: r.get::<_, i64>(8)? != 0,
+                    transfer_peer: r.get(9)?,
+                    balance: None,
+                },
+                r.get::<_, i64>(10)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        let mut running: Option<Cents> = None;
+        let needle = f.search.trim().to_lowercase();
+        for row in rows {
+            let (mut t, opening) = row?;
+            if f.account_id.is_some() {
+                let b = running.unwrap_or(opening) + t.amount;
+                running = Some(b);
+                t.balance = Some(b);
+            }
+            if let Some(from) = f.from {
+                if t.date < from {
+                    continue;
+                }
+            }
+            if let Some(to) = f.to {
+                if t.date > to {
+                    continue;
+                }
+            }
+            if f.uncategorized && (t.category_id.is_some() || t.transfer_peer.is_some()) {
+                continue;
+            }
+            if let Some(c) = f.category_id {
+                // Include le sottocategorie.
+                let path = cats.get(&c).cloned().unwrap_or_default();
+                let ok = t.category_id == Some(c)
+                    || t.category_id
+                        .and_then(|x| cats.get(&x))
+                        .map(|p| p.starts_with(&format!("{path}:")))
+                        .unwrap_or(false);
+                if !ok {
+                    continue;
+                }
+            }
+            if !needle.is_empty() {
+                let hay = format!(
+                    "{} {} {} {}",
+                    t.payee.to_lowercase(),
+                    t.memo.to_lowercase(),
+                    t.category.to_lowercase(),
+                    crate::money::fmt_plain(t.amount)
+                );
+                if !hay.contains(&needle) {
+                    continue;
+                }
+            }
+            out.push(t);
+        }
+        out.reverse(); // dal più recente
+        if let Some(l) = f.limit {
+            out.truncate(l);
+        }
+        Ok(out)
+    }
+
+    pub fn transaction(&self, id: i64) -> Result<Transaction> {
+        let t: Option<(i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT account_id, date FROM transactions WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let (acc, _) = t.ok_or_else(|| anyhow!("movimento {id} non trovato"))?;
+        let all = self.transactions(&TxFilter {
+            account_id: Some(acc),
+            ..Default::default()
+        })?;
+        all.into_iter()
+            .find(|t| t.id == id)
+            .ok_or_else(|| anyhow!("movimento {id} non trovato"))
+    }
+
+    /// Inserisce un movimento. Se non ha categoria applica le regole.
+    /// Restituisce `None` se era un duplicato di un import precedente.
+    pub fn add_transaction(&self, tx: &NewTx) -> Result<Option<i64>> {
+        let mut tx = tx.clone();
+        if tx.category_id.is_none() {
+            if let Some((cat, rename)) = self.match_rule(&tx.payee, &tx.memo)? {
+                tx.category_id = Some(cat);
+                if !rename.is_empty() {
+                    if tx.memo.is_empty() {
+                        tx.memo = tx.payee.clone();
+                    }
+                    tx.payee = rename;
+                }
+            }
+        }
+        let n = self.conn.execute(
+            "INSERT OR IGNORE INTO transactions(account_id,date,amount,payee,memo,category_id,cleared,import_hash)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                tx.account_id,
+                d2s(tx.date),
+                tx.amount,
+                tx.payee.trim(),
+                tx.memo.trim(),
+                tx.category_id,
+                tx.cleared as i64,
+                tx.import_hash
+            ],
+        )?;
+        Ok(if n == 0 {
+            None
+        } else {
+            Some(self.conn.last_insert_rowid())
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_transaction(
+        &self,
+        id: i64,
+        date: NaiveDate,
+        amount: Cents,
+        payee: &str,
+        memo: &str,
+        category_id: Option<i64>,
+        cleared: bool,
+    ) -> Result<()> {
+        let peer: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT transfer_peer FROM transactions WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow!("movimento {id} non trovato"))?;
+        self.conn.execute(
+            "UPDATE transactions SET date=?2, amount=?3, payee=?4, memo=?5, category_id=?6, cleared=?7 WHERE id=?1",
+            params![id, d2s(date), amount, payee.trim(), memo.trim(), if peer.is_some() { None } else { category_id }, cleared as i64],
+        )?;
+        if let Some(p) = peer {
+            self.conn.execute(
+                "UPDATE transactions SET date=?2, amount=?3, memo=?4 WHERE id=?1",
+                params![p, d2s(date), -amount, memo.trim()],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn set_category(&self, id: i64, category_id: Option<i64>) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE transactions SET category_id=?2 WHERE id=?1 AND transfer_peer IS NULL",
+            params![id, category_id],
+        )?;
+        if n == 0 {
+            bail!("movimento {id} non trovato (o è un giroconto)");
+        }
+        Ok(())
+    }
+
+    pub fn set_cleared(&self, id: i64, cleared: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE transactions SET cleared=?2 WHERE id=?1",
+            params![id, cleared as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_transaction(&self, id: i64) -> Result<()> {
+        let peer: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT transfer_peer FROM transactions WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow!("movimento {id} non trovato"))?;
+        self.conn
+            .execute("DELETE FROM transactions WHERE id=?1", [id])?;
+        if let Some(p) = peer {
+            self.conn
+                .execute("DELETE FROM transactions WHERE id=?1", [p])?;
+        }
+        Ok(())
+    }
+
+    /// Giroconto: esce da `from`, entra in `to`. Restituisce gli id (uscita, entrata).
+    pub fn add_transfer(
+        &self,
+        from: i64,
+        to: i64,
+        date: NaiveDate,
+        amount: Cents,
+        memo: &str,
+    ) -> Result<(i64, i64)> {
+        if from == to {
+            bail!("il conto di origine e di destinazione coincidono");
+        }
+        let amount = amount.abs();
+        let names: HashMap<i64, String> = self
+            .accounts(true)?
+            .into_iter()
+            .map(|a| (a.id, a.name))
+            .collect();
+        let to_name = names
+            .get(&to)
+            .ok_or_else(|| anyhow!("conto di destinazione inesistente"))?;
+        let from_name = names
+            .get(&from)
+            .ok_or_else(|| anyhow!("conto di origine inesistente"))?;
+        self.conn.execute(
+            "INSERT INTO transactions(account_id,date,amount,payee,memo) VALUES(?1,?2,?3,?4,?5)",
+            params![
+                from,
+                d2s(date),
+                -amount,
+                format!("Giroconto verso {to_name}"),
+                memo
+            ],
+        )?;
+        let a = self.conn.last_insert_rowid();
+        self.conn.execute(
+            "INSERT INTO transactions(account_id,date,amount,payee,memo,transfer_peer) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![to, d2s(date), amount, format!("Giroconto da {from_name}"), memo, a],
+        )?;
+        let b = self.conn.last_insert_rowid();
+        self.conn.execute(
+            "UPDATE transactions SET transfer_peer=?2 WHERE id=?1",
+            params![a, b],
+        )?;
+        Ok((a, b))
+    }
+
+    // --------------------------------------------------------------- regole
+
+    pub fn rules(&self) -> Result<Vec<Rule>> {
+        let cats: HashMap<i64, String> = self
+            .categories()?
+            .into_iter()
+            .map(|c| (c.id, c.path))
+            .collect();
+        let mut st = self
+            .conn
+            .prepare("SELECT id, pattern, category_id, rename_payee FROM rules ORDER BY id")?;
+        let rows = st.query_map([], |r| {
+            Ok(Rule {
+                id: r.get(0)?,
+                pattern: r.get(1)?,
+                category_id: r.get(2)?,
+                category: String::new(),
+                rename_payee: r.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let mut r = r?;
+            r.category = cats.get(&r.category_id).cloned().unwrap_or_default();
+            out.push(r);
+        }
+        Ok(out)
+    }
+
+    pub fn add_rule(&self, pattern: &str, category_id: i64, rename_payee: &str) -> Result<i64> {
+        if pattern.trim().is_empty() {
+            bail!("la parola chiave della regola è vuota");
+        }
+        self.conn.execute(
+            "INSERT INTO rules(pattern,category_id,rename_payee) VALUES(?1,?2,?3)",
+            params![pattern.trim(), category_id, rename_payee.trim()],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn delete_rule(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM rules WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    /// Una regola corrisponde se una delle sue parole chiave (separate da `|`)
+    /// compare nel beneficiario o nella descrizione, senza distinguere maiuscole.
+    fn match_rule(&self, payee: &str, memo: &str) -> Result<Option<(i64, String)>> {
+        let hay = format!(" {} {} ", payee.to_lowercase(), memo.to_lowercase());
+        for r in self.rules()? {
+            let hit = r
+                .pattern
+                .to_lowercase()
+                .split('|')
+                .filter(|k| !k.trim().is_empty())
+                .any(|k| hay.contains(k));
+            if hit {
+                return Ok(Some((r.category_id, r.rename_payee)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Applica le regole ai movimenti senza categoria. Restituisce quanti ne ha categorizzati.
+    pub fn apply_rules(&self) -> Result<usize> {
+        let mut st = self.conn.prepare(
+            "SELECT id, payee, memo FROM transactions WHERE category_id IS NULL AND transfer_peer IS NULL",
+        )?;
+        let rows: Vec<(i64, String, String)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        let mut n = 0;
+        for (id, payee, memo) in rows {
+            if let Some((cat, rename)) = self.match_rule(&payee, &memo)? {
+                if rename.is_empty() {
+                    self.conn.execute(
+                        "UPDATE transactions SET category_id=?2 WHERE id=?1",
+                        params![id, cat],
+                    )?;
+                } else {
+                    let memo = if memo.is_empty() { payee.clone() } else { memo };
+                    self.conn.execute(
+                        "UPDATE transactions SET category_id=?2, payee=?3, memo=?4 WHERE id=?1",
+                        params![id, cat, rename, memo],
+                    )?;
+                }
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    // --------------------------------------------------------------- budget
+
+    pub fn set_budget(&self, category_id: i64, monthly: Cents) -> Result<()> {
+        if monthly == 0 {
+            self.conn
+                .execute("DELETE FROM budgets WHERE category_id=?1", [category_id])?;
+        } else {
+            self.conn.execute(
+                "INSERT INTO budgets(category_id,monthly) VALUES(?1,?2)
+                 ON CONFLICT(category_id) DO UPDATE SET monthly=excluded.monthly",
+                params![category_id, monthly.abs()],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Budget del mese indicato: importo previsto e speso (incluse le sottocategorie).
+    pub fn budget_status(&self, month: NaiveDate) -> Result<Vec<BudgetLine>> {
+        let (from, to) = month_range(month);
+        let cats = self.categories()?;
+        let totals = self.category_totals(from, to)?;
+        let mut st = self
+            .conn
+            .prepare("SELECT category_id, monthly FROM budgets")?;
+        let budgets: Vec<(i64, i64)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        let mut out = Vec::new();
+        for (cid, monthly) in budgets {
+            let Some(c) = cats.iter().find(|c| c.id == cid) else {
+                continue;
+            };
+            let prefix = format!("{}:", c.path);
+            let total: Cents = totals
+                .iter()
+                .filter(|t| t.category == c.path || t.category.starts_with(&prefix))
+                .map(|t| t.total)
+                .sum();
+            let spent = if c.is_income { total } else { -total };
+            out.push(BudgetLine {
+                category_id: cid,
+                category: c.path.clone(),
+                budget: monthly,
+                spent,
+            });
+        }
+        out.sort_by(|a, b| a.category.to_lowercase().cmp(&b.category.to_lowercase()));
+        Ok(out)
+    }
+
+    // --------------------------------------------------------------- report
+
+    /// Totali per categoria nel periodo (giroconti esclusi). Le uscite sono negative.
+    pub fn category_totals(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<CategoryTotal>> {
+        let cats: HashMap<i64, Category> =
+            self.categories()?.into_iter().map(|c| (c.id, c)).collect();
+        let mut st = self.conn.prepare(
+            "SELECT category_id, SUM(amount), SUM(CASE WHEN amount>0 THEN 1 ELSE 0 END), COUNT(*)
+             FROM transactions WHERE transfer_peer IS NULL AND date>=?1 AND date<=?2
+             GROUP BY category_id",
+        )?;
+        let rows = st.query_map(params![d2s(from), d2s(to)], |r| {
+            Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (cid, total) = row?;
+            let (name, is_income) = match cid.and_then(|c| cats.get(&c)) {
+                Some(c) => (c.path.clone(), c.is_income),
+                None => ("Senza categoria".to_string(), total > 0),
+            };
+            out.push(CategoryTotal {
+                category_id: cid,
+                category: name,
+                is_income,
+                total,
+            });
+        }
+        out.sort_by_key(|c| c.total);
+        Ok(out)
+    }
+
+    /// Entrate e uscite per mese degli ultimi `months` mesi (giroconti esclusi).
+    pub fn monthly_totals(&self, months: u32, until: NaiveDate) -> Result<Vec<MonthTotal>> {
+        let mut out = Vec::new();
+        let first = first_of_month(until);
+        for i in (0..months).rev() {
+            let m = first.checked_sub_months(Months::new(i)).unwrap_or(first);
+            let (from, to) = month_range(m);
+            let (inc, exp): (i64, i64) = self.conn.query_row(
+                "SELECT COALESCE(SUM(CASE WHEN amount>0 THEN amount END),0),
+                        COALESCE(SUM(CASE WHEN amount<0 THEN amount END),0)
+                 FROM transactions WHERE transfer_peer IS NULL AND date>=?1 AND date<=?2",
+                params![d2s(from), d2s(to)],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            out.push(MonthTotal {
+                month: m.format("%Y-%m").to_string(),
+                income: inc,
+                expense: -exp,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Patrimonio netto alla fine di ogni mese degli ultimi `months` mesi.
+    pub fn net_worth_history(&self, months: u32, until: NaiveDate) -> Result<Vec<(String, Cents)>> {
+        let opening: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(opening_balance),0) FROM accounts",
+            [],
+            |r| r.get(0),
+        )?;
+        let first = first_of_month(until);
+        let mut out = Vec::new();
+        for i in (0..months).rev() {
+            let m = first.checked_sub_months(Months::new(i)).unwrap_or(first);
+            let (_, to) = month_range(m);
+            let sum: i64 = self.conn.query_row(
+                "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE date<=?1",
+                [d2s(to)],
+                |r| r.get(0),
+            )?;
+            out.push((m.format("%Y-%m").to_string(), opening + sum));
+        }
+        Ok(out)
+    }
+
+    // ---------------------------------------------------------- pianificati
+
+    pub fn scheduled(&self) -> Result<Vec<Scheduled>> {
+        let cats: HashMap<i64, String> = self
+            .categories()?
+            .into_iter()
+            .map(|c| (c.id, c.path))
+            .collect();
+        let mut st = self.conn.prepare(
+            "SELECT s.id, s.account_id, a.name, s.to_account_id, s.amount, s.payee, s.memo, s.category_id,
+                    s.next_date, s.every, s.unit
+             FROM scheduled s JOIN accounts a ON a.id=s.account_id ORDER BY s.next_date",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(Scheduled {
+                id: r.get(0)?,
+                account_id: r.get(1)?,
+                account: r.get(2)?,
+                to_account_id: r.get(3)?,
+                amount: r.get(4)?,
+                payee: r.get(5)?,
+                memo: r.get(6)?,
+                category_id: r.get(7)?,
+                category: String::new(),
+                next_date: s2d(&r.get::<_, String>(8)?),
+                every: r.get(9)?,
+                unit: r.get(10)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for s in rows {
+            let mut s = s?;
+            s.category = s
+                .category_id
+                .and_then(|c| cats.get(&c).cloned())
+                .unwrap_or_default();
+            out.push(s);
+        }
+        Ok(out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_scheduled(
+        &self,
+        account_id: i64,
+        to_account_id: Option<i64>,
+        amount: Cents,
+        payee: &str,
+        memo: &str,
+        category_id: Option<i64>,
+        next_date: NaiveDate,
+        every: i64,
+        unit: &str,
+    ) -> Result<i64> {
+        let unit = normalize_unit(unit)?;
+        self.conn.execute(
+            "INSERT INTO scheduled(account_id,to_account_id,amount,payee,memo,category_id,next_date,every,unit)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![account_id, to_account_id, amount, payee, memo, category_id, d2s(next_date), every.max(1), unit],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn delete_scheduled(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM scheduled WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    /// Registra tutti i movimenti pianificati con scadenza fino a `until`.
+    pub fn post_scheduled(&self, until: NaiveDate) -> Result<usize> {
+        let mut n = 0;
+        for s in self.scheduled()? {
+            let mut date = s.next_date;
+            let mut guard = 0;
+            while date <= until && guard < 500 {
+                guard += 1;
+                match s.to_account_id {
+                    Some(to) => {
+                        self.add_transfer(s.account_id, to, date, s.amount, &s.memo)?;
+                    }
+                    None => {
+                        self.add_transaction(&NewTx {
+                            account_id: s.account_id,
+                            date,
+                            amount: s.amount,
+                            payee: s.payee.clone(),
+                            memo: s.memo.clone(),
+                            category_id: s.category_id,
+                            cleared: false,
+                            import_hash: None,
+                        })?;
+                    }
+                }
+                n += 1;
+                date = advance(date, s.every, &s.unit);
+            }
+            if date != s.next_date {
+                self.conn.execute(
+                    "UPDATE scheduled SET next_date=?2 WHERE id=?1",
+                    params![s.id, d2s(date)],
+                )?;
+            }
+        }
+        Ok(n)
+    }
+
+    /// Cancella conti, movimenti e pianificati (tiene categorie e regole).
+    pub fn clear_accounts(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM scheduled; DELETE FROM transactions; DELETE FROM accounts; DELETE FROM budgets;",
+        )?;
+        self.set_meta("demo", "0")?;
+        Ok(())
+    }
+}
+
+pub fn normalize_unit(u: &str) -> Result<&'static str> {
+    Ok(match u.trim().to_lowercase().as_str() {
+        "day" | "days" | "giorno" | "giorni" | "d" => "day",
+        "week" | "weeks" | "settimana" | "settimane" | "w" => "week",
+        "month" | "months" | "mese" | "mesi" | "m" => "month",
+        "year" | "years" | "anno" | "anni" | "y" => "year",
+        other => {
+            bail!("unità di ripetizione \"{other}\" sconosciuta (giorno, settimana, mese, anno)")
+        }
+    })
+}
+
+pub fn unit_label(unit: &str, every: i64) -> String {
+    let (s, p) = match unit {
+        "day" => ("giorno", "giorni"),
+        "week" => ("settimana", "settimane"),
+        "year" => ("anno", "anni"),
+        _ => ("mese", "mesi"),
+    };
+    if every <= 1 {
+        format!("ogni {s}")
+    } else {
+        format!("ogni {every} {p}")
+    }
+}
+
+pub fn advance(d: NaiveDate, every: i64, unit: &str) -> NaiveDate {
+    let every = every.max(1);
+    match unit {
+        "day" => d + Duration::days(every),
+        "week" => d + Duration::weeks(every),
+        "year" => d
+            .checked_add_months(Months::new(12 * every as u32))
+            .unwrap_or(d),
+        _ => d.checked_add_months(Months::new(every as u32)).unwrap_or(d),
+    }
+}
+
+pub fn first_of_month(d: NaiveDate) -> NaiveDate {
+    NaiveDate::from_ymd_opt(d.year(), d.month(), 1).unwrap()
+}
+
+pub fn month_range(d: NaiveDate) -> (NaiveDate, NaiveDate) {
+    let first = first_of_month(d);
+    let last = first.checked_add_months(Months::new(1)).unwrap() - Duration::days(1);
+    (first, last)
+}
