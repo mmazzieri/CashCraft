@@ -1,7 +1,7 @@
 //! The program reads PDF files in another process of its own: a file that ends that process is an error.
 
 use cashcraft_engine::pdf::{Failure, Limits, statement_with};
-use cashcraft_engine::testing::{hostile, statement_file, stream};
+use cashcraft_engine::testing::{hostile, statement_file};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -44,6 +44,7 @@ fn hostile_files_end_the_other_process_only() {
 #[cfg(target_os = "linux")]
 #[test]
 fn the_other_process_stops_at_its_memory() {
+    use cashcraft_engine::testing::stream;
     let objects = [
         b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
         b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
