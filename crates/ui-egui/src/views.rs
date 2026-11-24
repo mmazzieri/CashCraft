@@ -200,7 +200,7 @@ impl App {
                         {
                             self.open_import(None);
                         }
-                        if ui.button("⇄ Giroconto").clicked() {
+                        if ui.button("🔁 Giroconto").clicked() {
                             self.dialog = Some(Dialog::Transfer(TransferForm {
                                 from: self.default_account(),
                                 date: fmt_date(db::today()),
@@ -349,7 +349,7 @@ impl App {
                         if d.uncategorized > 0 {
                             ui.horizontal(|ui| {
                                 ui.label(
-                                    RichText::new(format!("● {} movimenti senza categoria", d.uncategorized))
+                                    RichText::new(format!("⚫ {} movimenti senza categoria", d.uncategorized))
                                         .size(12.5)
                                         .color(AMBER),
                                 );
@@ -467,7 +467,7 @@ impl App {
                 changed = true;
             }
             if (!self.search.is_empty() || self.cat_filter.is_some() || self.only_uncategorized)
-                && ui.button("✕ Azzera filtri").clicked()
+                && ui.button("✖ Azzera filtri").clicked()
             {
                 self.search.clear();
                 self.cat_filter = None;
@@ -525,7 +525,7 @@ impl App {
                 ("Conto", fixed_acc, false),
                 ("Importo", fixed_amt, true),
                 ("Saldo", fixed_bal, true),
-                ("✓", fixed_chk, true),
+                ("✔", fixed_chk, true),
             ];
             let (hrect, _) = ui.allocate_exact_size(Vec2::new(w, 32.0), Sense::hover());
             let p = ui.painter();
@@ -613,7 +613,7 @@ impl App {
                         let chk_c = Pos2::new(x + fixed_chk / 2.0 - 6.0, rect.center().y);
                         if t.cleared {
                             p.circle_filled(chk_c, 7.0, GREEN);
-                            p.text(chk_c, Align2::CENTER_CENTER, "✓", FontId::proportional(10.0), Color32::WHITE);
+                            p.text(chk_c, Align2::CENTER_CENTER, "✔", FontId::proportional(10.0), Color32::WHITE);
                         } else {
                             p.circle_stroke(chk_c, 7.0, Stroke::new(1.2, Color32::from_rgb(0xB8, 0xC0, 0xBE)));
                         }
@@ -634,7 +634,7 @@ impl App {
                                 open_edit = Some(tc.clone());
                             }
                             let lbl =
-                                if tc.cleared { "Segna come non verificato" } else { "✓ Segna come verificato" };
+                                if tc.cleared { "Segna come non verificato" } else { "✔ Segna come verificato" };
                             if ui.button(lbl).clicked() {
                                 toggle_cleared = Some((tc.id, !tc.cleared));
                             }
@@ -1085,7 +1085,7 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.new_rule.0).hint_text("parole chiave, es. panificio|forno").desired_width(240.0));
-                    ui.label("→");
+                    ui.label("➡");
                     let cats = self.categories.clone();
                     category_combo(ui, "rulecat", &cats, &mut self.new_rule.1, "Scegli categoria…");
                     ui.add(
