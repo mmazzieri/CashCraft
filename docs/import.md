@@ -57,6 +57,7 @@ Each row has a key, unique in its account:
 | CSV, Excel | date, amount, payee, notes, order |
 | Card statement in PDF | see [cards.md](cards.md) |
 
+Rules change no key, and payees are compared with what the bank wrote ([rules.md](rules.md)).
 A row whose key is known is skipped. Date and amount are in it because some banks use a FITID more than once. One
 is not believed when the file or the books have it on several dates or amounts; none is when the bank numbers
 each file again: FITIDs in order of which one is on something else in the books, or at least two and half of those
@@ -78,7 +79,7 @@ order: same date and payee; same date and a payee alike (one contains the other,
 common); same date; then other dates, the same payee first, then alike, then any, the nearest first. What comes
 later never takes what comes before. A transaction is one row only. "Surely the same" is the
 same date, amount and payee with no other row or transaction like it: only those can be skipped together
-(`same`); the others one by one. What is skipped gives its key to the transaction (`ledger_postings.other_hashes`),
+(`same`); the others one by one. What is skipped gives its key to the transaction (`book_postings.other_hashes`),
 so that either file can be imported again without questions. Rows are numbered by date, as in the preview.
 Transactions typed by hand are not compared.
 

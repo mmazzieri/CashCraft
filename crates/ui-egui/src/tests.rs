@@ -102,6 +102,9 @@ fn every_symbol_has_a_glyph() {
         include_str!("views.rs"),
         include_str!("dialogs.rs"),
         include_str!("ledger.rs"),
+        include_str!("rules.rs"),
+        // What it writes of a rule is drawn too.
+        include_str!("../../engine/src/rules.rs"),
         cashcraft_engine::i18n::IT_TSV,
     ]
     .concat();
@@ -218,7 +221,7 @@ fn deleting_a_split_asks_first() {
         ctx.run_ui(Default::default(), |ui| app.ledger_view(ui)).textures_delta.clear();
     }
     assert_eq!(app.ledger.as_ref().unwrap().journal.as_ref().unwrap().0.len(), 2);
-    app.db.conn.execute_batch("ALTER TABLE ledger_postings RENAME TO gone").unwrap();
+    app.db.conn.execute_batch("ALTER TABLE book_postings RENAME TO gone").unwrap();
     app.ledger = None;
     ctx.run_ui(Default::default(), |ui| app.ledger_view(ui)).textures_delta.clear();
     let l = app.ledger.as_ref().unwrap();
@@ -560,4 +563,180 @@ fn saved_columns_are_of_the_account() {
     state(&mut app, &mut |st| st.loaded_for = None);
     draw(&mut app);
     state(&mut app, &mut |st| assert!(st.broken.is_none() && st.can_import()));
+}
+
+/// "Always categorize like this" with the live count, the order, the preview of a run, the undo and the preview of
+/// an import, drawn and used.
+#[test]
+fn rules_are_made_run_and_undone() {
+    use crate::gui::{ImportState, View};
+    use crate::rules::{RuleForm, RunForm};
+    use cashcraft_engine::rules::{Place, Rule, Scope};
+    for l in [Lang::It, Lang::En] {
+        with_lang(l, || {
+            let db = Db::open_in_memory().unwrap();
+            let bank = db.add_account("Bank", AccountKind::Bank, "EUR", 0, "").unwrap();
+            let add = |payee: &str, amount| {
+                let hash = Some(payee.to_string());
+                let tx =
+                    NewTx { account_id: bank, amount, payee: payee.into(), import_hash: hash, ..Default::default() };
+                db.add_transaction(&tx).unwrap().unwrap()
+            };
+            let ids = [add("Zoo 1", -500), add("Zoo 2", -700), add("Other", -1)];
+            let category = db.category_by_path("Animals", false, true).unwrap();
+            db.set_category(ids[0], Some(category)).unwrap();
+            db.set_tags(ids[0], &["fun".into()]).unwrap();
+            let mut app = App::new(db, None);
+            let ctx = egui::Context::default();
+            let draw = |app: &mut App| {
+                for _ in 0..3 {
+                    ctx.run_ui(Default::default(), |ui| {
+                        app.rules_view(ui);
+                        app.dialogs(&ui.ctx().clone());
+                    })
+                    .textures_delta
+                    .clear();
+                }
+            };
+            let wait = |f: &mut RuleForm| {
+                for _ in 0..1000 {
+                    if let Some(n) = f.count() {
+                        return n;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                panic!("never counted");
+            };
+            let t = app.db.transaction(ids[0]).unwrap();
+            app.open_rule_from(&t);
+            draw(&mut app);
+            let Some(Dialog::Rule(f)) = &mut app.dialog else { panic!("no dialog") };
+            assert!(f.first && f.rule.category_id == Some(category) && f.tags == "fun");
+            assert_eq!(wait(f), Ok((1, true)));
+            f.rule.payee = "zoo".into();
+            assert_eq!(f.count(), None, "not while it is written");
+            assert_eq!(wait(f), Ok((2, true)));
+            f.max = "6".into();
+            assert_eq!(wait(f), Ok((1, true)));
+            f.max = "x".into();
+            assert!(wait(f).is_err() && f.read().is_err());
+            f.max.clear();
+            f.rule.regex = true;
+            f.rule.payee = "(".into();
+            assert!(wait(f).is_err());
+            draw(&mut app);
+            let Some(Dialog::Rule(f)) = &mut app.dialog else { panic!("no dialog") };
+            f.rule.payee = r"^zoo (\d)".into();
+            f.rule.rename_payee = "Zoo n. $1".into();
+            let rule = f.read().unwrap();
+            let id = app.db.insert_rule(&rule, true).unwrap();
+            app.db.move_rule(id, Place::Down).unwrap();
+            app.db
+                .conn
+                .execute("INSERT INTO transaction_rules(position,pattern,is_regex,category_id) VALUES(0,'(',1,1)", [])
+                .unwrap();
+            app.dialog = Some(Dialog::RunRules(RunForm::default()));
+            app.reload();
+            draw(&mut app);
+            let Some(Dialog::RunRules(f)) = &mut app.dialog else { panic!("no dialog") };
+            let plan = &f.plan.as_ref().unwrap().1;
+            assert_eq!((plan.changes.len(), plan.broken.len(), plan.changes[0].id), (1, 1, ids[1]));
+            let token = plan.token.clone();
+            f.scope = Scope { all: true, overwrite: false };
+            draw(&mut app);
+            let Some(Dialog::RunRules(f)) = &app.dialog else { panic!("no dialog") };
+            assert_eq!(f.plan.as_ref().unwrap().1.changes.len(), 2);
+            assert_eq!(app.db.run_rules(Scope::default(), Some(&token)).unwrap().changed, 1);
+            app.dialog = None;
+            app.reload();
+            draw(&mut app);
+            let (rules, last) = app.rules.clone().unwrap();
+            assert!(rules[0].problem.is_some() && last.as_ref().unwrap().changed == 1);
+            // The transaction says which rule it was, and what the bank wrote.
+            let t = app.db.transaction(ids[1]).unwrap();
+            app.open_edit_tx(&t);
+            let Some(Dialog::Tx(f)) = &app.dialog else { panic!("no dialog") };
+            assert!(f.detail.contains("Zoo 2") && f.detail.contains(&id.to_string()), "{}", f.detail);
+            draw(&mut app);
+            app.dialog = None;
+            app.view = View::Register(Some(bank));
+            app.period = crate::gui::Period::All;
+            app.selected = Some(ids[1]);
+            app.reload();
+            ctx.run_ui(Default::default(), |ui| app.register(ui, Some(bank))).textures_delta.clear();
+            // Before an import.
+            let mut st = ImportState { account: Some(bank), ..Default::default() };
+            st.table = Some(
+                cashcraft_engine::importer::analyze("Data;Descrizione;Importo\n05/01/2026;Zoo 7;-1,20\n", "UTF-8")
+                    .unwrap(),
+            );
+            st.use_settings(cashcraft_engine::importer::Settings::detected(st.table.as_ref().unwrap()), None);
+            st.reparse();
+            app.dialog = Some(Dialog::Import(Box::new(st)));
+            draw(&mut app);
+            let Some(Dialog::Import(st)) = &app.dialog else { panic!("no dialog") };
+            let (what, why) = &st.ruled[&0];
+            assert!(what.contains("Animals") && what.contains("Zoo n. 7") && why.contains(&id.to_string()));
+            assert!(!st.broken_rules.is_empty());
+            app.dialog = None;
+            // Asked first, with the run.
+            let run = last.clone().unwrap();
+            app.dialog = Some(Dialog::ConfirmUndoRules(run.clone()));
+            draw(&mut app);
+            assert!(matches!(&app.dialog, Some(Dialog::ConfirmUndoRules(l)) if l.text().contains(&l.made_at)));
+            app.dialog = None;
+            assert_eq!(app.db.undo_run(run.id).unwrap().undone, 1);
+            assert_eq!(app.db.transaction(ids[1]).unwrap().payee, "Zoo 2");
+            // A category that takes rules with it is deleted after a question.
+            ctx.run_ui(Default::default(), |ui| app.delete_category(ui, category)).textures_delta.clear();
+            assert!(matches!(&app.dialog, Some(Dialog::ConfirmDeleteCategory(c, _, 1)) if *c == category));
+            draw(&mut app);
+            app.dialog = Some(Dialog::ConfirmDeleteAccount(bank, "Bank".into(), 2));
+            draw(&mut app);
+            app.dialog = None;
+            // The category that a rule gave, chosen again, is the user's.
+            app.db.run_rules(Scope::default(), None).unwrap();
+            let mut form = form_of(&mut app, ids[1]);
+            form.category_chosen = false;
+            app.save_tx(&form).unwrap();
+            assert!(app.db.transaction(ids[1]).unwrap().rules.category.is_some());
+            form.category_chosen = true;
+            app.save_tx(&form).unwrap();
+            assert!(app.db.transaction(ids[1]).unwrap().rules.category.is_none());
+            // A rule as it is, and a new one.
+            let f = RuleForm::new(&app.db, app.db.rule(id).unwrap(), Some(id), false).unwrap();
+            assert_eq!(f.read().unwrap(), app.db.rule(id).unwrap());
+            app.open_rule(Rule::default(), None, false);
+            draw(&mut app);
+            assert!(matches!(&app.dialog, Some(Dialog::Rule(_))));
+        });
+    }
+}
+
+fn form_of(app: &mut App, id: i64) -> crate::gui::TxForm {
+    let t = app.db.transaction(id).unwrap();
+    app.open_edit_tx(&t);
+    match app.dialog.take() {
+        Some(Dialog::Tx(f)) => f,
+        _ => panic!("no form"),
+    }
+}
+
+/// A long condition stays on two lines, in a column that takes most of the width.
+#[test]
+fn long_rules_stay_on_two_lines() {
+    let long = "payee: instalment of the financing for social security contributions ".repeat(4);
+    let mut heights = Vec::new();
+    egui::__run_test_ui(|ui| {
+        let [_, when, then, _] = crate::rules::rule_columns(900.0);
+        assert!(when > then && when > 900.0 / 2.0 - 100.0);
+        for text in ["x", long.as_str()] {
+            let top = ui.cursor().top();
+            crate::rules::rule_cell(ui, when, |ui| crate::rules::two_lines(ui, text, egui::Color32::BLACK));
+            heights.push(ui.cursor().top() - top);
+        }
+    });
+    for pair in heights.chunks(2) {
+        assert!(pair[1] > pair[0] && pair[1] < pair[0] * 2.5, "{pair:?}");
+    }
 }

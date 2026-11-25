@@ -33,8 +33,10 @@
   a transfer can be separated again.
 - **Overview, reports and budgets**: income vs. spending by month, spending by category,
   net worth over time, monthly budgets per category with progress bars.
-- **Categories and rules**: nested categories and keyword rules that categorize new and imported
-  transactions automatically.
+- **Categories, tags and rules**: nested categories; rules on payee, notes (keywords or regular expressions), amount and
+  account that give new and imported transactions a category, tags and a cleaner payee, in the order you choose, always
+  saying which rule it was. **Always categorize like this…** makes a rule of a transaction; on demand they run
+  after a preview, never over what you set by hand unless you ask, and the last run can be undone. See [docs/rules.md](docs/rules.md).
 - **Double-entry ledger** underneath: chart of accounts with sub-accounts, entries with any number
   of postings, trial balance. An entry that does not balance is refused. See [docs/ledger.md](docs/ledger.md).
 - **Scheduled transactions**: recurring payments and transfers, posted when due.
@@ -98,6 +100,10 @@ On macOS, drag CashCraft to Applications. Until a release is signed with a Devel
     cashcraft-cli report categories --month 2026-10
     cashcraft-cli budget set Groceries 400
     cashcraft-cli rules add "panificio|forno" Groceries
+    cashcraft-cli rules add --payee "^pos \d+ (.+)$" --regex --rename '$1' --tags card --max 50
+    cashcraft-cli rules add --like 12               # categorize like transaction 12
+    cashcraft-cli rules preview --all               # then rules apply --all, rules undo <run>
+    cashcraft-cli tx edit 12 --tags "trip, work"    # tx show 12, tx list --tag trip
     cashcraft-cli ledger post -l "Main account=1500" -l "Taxes=500" -l "Salary=-2000" -p "Pay"
     cashcraft-cli ledger trial-balance
     cashcraft-cli tools                     # every operation, as in MCP
@@ -115,7 +121,7 @@ The layout follows the language:
 | | Italian | English |
 |---|---|---|
 | Separator | `;` | `,` |
-| Columns | Data, Conto, Beneficiario, Categoria, Note, Importo, Verificato | Date, Account, Payee, Category, Notes, Amount, Cleared |
+| Columns | Data, Conto, Beneficiario, Categoria, Note, Importo, Verificato, Etichette | Date, Account, Payee, Category, Notes, Amount, Cleared, Tags |
 | Amounts | `-1.234,56` | `-1234.56` |
 | Dates | dd/mm/yyyy | yyyy-mm-dd |
 | Cleared | `sì`, `no` | `yes`, `no` |

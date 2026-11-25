@@ -4,6 +4,7 @@
 mod dialogs;
 pub mod gui;
 mod ledger;
+mod rules;
 mod views;
 
 #[cfg(test)]

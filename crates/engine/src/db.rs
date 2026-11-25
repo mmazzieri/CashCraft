@@ -7,6 +7,7 @@ use crate::i18n::{Lang, lang, tr, trf, trn, with_lang};
 use crate::layouts::LAYOUT_SCHEMA;
 use crate::ledger::{self, COUNTED, Draft, LEDGER_SCHEMA, Line, PROFIT_AND_LOSS, UNCATEGORIZED};
 use crate::money::checked_total;
+use crate::rules::{Marks, RULE_SCHEMA, RuleUse, Ruleset, Subject, has_tag, stored_tags};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{Datelike, Days, Local, Months, NaiveDate};
 use rusqlite::{Connection, OptionalExtension, Transaction as SqlTransaction, TransactionBehavior, params};
@@ -145,6 +146,29 @@ pub struct Transaction {
     /// A row of a card statement.
     #[serde(skip)]
     pub card_row: bool,
+    pub tags: Vec<String>,
+    /// What the bank wrote, when the payee or the notes are others.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_payee: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_memo: Option<String>,
+    /// The rules that set its category, payee or tags, by id.
+    #[serde(skip_serializing_if = "RuleUse::is_empty")]
+    pub rules: RuleUse,
+    /// What was typed before a rule changed the payee or the notes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typed_payee: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typed_memo: Option<String>,
+    #[serde(skip)]
+    pub(crate) marks: Marks,
+    /// The texts of before, whoever wrote them, and the import keys.
+    #[serde(skip)]
+    pub(crate) source_payee: Option<String>,
+    #[serde(skip)]
+    pub(crate) source_memo: Option<String>,
+    #[serde(skip)]
+    pub(crate) keys: String,
     /// Saldo progressivo (solo quando si filtra per un conto).
     pub balance: Option<Cents>,
 }
@@ -197,16 +221,9 @@ pub struct TxFilter {
     pub from: Option<NaiveDate>,
     pub to: Option<NaiveDate>,
     pub search: String,
+    /// Only transactions with this tag.
+    pub tag: Option<String>,
     pub limit: Option<usize>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct Rule {
-    pub id: i64,
-    pub pattern: String,
-    pub category_id: i64,
-    pub category: String,
-    pub rename_payee: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -305,10 +322,11 @@ pub struct Db {
 /// the same tables, 2 the double-entry ledger, 3 adds dates of single postings, 4 was never
 /// released, 5 tells the added sides of transfers, 6 the card statements, 7 the saved columns of CSV
 /// files and the other import keys of a posting, in a table
-/// with another name so that an older program fails to write: see `docs/ledger.md`).
-pub const SCHEMA_VERSION: i64 = 7;
+/// with another name so that an older program fails to write, 8 the rules with conditions and order, the
+/// tags and the texts of the bank, in tables with other names: see `docs/ledger.md`).
+pub const SCHEMA_VERSION: i64 = 8;
 
-/// Tables of formats 0 and 1 with their name in 2. A window of an older program that has the file open
+/// Tables of formats 0 and 1 with their name in 2. The rules have another one since 8. A window of an older program that has the file open
 /// fails at once when it writes to one, instead of doing half of what it was asked.
 pub(crate) const RENAMED: [(&str, &str); 3] =
     [("budgets", "category_budgets"), ("rules", "category_rules"), ("scheduled", "scheduled_items")];
@@ -334,12 +352,6 @@ CREATE TABLE IF NOT EXISTS categories (
 CREATE TABLE IF NOT EXISTS category_budgets (
     category_id INTEGER PRIMARY KEY REFERENCES categories(id) ON DELETE CASCADE,
     monthly INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS category_rules (
-    id INTEGER PRIMARY KEY,
-    pattern TEXT NOT NULL,
-    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
-    rename_payee TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS scheduled_items (
     id INTEGER PRIMARY KEY,
@@ -440,6 +452,7 @@ impl Db {
                 self.conn.execute_batch(LEDGER_SCHEMA)?;
                 self.conn.execute_batch(CARD_SCHEMA)?;
                 self.conn.execute_batch(LAYOUT_SCHEMA)?;
+                self.conn.execute_batch(RULE_SCHEMA)?;
             }
             self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             Ok(())
@@ -532,10 +545,10 @@ impl Db {
     pub fn accounts(&self, include_archived: bool) -> Result<Vec<Account>> {
         let mut st = self.conn.prepare(
             "SELECT a.id, a.name, a.kind, a.currency,
-                    COALESCE((SELECT SUM(p.amount) FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
+                    COALESCE((SELECT SUM(p.amount) FROM book_postings p JOIN entries e ON e.id=p.entry_id
                               WHERE p.ledger_account_id=l.id AND e.opening_account_id=a.id),0),
                     a.iban, a.archived,
-                    COALESCE((SELECT SUM(p.amount) FROM ledger_postings p WHERE p.ledger_account_id=l.id),0)
+                    COALESCE((SELECT SUM(p.amount) FROM book_postings p WHERE p.ledger_account_id=l.id),0)
              FROM accounts a LEFT JOIN ledger_accounts l ON l.money_account_id=a.id
              ORDER BY a.name COLLATE NOCASE",
         )?;
@@ -748,13 +761,13 @@ impl Db {
         let mut uncategorized: HashSet<i64> = HashSet::new();
         if f.uncategorized {
             let spare = self.system_ledger(UNCATEGORIZED)?;
-            let mut st = self.conn.prepare("SELECT entry_id FROM ledger_postings WHERE ledger_account_id=?1")?;
+            let mut st = self.conn.prepare("SELECT entry_id FROM book_postings WHERE ledger_account_id=?1")?;
             uncategorized = st.query_map([spare], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
         }
         let mut entry_categories: HashMap<i64, Vec<i64>> = HashMap::new();
         if f.category_id.is_some() {
             let mut st = self.conn.prepare(
-                "SELECT p.entry_id, l.category_id FROM ledger_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                "SELECT p.entry_id, l.category_id FROM book_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
                  WHERE l.category_id IS NOT NULL",
             )?;
             for row in st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))? {
@@ -768,11 +781,13 @@ impl Db {
         };
         let mut sql = String::from(
             "SELECT p.id, a.id, a.name, COALESCE(p.date, e.date), p.amount, COALESCE(p.payee, e.payee), COALESCE(p.memo, e.memo),
-                    ol.category_id, p.cleared, o.id, e.id, oa.id, oa.name, ol.system, ol.name, p.origin
-             FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
+                    ol.category_id, p.cleared, o.id, e.id, oa.id, oa.name, ol.system, ol.name, p.origin,
+                    p.original_payee, p.original_memo, p.tags, p.rules, ol.id,
+                    p.import_hash, p.other_hashes
+             FROM book_postings p JOIN entries e ON e.id=p.entry_id
              JOIN ledger_accounts l ON l.id=p.ledger_account_id JOIN accounts a ON a.id=l.money_account_id
-             LEFT JOIN ledger_postings o ON o.entry_id=p.entry_id AND o.id<>p.id
-                  AND (SELECT COUNT(*) FROM ledger_postings x WHERE x.entry_id=p.entry_id)=2
+             LEFT JOIN book_postings o ON o.entry_id=p.entry_id AND o.id<>p.id
+                  AND (SELECT COUNT(*) FROM book_postings x WHERE x.entry_id=p.entry_id)=2
              LEFT JOIN ledger_accounts ol ON ol.id=o.ledger_account_id
              LEFT JOIN accounts oa ON oa.id=ol.money_account_id
              WHERE +e.opening_account_id IS NULL",
@@ -801,7 +816,25 @@ impl Db {
                 _ if system.as_deref() == Some(UNCATEGORIZED) => TxKind::Uncategorized,
                 _ => TxKind::Other,
             };
+            let (payee, memo): (String, String) = (r.get(5)?, r.get(6)?);
+            let tags = stored_tags(r.get::<_, Option<String>>(18)?.as_deref());
+            let marks = Marks::read(r.get::<_, Option<String>>(19)?.as_deref());
+            let (source_payee, source_memo): (Option<String>, Option<String>) = (r.get(16)?, r.get(17)?);
+            let others = [source_payee.clone().filter(|p| *p != payee), source_memo.clone().filter(|m| *m != memo)];
+            let ([original_payee, original_memo], [typed_payee, typed_memo]) =
+                if marks.typed { ([None, None], others) } else { (others, [None, None]) };
+            let keys = [r.get::<_, Option<String>>(21)?, r.get::<_, Option<String>>(22)?];
             Ok(Transaction {
+                original_payee,
+                original_memo,
+                typed_payee,
+                typed_memo,
+                source_payee,
+                source_memo,
+                keys: keys.into_iter().flatten().collect::<Vec<_>>().join(" "),
+                rules: RuleUse::of(&marks, &tags, r.get(20)?),
+                tags,
+                marks,
                 id: r.get(0)?,
                 entry_id: r.get(10)?,
                 kind,
@@ -809,8 +842,8 @@ impl Db {
                 account: r.get(2)?,
                 date: s2d(&r.get::<_, String>(3)?),
                 amount: r.get(4)?,
-                payee: r.get(5)?,
-                memo: r.get(6)?,
+                payee,
+                memo,
                 category_id,
                 category: match kind {
                     TxKind::Transfer => trf("[Transfer] {account}", &[("account", &peer_name.unwrap_or_default())]),
@@ -861,13 +894,20 @@ impl Db {
                     continue;
                 }
             }
+            if f.tag.as_ref().is_some_and(|tag| !has_tag(&t.tags, tag)) {
+                continue;
+            }
             if !needle.is_empty() {
+                let tags: Vec<String> = t.tags.iter().map(|x| format!("#{}", x.to_lowercase())).collect();
+                let original = t.source_payee.iter().chain(&t.source_memo);
                 let hay = format!(
-                    "{} {} {} {}",
+                    "{} {} {} {} {} {}",
                     t.payee.to_lowercase(),
                     t.memo.to_lowercase(),
                     t.category.to_lowercase(),
-                    crate::money::fmt_plain(t.amount)
+                    crate::money::fmt_plain(t.amount),
+                    tags.join(" "),
+                    original.map(|o| o.to_lowercase()).collect::<Vec<_>>().join(" ")
                 );
                 if !hay.contains(&needle) {
                     continue;
@@ -886,7 +926,7 @@ impl Db {
         let acc: Option<i64> = self
             .conn
             .query_row(
-                "SELECT l.money_account_id FROM ledger_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                "SELECT l.money_account_id FROM book_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
                  WHERE p.id=?1 AND l.money_account_id IS NOT NULL",
                 [id],
                 |r| r.get(0),
@@ -900,24 +940,31 @@ impl Db {
     /// Inserisce un movimento. Se non ha categoria applica le regole.
     /// Restituisce `None` se era un duplicato di un import precedente.
     pub fn add_transaction(&self, tx: &NewTx) -> Result<Option<i64>> {
-        let mut tx = tx.clone();
-        if tx.category_id.is_none()
-            && let Some((cat, rename)) = self.match_rule(&tx.payee, &tx.memo)?
-        {
-            tx.category_id = Some(cat);
-            if !rename.is_empty() {
-                if tx.memo.is_empty() {
-                    tx.memo = tx.payee.clone();
-                }
-                tx.payee = rename;
-            }
+        match tx.category_id {
+            Some(_) => self.add_with_rules(tx, None),
+            None => self.add_with_rules(tx, Some(&self.ruleset()?)),
         }
+    }
+
+    /// [`Db::add_transaction`] with rules that are ready: many transactions read them once.
+    pub(crate) fn add_with_rules(&self, tx: &NewTx, rules: Option<&Ruleset>) -> Result<Option<i64>> {
+        let mut tx = tx.clone();
+        // The keys of an import are of the row: the rules change none.
+        let (original_payee, original_memo) = (tx.payee.trim().to_string(), tx.memo.trim().to_string());
+        let (mut tags, mut marks) = (None, None);
+        if let (None, Some(set)) = (tx.category_id, rules) {
+            let s = Subject::new(&tx.payee, &tx.memo, tx.amount, Some(tx.account_id));
+            let done = self.apply_to_new(set, &tx.payee, &tx.memo, &s, tx.import_hash.is_none())?;
+            (tx.payee, tx.memo, tx.category_id) = (done.payee, done.memo, done.category);
+            (tags, marks) = (done.tags, done.rules);
+        }
+        let keep = tx.import_hash.is_some() || tx.payee.trim() != original_payee;
         let credit = tx.amount.checked_neg().ok_or_else(|| anyhow!(tr("the amount is too large")))?;
         self.atomically(|| {
             let (account, currency) = self.money_ledger(tx.account_id)?;
             if let Some(hash) = &tx.import_hash {
                 let known: i64 = self.conn.query_row(
-                    "SELECT COUNT(*) FROM ledger_postings WHERE ledger_account_id=?1 AND import_hash=?2",
+                    "SELECT COUNT(*) FROM book_postings WHERE ledger_account_id=?1 AND import_hash=?2",
                     params![account, hash],
                     |r| r.get(0),
                 )?;
@@ -940,6 +987,10 @@ impl Db {
                         import_hash: tx.import_hash.clone(),
                         other_hashes: tx.import_marks.clone(),
                         origin: tx.card_row.then(|| ledger::CARD_ROW.into()),
+                        original_payee: keep.then(|| original_payee.clone()),
+                        original_memo: keep.then(|| original_memo.clone()),
+                        tags: tags.clone(),
+                        rules: marks.clone(),
                         ..Default::default()
                     },
                     Line {
@@ -1054,89 +1105,6 @@ impl Db {
         }
     }
 
-    // --------------------------------------------------------------- regole
-
-    pub fn rules(&self) -> Result<Vec<Rule>> {
-        let cats: HashMap<i64, String> = self.categories()?.into_iter().map(|c| (c.id, c.path)).collect();
-        let mut st =
-            self.conn.prepare("SELECT id, pattern, category_id, rename_payee FROM category_rules ORDER BY id")?;
-        let rows = st.query_map([], |r| {
-            Ok(Rule {
-                id: r.get(0)?,
-                pattern: r.get(1)?,
-                category_id: r.get(2)?,
-                category: String::new(),
-                rename_payee: r.get(3)?,
-            })
-        })?;
-        let mut out = Vec::new();
-        for r in rows {
-            let mut r = r?;
-            r.category = cats.get(&r.category_id).cloned().unwrap_or_default();
-            out.push(r);
-        }
-        Ok(out)
-    }
-
-    pub fn add_rule(&self, pattern: &str, category_id: i64, rename_payee: &str) -> Result<i64> {
-        if pattern.trim().is_empty() {
-            bail!(tr("the rule needs a keyword"));
-        }
-        self.conn.execute(
-            "INSERT INTO category_rules(pattern,category_id,rename_payee) VALUES(?1,?2,?3)",
-            params![pattern.trim(), category_id, rename_payee.trim()],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    pub fn delete_rule(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM category_rules WHERE id=?1", [id])?;
-        Ok(())
-    }
-
-    /// Una regola corrisponde se una delle sue parole chiave (separate da `|`)
-    /// compare nel beneficiario o nella descrizione, senza distinguere maiuscole.
-    fn match_rule(&self, payee: &str, memo: &str) -> Result<Option<(i64, String)>> {
-        let hay = format!(" {} {} ", payee.to_lowercase(), memo.to_lowercase());
-        for r in self.rules()? {
-            let hit = r.pattern.to_lowercase().split('|').filter(|k| !k.trim().is_empty()).any(|k| hay.contains(k));
-            if hit {
-                return Ok(Some((r.category_id, r.rename_payee)));
-            }
-        }
-        Ok(None)
-    }
-
-    /// Applica le regole ai movimenti senza categoria. Restituisce quanti ne ha categorizzati.
-    pub fn apply_rules(&self) -> Result<usize> {
-        self.atomically(|| {
-            let mut n = 0;
-            for t in self.transactions(&TxFilter { uncategorized: true, ..Default::default() })? {
-                // Splits are left to people.
-                if t.kind != TxKind::Uncategorized {
-                    continue;
-                }
-                let Some((cat, rename)) = self.match_rule(&t.payee, &t.memo)? else { continue };
-                let mut d = self.load_draft(t.entry_id)?;
-                let account = self.category_ledger(Some(cat))?;
-                for l in &mut d.lines {
-                    if l.id != Some(t.id) {
-                        l.account = account;
-                    } else if !rename.is_empty() {
-                        (l.payee, l.memo) = (None, None);
-                    }
-                }
-                if !rename.is_empty() {
-                    d.memo = if t.memo.is_empty() { t.payee } else { t.memo };
-                    d.payee = rename;
-                }
-                self.save_entry(&d)?;
-                n += 1;
-            }
-            Ok(n)
-        })
-    }
-
     // --------------------------------------------------------------- budget
 
     pub fn set_budget(&self, category_id: i64, monthly: Cents) -> Result<()> {
@@ -1247,7 +1215,7 @@ impl Db {
             Ok(())
         };
         let mut st = self.conn.prepare(&format!(
-            "SELECT l.class='income', l.category_id, p.amount FROM ledger_postings p
+            "SELECT l.class='income', l.category_id, p.amount FROM book_postings p
              JOIN ledger_accounts l ON l.id=p.ledger_account_id WHERE p.entry_id=?1 AND {PROFIT_AND_LOSS}"
         ))?;
         let mut seen = HashSet::new();
@@ -1274,7 +1242,7 @@ impl Db {
     /// Assets minus debts: every account of the chart of those classes, up to a date.
     pub fn net_worth(&self, until: Option<NaiveDate>) -> Result<Cents> {
         Ok(self.conn.query_row(
-            "SELECT COALESCE(SUM(p.amount),0) FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
+            "SELECT COALESCE(SUM(p.amount),0) FROM book_postings p JOIN entries e ON e.id=p.entry_id
              JOIN ledger_accounts l ON l.id=p.ledger_account_id
              WHERE l.class IN ('asset','liability') AND (?1 IS NULL OR e.date<=?1)",
             [until.map(d2s)],
@@ -1432,11 +1400,11 @@ impl Db {
         Ok(n)
     }
 
-    /// Cancella conti, movimenti e pianificati (tiene categorie e regole).
+    /// Cancella conti, movimenti e pianificati (tiene categorie e regole, tranne quelle di un conto).
     pub fn clear_accounts(&self) -> Result<()> {
         self.atomically(|| {
             self.conn.execute_batch(
-                "DELETE FROM scheduled_items; DELETE FROM entries;
+                "DELETE FROM scheduled_items; DELETE FROM rule_runs; DELETE FROM entries;
                  DELETE FROM ledger_accounts WHERE money_account_id IS NOT NULL;
                  DELETE FROM accounts; DELETE FROM category_budgets;",
             )?;
