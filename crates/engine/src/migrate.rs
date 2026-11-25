@@ -1,9 +1,10 @@
 //! From formats 0 (CashCraft 0.1) and 1 (0.2.0), where money was a table of transactions, to the
 //! double-entry ledger of format 2, and from that to the present one. `docs/ledger.md` describes what becomes what.
 
+use crate::cards::CARD_SCHEMA;
 use crate::db::{Cents, Db, RENAMED, SCHEMA, SCHEMA_VERSION};
 use crate::i18n::{tr, trf};
-use crate::ledger::{ADDED, Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
+use crate::ledger::{ADDED, CARD_ROW, Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
 use anyhow::{Context, Result, bail};
 use rusqlite::backup::Backup;
 use rusqlite::{Connection, OpenFlags, params};
@@ -119,7 +120,10 @@ impl Db {
     pub(crate) fn migrate(&self, version: i64) -> Result<()> {
         let again = self.has_table("postings")?;
         let dated = again && self.has_posting_column("date")?;
-        let current = dated && self.has_posting_column("origin")?;
+        let marked = dated && self.has_posting_column("origin")?;
+        let cards = again && self.has_table("card_statements")?;
+        // Format 4 had the statements, without the marks.
+        let current = marked && cards && !self.has_column("card_statements", "payment_joined")?;
         if current && !self.has_leftovers()? {
             return self.drop_leftovers();
         }
@@ -127,7 +131,9 @@ impl Db {
         let from = match (again, dated, current) {
             (false, _, _) => 1,
             (_, false, _) => 2,
-            (_, _, false) => version.max(3),
+            (_, _, false) if marked => 5,
+            (_, _, false) if cards => 4,
+            (_, _, false) => 3,
             _ => SCHEMA_VERSION.max(version),
         };
         let copy = match &self.path {
@@ -143,7 +149,7 @@ impl Db {
             if again && !dated {
                 self.conn.execute_batch("ALTER TABLE postings ADD COLUMN date TEXT")?;
             }
-            if again && !current {
+            if again && !marked {
                 self.conn.execute_batch("ALTER TABLE postings ADD COLUMN origin TEXT")?;
                 self.repair_dates()?;
             }
@@ -151,8 +157,13 @@ impl Db {
                 self.merge_leftovers()?;
             }
             self.drop_leftovers()?;
-            if !current {
+            if !marked {
                 self.mark_added_sides()?;
+            }
+            if !cards {
+                self.conn.execute_batch(CARD_SCHEMA)?;
+            } else if !current {
+                self.update_card_statements()?;
             }
             Ok(())
         })();
@@ -166,7 +177,50 @@ impl Db {
     }
 
     fn has_posting_column(&self, name: &str) -> Result<bool> {
-        Ok(self.conn.prepare("SELECT 1 FROM pragma_table_info('postings') WHERE name=?1")?.exists([name])?)
+        self.has_column("postings", name)
+    }
+
+    fn has_column(&self, table: &str, name: &str) -> Result<bool> {
+        Ok(self.conn.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name=?2")?.exists([table, name])?)
+    }
+
+    /// Format 4 remembered in the statement what the books tell, and its key had values that may not be read.
+    fn update_card_statements(&self) -> Result<()> {
+        self.conn.execute_batch("ALTER TABLE card_statements DROP COLUMN payment_joined")?;
+        let mut st = self.conn.prepare("SELECT id, import_key FROM card_statements")?;
+        let keys: Vec<(i64, String)> =
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
+        for (id, key) in keys {
+            let parts: Vec<&str> = key.split('|').collect();
+            if let [closing, _, _, cards] = parts.as_slice() {
+                let key = format!("{closing}|{cards}");
+                self.conn
+                    .execute("UPDATE OR IGNORE card_statements SET import_key=?2 WHERE id=?1", params![id, key])?;
+            }
+        }
+        // Their rows cannot be told from others imported on those cards: none is proposed as a payment.
+        let mut st = self.conn.prepare(
+            "SELECT DISTINCT p.entry_id FROM postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+             WHERE p.import_hash IS NOT NULL AND p.origin IS NULL
+               AND l.money_account_id IN (SELECT account_id FROM card_statements)",
+        )?;
+        let entries: Vec<i64> = st.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+        for id in entries {
+            let mut d = self.load_draft(id)?;
+            for l in d.lines.iter_mut().filter(|l| l.import_hash.is_some() && l.origin.is_none()) {
+                let row = self.ledger_row(l.account)?;
+                let of_card: i64 = self.conn.query_row(
+                    "SELECT COUNT(*) FROM card_statements WHERE account_id=?1",
+                    [row.money],
+                    |r| r.get(0),
+                )?;
+                if of_card > 0 {
+                    l.origin = Some(CARD_ROW.into());
+                }
+            }
+            self.save_entry(&d)?;
+        }
+        Ok(())
     }
 
     /// Format 3 left the date of a side that had lost the other one apart from the entry's.

@@ -1,13 +1,15 @@
 //! Finestre di dialogo: movimento, giroconto, conto, pianificato, importazione CSV, conferme.
 
 use crate::gui::{
-    ACCENT, App, Dialog, GREEN, ImportState, MUTED, Period, RED, TurnForm, TxForm, View, ZEBRA, account_combo, card,
-    category_combo, column_combo, cut, error_text, expense_toggle, form_row, kind_icon, money, primary_button,
+    ACCENT, AMBER, App, CardPayments, Dialog, GREEN, ImportState, MUTED, Period, RED, TurnForm, TxForm, View, ZEBRA,
+    account_combo, card, category_combo, column_combo, cut, error_text, expense_toggle, form_row, kind_icon, money,
+    primary_button, section_title,
 };
 use anyhow::Result;
-use cashcraft_engine::db::{Account, AccountKind, NewScheduled, NewTx, TxEdit};
+use cashcraft_engine::cards::{CardStatement, PaymentProposal};
+use cashcraft_engine::db::{Account, AccountKind, NewScheduled, NewTx, Transaction, TxEdit};
 use cashcraft_engine::i18n::{tr, trf, trn};
-use cashcraft_engine::importer::{self, ImportResult};
+use cashcraft_engine::importer::{self, ImportResult, Statement};
 use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount, parse_date, total};
 use cashcraft_engine::transfers::OtherSide;
 use egui::{self, Color32, CornerRadius, Frame, Id, Margin, RichText, Ui};
@@ -622,6 +624,7 @@ impl App {
                     category_id: f.category,
                     cleared: f.cleared,
                     import_hash: None,
+                    card_row: false,
                 })?;
                 Ok(tr("Transaction recorded").into())
             }
@@ -637,19 +640,20 @@ impl App {
         let mut keep = true;
         let mut msg = None;
         ui.set_min_width(780.0);
-        ui.heading(tr("Import a CSV statement"));
+        ui.heading(tr("Import a statement"));
         ui.label(
             RichText::new(tr(
-                "It works with CSV files exported from online banking: columns, separator, dates and Italian amounts \
-                 are recognized. Transactions already imported are skipped.",
+                "It works with CSV and Excel 97 files exported from online banking and with the PDF statement of a credit \
+                 card. Transactions already imported are skipped.",
             ))
             .color(MUTED),
         );
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button(tr("📂 Choose file…")).clicked()
-                && let Some(p) =
-                    rfd::FileDialog::new().add_filter("CSV, Excel", &["csv", "CSV", "txt", "xls", "XLS"]).pick_file()
+                && let Some(p) = rfd::FileDialog::new()
+                    .add_filter("CSV, Excel, PDF", &["csv", "CSV", "txt", "xls", "XLS", "pdf", "PDF"])
+                    .pick_file()
             {
                 st.path_text = p.display().to_string();
                 st.load();
@@ -663,6 +667,19 @@ impl App {
                 st.load();
             }
         });
+        if st.poll() {
+            self.card_account(st);
+        }
+        if st.loading.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(tr("Reading the file…"));
+                if ui.button(tr("Stop")).clicked() {
+                    st.loading = None;
+                }
+            });
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
         if !st.error.is_empty() {
             ui.label(RichText::new(&st.error).color(RED));
         }
@@ -688,6 +705,7 @@ impl App {
                     ui.label(trf("Side of a transfer that was there: {line}", &[("line", &line)]));
                 }
             });
+            self.card_payments(ui, &mut st.cards);
             self.maybe_transfers(ui, st);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -707,7 +725,13 @@ impl App {
             });
             return (keep, msg);
         }
-        if let Some(t) = &st.table {
+        if st.table.is_none() && st.loading.is_none() {
+            self.card_payments(ui, &mut st.cards);
+        }
+        let statement = st.table.as_ref().and_then(|t| t.statement.clone());
+        if let Some(s) = &statement {
+            statement_summary(ui, s, &mut st.allow_mismatch);
+        } else if let Some(t) = &st.table {
             ui.add_space(8.0);
             ui.label(
                 RichText::new(trf(
@@ -757,6 +781,8 @@ impl App {
             if changed {
                 st.reparse();
             }
+        }
+        if st.table.is_some() {
             ui.add_space(8.0);
             let total = total(st.rows.iter().map(|r| r.amount));
             let mut summary = trn(st.rows.len(), "{n} transaction found", "{n} transactions found");
@@ -802,10 +828,17 @@ impl App {
                 ui.label(tr("or into a new account:"));
                 ui.add(egui::TextEdit::singleline(&mut st.new_account).hint_text(tr("name")).desired_width(150.0));
             });
+            let target = accounts.iter().find(|a| Some(a.id) == st.account);
+            if statement.is_some()
+                && st.new_account.trim().is_empty()
+                && target.is_some_and(|a| a.kind != AccountKind::CreditCard)
+            {
+                ui.label(RichText::new(tr("⚠ This account is not a credit card.")).color(AMBER));
+            }
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            let can = !st.rows.is_empty() && (st.account.is_some() || !st.new_account.trim().is_empty());
+            let can = st.can_import();
             let btn = egui::Button::new(
                 RichText::new(trn(st.rows.len(), "Import {n} transaction", "Import {n} transactions"))
                     .color(Color32::WHITE)
@@ -813,17 +846,21 @@ impl App {
             )
             .fill(ACCENT);
             if ui.add_enabled(can, btn).clicked() {
-                let r = (|| -> Result<ImportResult> {
+                let r = self.db.atomically(|| -> Result<(i64, ImportResult)> {
                     let acc = if !st.new_account.trim().is_empty() {
-                        self.db.add_account(st.new_account.trim(), AccountKind::Bank, "EUR", 0, "")?
+                        let kind = if statement.is_some() { AccountKind::CreditCard } else { AccountKind::Bank };
+                        self.db.add_account(st.new_account.trim(), kind, "EUR", 0, "")?
                     } else {
                         st.account.ok_or_else(|| anyhow::anyhow!(tr("choose an account")))?
                     };
-                    st.account = Some(acc);
-                    importer::import_rows(&self.db, acc, &st.rows, st.skipped)
-                })();
+                    let table = st.table.as_ref().ok_or_else(|| anyhow::anyhow!(tr("choose a file")))?;
+                    let res = importer::import(&self.db, acc, table, &st.rows, st.skipped, st.allow_mismatch)?;
+                    Ok((acc, res))
+                });
                 match r {
-                    Ok(res) => {
+                    Ok((acc, res)) => {
+                        st.account = Some(acc);
+                        st.cards.reload(&self.db);
                         st.result = Some(res);
                         st.new_account.clear();
                         self.reload();
@@ -870,5 +907,149 @@ impl App {
             Some((_, Err(e))) => st.error = format!("{e:#}"),
             None => {}
         }
+    }
+
+    /// The card statements without a payment, with what may pay them, and the latest ones that have it.
+    fn card_payments(&mut self, ui: &mut Ui, cards: &mut CardPayments) {
+        let pending: Vec<&PaymentProposal> = cards.proposals.iter().filter(|p| !p.candidates.is_empty()).collect();
+        let linked: Vec<&CardStatement> = cards.statements.iter().filter(|s| s.payment_id.is_some()).collect();
+        if pending.is_empty() && linked.is_empty() && cards.error.is_empty() {
+            return;
+        }
+        let mut done: Option<Result<()>> = None;
+        ui.add_space(8.0);
+        card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            section_title(ui, tr("Card payments"));
+            egui::ScrollArea::vertical().id_salt("card_payments").max_height(180.0).show(ui, |ui| {
+                for p in pending {
+                    ui.label(statement_text(&p.statement));
+                    ui.label(
+                        RichText::new(tr(
+                            "Is it one of these bank transactions? It becomes a transfer, not an expense.",
+                        ))
+                        .color(MUTED)
+                        .size(12.5),
+                    );
+                    for c in &p.candidates {
+                        let t = &c.transaction;
+                        ui.horizontal(|ui| {
+                            if ui.button(tr("Link")).clicked() {
+                                let join = cards.join.get(&t.id).copied();
+                                done = Some(self.db.link_card_payment(p.statement.id, t.id, join));
+                            }
+                            ui.label(format!("{} · {} · {}", fmt_date(t.date), t.account, cut(&t.payee, 44)));
+                            ui.label(money(t.amount));
+                        });
+                        if c.card_lines.is_empty() {
+                            continue;
+                        }
+                        let mut chosen = cards.join.get(&t.id).copied();
+                        ui.indent(("card_lines", t.id), |ui| {
+                            ui.radio_value(&mut chosen, None, tr("Add the side of the card"));
+                            for l in &c.card_lines {
+                                ui.radio_value(&mut chosen, Some(l.id), join_text(l));
+                            }
+                        });
+                        match chosen {
+                            Some(l) => cards.join.insert(t.id, l),
+                            None => cards.join.remove(&t.id),
+                        };
+                    }
+                }
+                for s in linked {
+                    ui.horizontal(|ui| {
+                        if s.matches {
+                            ui.label(RichText::new("✔").color(GREEN));
+                        } else {
+                            ui.label(RichText::new("⚠").color(AMBER))
+                                .on_hover_text(tr("The payment has another amount"));
+                        }
+                        ui.label(statement_text(s));
+                        if !s.matches {
+                            ui.label(RichText::new(tr("The payment has another amount")).color(AMBER));
+                        }
+                        if cards.unlinking != Some(s.id) {
+                            if ui.button(tr("Unlink")).clicked() {
+                                cards.unlinking = Some(s.id);
+                            }
+                            return;
+                        }
+                        ui.label(tr("The bank's line becomes an uncategorized expense."));
+                        if ui.button(RichText::new(tr("Unlink")).color(RED)).clicked() {
+                            done = Some(self.db.unlink_card_payment(s.id));
+                        }
+                        if ui.button(tr("Cancel")).clicked() {
+                            cards.unlinking = None;
+                        }
+                    });
+                }
+            });
+            if !cards.error.is_empty() {
+                ui.label(RichText::new(&cards.error).color(RED));
+            }
+        });
+        if let Some(r) = done {
+            cards.reload(&self.db);
+            if let Err(e) = r {
+                cards.error = format!("{e:#}");
+            }
+            self.reload();
+        }
+    }
+}
+
+/// A line of the card that may be the payment.
+fn join_text(t: &Transaction) -> String {
+    let category = if t.category.is_empty() { tr("Uncategorized") } else { &t.category };
+    let line = format!("{} · {} · {} · {category}", fmt_date(t.date), cut(&t.payee, 40), fmt_eur(t.amount));
+    trf("It is this one: {line}", &[("line", &line)])
+}
+
+fn statement_text(s: &CardStatement) -> String {
+    trf(
+        "{account}, statement of {closing}: {amount} debited on {debit}",
+        &[
+            ("account", &s.account),
+            ("closing", &fmt_date(s.closing_date)),
+            ("amount", &fmt_eur(s.amount)),
+            ("debit", &fmt_date(s.debit_date)),
+        ],
+    )
+}
+
+/// What a card statement says of itself, against what was read.
+fn statement_summary(ui: &mut Ui, s: &Statement, allow_mismatch: &mut bool) {
+    let day = |d: Option<chrono::NaiveDate>| d.map_or_else(|| "—".to_string(), fmt_date);
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(trf(
+            "Card statement {cards}: up to {closing}, debited on {debit}",
+            &[("cards", &s.cards.join(", ")), ("closing", &day(s.closing)), ("debit", &day(s.debit_date))],
+        ))
+        .strong(),
+    );
+    for c in &s.checks {
+        let said = c.expected.map_or_else(|| "—".to_string(), fmt_eur);
+        let text = trf(
+            "{what}: {said} on the statement, {read} read",
+            &[("what", &c.label()), ("said", &said), ("read", &fmt_eur(c.found))],
+        );
+        ui.horizontal(|ui| {
+            ui.label(if c.ok() { RichText::new("✔").color(GREEN) } else { RichText::new("✖").color(RED) });
+            ui.label(text);
+        });
+    }
+    if s.unread > 0 {
+        ui.label(RichText::new(trn(s.unread, "{n} row could not be read", "{n} rows could not be read")).color(RED));
+    }
+    if s.debit_date.is_none() || s.debit.is_none() {
+        ui.label(RichText::new(tr("The debit was not found: its payment will not be proposed.")).color(AMBER));
+    }
+    if !s.is_identified() {
+        let text = tr("The date of the statement or the number of the card was not read: it cannot be imported.");
+        ui.label(RichText::new(text).color(RED));
+    } else if !s.is_sound() {
+        ui.checkbox(allow_mismatch, tr("The totals do not match: import the rows all the same"));
     }
 }

@@ -43,6 +43,9 @@
   *Causale*, *Importo*, *Accrediti/Addebiti*, *Entrate/Uscite*, *Dare/Avere*…); reads Italian
   amounts (`1.234,56`) and dates (`dd/mm/yyyy`); pulls the merchant out of card payment
   descriptions; never imports the same transaction twice. Columns can be remapped by hand.
+- **Credit card statements (PDF)** in Nexi's layout: purchases, refunds, instalments and stamp duty, checked
+  against the totals of the statement before importing. The bank's monthly debit is proposed as a transfer to
+  the card, whichever of the two is imported first, and linked when you confirm. See [docs/cards.md](docs/cards.md).
 - **Command line and MCP**: every operation also works without the window, from
   `cashcraft-cli` or an AI agent. The window refreshes when they change the data.
 
@@ -81,6 +84,8 @@ On macOS, drag CashCraft to Applications. Until a release is signed with a Devel
     cashcraft-cli accounts add "Main account" --kind bank --opening 1500
     cashcraft-cli import statement.csv --account "Main account" --dry-run
     cashcraft-cli import statement.csv --account "Main account"
+    cashcraft-cli import card.pdf --account "Card"
+    cashcraft-cli cards payments                    # then cards link <statement> <transaction>
     cashcraft-cli tx list --account "Main account" --from 2026-01-01
     cashcraft-cli tx add -a "Main account" --amount -12,50 -p "Bar" -c "Restaurants and bars"
     cashcraft-cli tx to-transfer 12 "Savings"       # or tx matches, tx separate

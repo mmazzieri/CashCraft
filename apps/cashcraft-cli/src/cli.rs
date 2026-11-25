@@ -44,7 +44,7 @@ pub enum Cmd {
         #[arg(long)]
         memo: Option<String>,
     },
-    /// Import a bank statement (CSV or .xls) into an account
+    /// Import a statement (CSV, .xls or the PDF of a credit card) into an account
     #[command(visible_alias = "importa")]
     Import {
         file: PathBuf,
@@ -54,10 +54,16 @@ pub enum Cmd {
         /// Show what would be imported, without saving
         #[arg(long)]
         dry_run: bool,
+        /// Import a card statement even if its rows do not add up to its totals
+        #[arg(long)]
+        allow_mismatch: bool,
+        /// Import a card statement into an account that is not a credit card
+        #[arg(long)]
+        any_account: bool,
         #[command(flatten)]
         cols: ColumnArgs,
     },
-    /// Analyze a statement (CSV or .xls) without importing it
+    /// Analyze a statement (CSV, .xls or the PDF of a credit card) without importing it
     #[command(visible_alias = "anteprima")]
     Preview {
         file: PathBuf,
@@ -66,6 +72,9 @@ pub enum Cmd {
         #[command(flatten)]
         cols: ColumnArgs,
     },
+    /// Credit card statements and the bank's lines that pay them
+    #[command(subcommand, visible_alias = "carte")]
+    Cards(CardsCmd),
     /// Categories
     #[command(subcommand, visible_alias = "categorie")]
     Categories(CatCmd),
@@ -247,6 +256,24 @@ pub enum TxCmd {
         #[arg(long)]
         drop_other: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CardsCmd {
+    /// List the imported card statements
+    Statements,
+    /// List the bank transactions that may pay a statement
+    Payments,
+    /// Make a bank transaction the payment of a statement: a transfer to the card
+    Link {
+        statement: i64,
+        transaction: i64,
+        /// The card's own line of the payment, if it is there (default: its side is added)
+        #[arg(long)]
+        join: Option<i64>,
+    },
+    /// Undo `link`
+    Unlink { statement: i64 },
 }
 
 #[derive(Subcommand, Debug)]
@@ -541,11 +568,13 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
             "add_transfer",
             args(&[("from", v(from)), ("to", v(to)), ("amount", v(amount)), ("date", o(&date)), ("memo", o(&memo))]),
         ),
-        Cmd::Import { file, account, dry_run, cols } => {
+        Cmd::Import { file, account, dry_run, allow_mismatch, any_account, cols } => {
             let mut m = Map::new();
             m.insert("path".into(), json!(file));
             m.insert("account".into(), json!(account));
             m.insert("dry_run".into(), json!(dry_run));
+            m.insert("allow_mismatch".into(), json!(allow_mismatch));
+            m.insert("any_account".into(), json!(any_account));
             cols.put(&mut m);
             ("import_csv", Value::Object(m))
         }
@@ -556,6 +585,19 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
             cols.put(&mut m);
             ("preview_csv", Value::Object(m))
         }
+        Cmd::Cards(c) => match c {
+            CardsCmd::Statements => ("list_card_statements", json!({})),
+            CardsCmd::Payments => ("propose_card_payments", json!({})),
+            CardsCmd::Link { statement, transaction, join } => (
+                "link_card_payment",
+                args(&[
+                    ("statement_id", v(statement)),
+                    ("transaction_id", v(transaction)),
+                    ("join", join.map(|j| json!(j))),
+                ]),
+            ),
+            CardsCmd::Unlink { statement } => ("unlink_card_payment", args(&[("statement_id", v(statement))])),
+        },
         Cmd::Categories(c) => match c {
             CatCmd::List => ("list_categories", json!({})),
             CatCmd::Add { path, income } => ("create_category", args(&[("path", v(path)), ("income", v(income))])),
@@ -681,6 +723,89 @@ fn print_entry(e: &Value) {
             cut(&st(field(p, "account")), 44),
             exact(field(p, "amount"), field(p, "currency"))
         );
+    }
+}
+
+fn statement_line(s: &Value) -> String {
+    format!(
+        "{:>4}  {:<20} {}  {}  {:>13}",
+        st(field(s, "id")),
+        cut(&st(field(s, "account")), 20),
+        date(field(s, "closing_date")),
+        date(field(s, "debit_date")),
+        eur(field(s, "amount"))
+    )
+}
+
+/// The dates and the totals of a card statement that was read.
+fn print_statement(s: &Value) {
+    let day = |k: &str| match field(s, k) {
+        Value::Null => "—".to_string(),
+        d => date(d),
+    };
+    let cards: Vec<String> = field(s, "cards").as_array().into_iter().flatten().map(st).collect();
+    println!(
+        "{}",
+        trf(
+            "Card statement {cards}: up to {closing}, debited on {debit}",
+            &[("cards", &cards.join(", ")), ("closing", &day("closing_date")), ("debit", &day("debit_date"))]
+        )
+    );
+    for c in field(s, "checks").as_array().into_iter().flatten() {
+        let label = match st(field(c, "check")).as_str() {
+            "purchases" => tr("Purchases"),
+            "instalments" => tr("Instalments"),
+            "debit" => tr("Amount debited"),
+            _ => tr("Amount debited, on the first page"),
+        };
+        let mark = if field(c, "ok").as_bool().unwrap_or(false) { "✔" } else { "✖" };
+        let said = match field(c, "expected") {
+            Value::Null => "—".to_string(),
+            v => exact(v, &json!("EUR")),
+        };
+        println!(
+            "  {mark} {}",
+            trf(
+                "{what}: {said} on the statement, {read} read",
+                &[("what", &label), ("said", &said), ("read", &exact(field(c, "found"), &json!("EUR")))]
+            )
+        );
+    }
+    let unread = count(field(s, "unread_rows"));
+    if unread > 0 {
+        println!("  ✖ {}", trn(unread, "{n} row could not be read", "{n} rows could not be read"));
+    }
+}
+
+/// What may pay the card statements.
+fn print_payments(proposals: &[Value]) {
+    for p in proposals {
+        println!("{}", trf("Card statement {line}", &[("line", &statement_line(field(p, "statement")))]));
+        let candidates = field(p, "candidates").as_array().cloned().unwrap_or_default();
+        if candidates.is_empty() {
+            println!("  {}", tr("no bank transaction matches"));
+        }
+        for t in candidates {
+            println!(
+                "  {:>5}  {}  {:<16} {:<30} {:>13}",
+                st(field(&t, "id")),
+                date(field(&t, "date")),
+                cut(&st(field(&t, "account")), 16),
+                cut(&st(field(&t, "payee")), 30),
+                eur(field(&t, "amount"))
+            );
+            for l in field(&t, "card_lines").as_array().into_iter().flatten() {
+                let line = format!(
+                    "{} {} {} {} {}",
+                    st(field(l, "id")),
+                    date(field(l, "date")),
+                    st(field(l, "payee")),
+                    eur(field(l, "amount")),
+                    st(field(l, "category"))
+                );
+                println!("         {}", trf("on the card, perhaps the same (--join): {line}", &[("line", &line)]));
+            }
+        }
     }
 }
 
@@ -908,20 +1033,39 @@ fn print_human(tool: &str, r: &Value) {
                 println!("  {}", st(&p));
             }
         }
+        "list_card_statements" => {
+            for s in arr("statements") {
+                let paid = match field(&s, "payment_id") {
+                    Value::Null => tr("not linked").to_string(),
+                    id if field(&s, "matches") == &json!(false) => {
+                        trf("transaction {id} pays another amount", &[("id", id)])
+                    }
+                    id => trf("paid by transaction {id}", &[("id", id)]),
+                };
+                println!("{}  {paid}", statement_line(&s));
+            }
+        }
+        "propose_card_payments" => print_payments(&arr("card_payments")),
         "preview_csv" | "import_csv" => {
             let f = field(r, "format");
-            println!(
-                "{}",
-                trf(
-                    "Format: separator '{separator}', encoding {encoding}, decimals '{decimal}', header on row {row}",
-                    &[
-                        ("separator", &st(field(f, "delimiter"))),
-                        ("encoding", &st(field(f, "encoding"))),
-                        ("decimal", &st(field(f, "decimal_separator"))),
-                        ("row", &st(field(f, "header_row")))
-                    ]
-                )
-            );
+            let statement = field(r, "statement");
+            if !statement.is_null() {
+                print_statement(statement);
+            }
+            if statement.is_null() {
+                println!(
+                    "{}",
+                    trf(
+                        "Format: separator '{separator}', encoding {encoding}, decimals '{decimal}', header on row {row}",
+                        &[
+                            ("separator", &st(field(f, "delimiter"))),
+                            ("encoding", &st(field(f, "encoding"))),
+                            ("decimal", &st(field(f, "decimal_separator"))),
+                            ("row", &st(field(f, "header_row")))
+                        ]
+                    )
+                );
+            }
             let m = field(f, "mapping");
             for (k, label) in [
                 ("date", tr("Date")),
@@ -938,6 +1082,7 @@ fn print_human(tool: &str, r: &Value) {
             }
             if let Some(msg) = r.get("message") {
                 println!("{}", st(msg));
+                print_payments(&arr("card_payments"));
                 print_transfers(field(r, "result"));
             } else {
                 println!(

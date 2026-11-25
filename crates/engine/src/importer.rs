@@ -12,11 +12,12 @@
 //! Le righe che non sono movimenti (saldi, totali, righe vuote) vengono saltate.
 //! Reimportare lo stesso file non crea doppioni.
 
+pub use crate::card_pdf::{CardRow, Check, CheckKind, Statement};
 use crate::db::{Cents, Db, NewTx, Transaction};
 use crate::i18n::{tr, trf};
 use crate::money::{parse_amount_with, parse_date};
 use crate::transfers::near;
-use crate::xls;
+use crate::{pdf, xls};
 use anyhow::{Context, Result, bail};
 use chrono::NaiveDate;
 use serde::Serialize;
@@ -25,7 +26,7 @@ use std::io::Read;
 use std::path::Path;
 
 /// Dimensione massima di un estratto conto.
-const MAX_FILE: u64 = 32 << 20;
+pub(crate) const MAX_FILE: u64 = 32 << 20;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Mapping {
@@ -50,6 +51,8 @@ pub struct Table {
     pub headers: Vec<String>,
     pub mapping: Mapping,
     pub decimal_comma: bool,
+    /// A card statement, whose rows are known: no columns to choose.
+    pub statement: Option<Statement>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -58,6 +61,9 @@ pub struct ParsedRow {
     pub amount: Cents,
     pub payee: String,
     pub memo: String,
+    /// What tells it from the other rows of the account, instead of its contents.
+    #[serde(skip)]
+    pub key: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -93,14 +99,30 @@ pub fn read_text(path: &Path) -> Result<(String, &'static str)> {
     Ok(decode(&read_bytes(path)?))
 }
 
-/// Reads a statement, CSV or Excel 97-2003, and finds its columns.
+/// Reads a statement, CSV, Excel 97-2003 or PDF of a card, and finds its columns.
 pub fn load(path: &Path) -> Result<Table> {
     let bytes = read_bytes(path)?;
     if xls::is_xls(&bytes) {
         return Ok(table(xls::rows(&bytes)?, b'\t', "Excel 97-2003"));
     }
+    if pdf::is_pdf(&bytes) {
+        return Ok(card_table(pdf::statement(&bytes)?));
+    }
     let (text, encoding) = decode(&bytes);
     analyze(&text, encoding)
+}
+
+pub(crate) fn card_table(statement: Statement) -> Table {
+    Table {
+        delimiter: b'\t',
+        encoding: "PDF",
+        records: Vec::new(),
+        header_row: None,
+        headers: Vec::new(),
+        mapping: Mapping::default(),
+        decimal_comma: true,
+        statement: Some(statement),
+    }
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>> {
@@ -340,7 +362,8 @@ fn table(records: Vec<Vec<String>>, delimiter: u8, encoding: &'static str) -> Ta
             (headers, guess_by_content(&records))
         }
     };
-    let mut t = Table { delimiter, encoding, records, header_row, headers, mapping, decimal_comma: true };
+    let mut t =
+        Table { delimiter, encoding, records, header_row, headers, mapping, decimal_comma: true, statement: None };
     t.decimal_comma = detect_decimal_comma(&t);
     t
 }
@@ -450,7 +473,18 @@ fn collapse(s: &str) -> String {
 
 /// Converte le righe del file in movimenti secondo la mappatura.
 /// `invert` cambia il segno (utile per gli estratti delle carte di credito).
+/// Those of a card statement are as they are.
 pub fn parse_rows(t: &Table, m: &Mapping, invert: bool) -> (Vec<ParsedRow>, usize) {
+    if let Some(s) = &t.statement {
+        let row = |r: &CardRow| ParsedRow {
+            date: r.date,
+            amount: r.amount,
+            payee: r.payee.clone(),
+            memo: r.memo.clone(),
+            key: Some(r.key.clone()),
+        };
+        return (s.rows.iter().map(row).collect(), s.unread);
+    }
     let start = t.header_row.map(|h| h + 1).unwrap_or(0);
     let mut out = Vec::new();
     let mut skipped = 0;
@@ -523,7 +557,7 @@ pub fn parse_rows(t: &Table, m: &Mapping, invert: bool) -> (Vec<ParsedRow>, usiz
             let memo = if full == p { String::new() } else { full };
             (p, memo)
         };
-        out.push(ParsedRow { date, amount, payee, memo });
+        out.push(ParsedRow { date, amount, payee, memo, key: None });
     }
     out.sort_by_key(|r| r.date);
     (out, skipped)
@@ -538,6 +572,35 @@ fn fnv(s: &str) -> u64 {
     h
 }
 
+/// [`import_rows`] for a whole file. A card statement that does not add up is refused, unless the user
+/// asked to import it all the same, and is remembered to find its payment.
+pub fn import(
+    db: &Db,
+    account_id: i64,
+    t: &Table,
+    rows: &[ParsedRow],
+    skipped: usize,
+    allow_mismatch: bool,
+) -> Result<ImportResult> {
+    let Some(s) = &t.statement else { return import_rows(db, account_id, rows, skipped) };
+    let (Some(closing), true) = (s.closing, s.is_identified()) else {
+        bail!(tr("the date or the card number of the statement was not read: nothing was imported"));
+    };
+    if !s.is_sound() && !allow_mismatch {
+        bail!(tr("the rows read do not add up to the totals of the card statement: nothing was imported"));
+    }
+    db.atomically(|| {
+        let (_, currency) = db.money_ledger(account_id)?;
+        if currency != "EUR" {
+            bail!(tr("the card statement is in euros and the account is not"));
+        }
+        if let (Some(debit_date), Some(debit)) = (s.debit_date, s.debit) {
+            db.record_card_statement(account_id, closing, debit_date, debit, &s.key(closing))?;
+        }
+        import_rows(db, account_id, rows, skipped)
+    })
+}
+
 /// Salva i movimenti nel conto, saltando quelli già importati in precedenza.
 pub fn import_rows(db: &Db, account_id: i64, rows: &[ParsedRow], skipped: usize) -> Result<ImportResult> {
     let mut res = ImportResult { read: rows.len(), skipped, ..Default::default() };
@@ -547,7 +610,9 @@ pub fn import_rows(db: &Db, account_id: i64, rows: &[ParsedRow], skipped: usize)
         let mut seen: HashMap<String, usize> = HashMap::new();
         let mut fresh: Vec<(&ParsedRow, String)> = Vec::new();
         for row in rows {
-            let key = format!("{}|{}|{}|{}", row.date, row.amount, row.payee.to_lowercase(), row.memo.to_lowercase());
+            let key = row.key.clone().unwrap_or_else(|| {
+                format!("{}|{}|{}|{}", row.date, row.amount, row.payee.to_lowercase(), row.memo.to_lowercase())
+            });
             let n = seen.entry(key.clone()).or_default();
             *n += 1;
             let hash = format!("{:016x}", fnv(&format!("{key}|{n}")));
@@ -558,7 +623,9 @@ pub fn import_rows(db: &Db, account_id: i64, rows: &[ParsedRow], skipped: usize)
             }
         }
         let sides = db.added_sides(account_id)?;
-        let fits = |row: &ParsedRow, t: &Transaction| row.amount == t.amount && near(row.date, t.date);
+        // The rows of a card statement are never sides of transfers.
+        let fits =
+            |row: &ParsedRow, t: &Transaction| row.key.is_none() && row.amount == t.amount && near(row.date, t.date);
         let mut unsure = Vec::new();
         for (row, hash) in &fresh {
             let mine: Vec<&Transaction> = sides.iter().filter(|t| fits(row, t)).collect();
@@ -580,6 +647,7 @@ pub fn import_rows(db: &Db, account_id: i64, rows: &[ParsedRow], skipped: usize)
                 category_id: None,
                 cleared: true,
                 import_hash: Some(hash.clone()),
+                card_row: row.key.is_some(),
             })?;
             let Some(id) = id else {
                 res.duplicates += 1;

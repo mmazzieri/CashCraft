@@ -37,7 +37,7 @@ pub(crate) fn near(a: NaiveDate, b: NaiveDate) -> bool {
 }
 
 /// Id, date, text, amount and category, for people to choose.
-fn describe(t: &Transaction) -> String {
+pub(crate) fn describe(t: &Transaction) -> String {
     format!("{} ({}, {}, {}, {})", t.id, fmt_date(t.date), t.payee, fmt_eur(t.amount), t.category)
 }
 
@@ -97,11 +97,12 @@ impl Db {
         Ok(out)
     }
 
-    /// Ordinary transactions of an account with this amount near a date, nearest first.
+    /// Ordinary transactions of an account with this amount near a date, nearest first. Rows of a card
+    /// statement are purchases and refunds, never the side of a transfer.
     pub(crate) fn matching(&self, account: i64, amount: Cents, date: NaiveDate) -> Result<Vec<Transaction>> {
         let mut out = Vec::new();
         for x in self.transactions(&TxFilter { account_id: Some(account), ..Default::default() })? {
-            if x.amount == amount && near(x.date, date) && self.is_ordinary(&x)? {
+            if x.amount == amount && near(x.date, date) && !x.card_row && self.is_ordinary(&x)? {
                 out.push(x);
             }
         }
@@ -233,6 +234,12 @@ impl Db {
                 [a, b] => (b, a),
                 _ => return Err(split_error()),
             };
+            // It pays no statement any more.
+            self.conn.execute(
+                "UPDATE card_statements SET payment_id=NULL
+                 WHERE payment_id IN (SELECT id FROM postings WHERE entry_id=?1)",
+                [t.entry_id],
+            )?;
             let spare = self.system_ledger(UNCATEGORIZED)?;
             let last: i64 = self.conn.query_row("SELECT MAX(id) FROM postings", [], |r| r.get(0))?;
             // Ids above every other: that of the side that leaves must not be taken.
@@ -245,7 +252,13 @@ impl Db {
                     memo: l.memo.clone().unwrap_or_else(|| d.memo.clone()),
                     opening: None,
                     lines: vec![
-                        Line { payee: None, memo: None, date: None, origin: None, ..l.clone() },
+                        Line {
+                            payee: None,
+                            memo: None,
+                            date: None,
+                            origin: l.origin.clone().filter(|o| o != ADDED),
+                            ..l.clone()
+                        },
                         Line {
                             id: Some(counter),
                             account: spare,

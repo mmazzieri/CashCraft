@@ -292,3 +292,105 @@ fn a_transaction_is_turned_into_a_transfer() {
         assert_eq!(app.db.transaction(into).unwrap().amount, 50);
     });
 }
+
+/// A card statement that does not add up is imported only when the user says so; then its payment is
+/// proposed, linked and unlinked.
+#[test]
+fn a_card_statement_is_checked_imported_and_paid() {
+    use crate::gui::ImportState;
+    use cashcraft_engine::importer::{CardRow, Check, CheckKind, Statement, Table};
+    for l in [Lang::It, Lang::En] {
+        with_lang(l, || {
+            let db = Db::open_in_memory().unwrap();
+            let bank = db.add_account("Bank", AccountKind::Bank, "EUR", 0, "").unwrap();
+            let date = parse_date("2026-12-15").unwrap();
+            let tx = NewTx { account_id: bank, amount: -900, date, payee: "x".into(), ..Default::default() };
+            let paid = db.add_transaction(&tx).unwrap().unwrap();
+            let row = CardRow { date, amount: -900, payee: "shop".into(), memo: String::new(), key: "k".into() };
+            let check = |found| Check { kind: CheckKind::Debit, expected: Some(900), found };
+            let statement = |found| Statement {
+                closing: parse_date("2026-11-30"),
+                debit_date: Some(date),
+                debit: Some(900),
+                cards: vec!["1234".into()],
+                rows: vec![row.clone()],
+                unread: 0,
+                unread_card: false,
+                checks: vec![check(found)],
+            };
+            let mut app = App::new(db, None);
+            let table = |found| Table {
+                delimiter: b'\t',
+                encoding: "PDF",
+                records: vec![],
+                header_row: None,
+                headers: vec![],
+                mapping: Default::default(),
+                decimal_comma: true,
+                statement: Some(statement(found)),
+            };
+            let mut st = ImportState { account: Some(bank), table: Some(table(901)), ..Default::default() };
+            st.reparse();
+            assert_eq!(st.rows.len(), 1);
+            app.card_account(&mut st);
+            assert!(st.account.is_none() && st.new_account.ends_with("1234"));
+            app.dialog = Some(Dialog::Import(Box::new(st)));
+            let ctx = egui::Context::default();
+            let draw = |app: &mut App| {
+                for _ in 0..2 {
+                    ctx.run_ui(Default::default(), |ui| app.dialogs(&ui.ctx().clone())).textures_delta.clear();
+                }
+            };
+            draw(&mut app);
+            let Some(Dialog::Import(st)) = &mut app.dialog else { panic!("no dialog") };
+            assert!(!st.can_import());
+            st.allow_mismatch = true;
+            assert!(st.can_import());
+            st.allow_mismatch = false;
+            st.table = Some(table(900));
+            assert!(st.can_import());
+            let card = app.db.add_account("Card", AccountKind::CreditCard, "EUR", 0, "").unwrap();
+            app.accounts = app.db.accounts(true).unwrap();
+            let Some(Dialog::Import(mut st)) = app.dialog.take() else { panic!("no dialog") };
+            app.card_account(&mut st);
+            assert_eq!(st.account, Some(card));
+            let t = table(900);
+            cashcraft_engine::importer::import(&app.db, card, &t, &st.rows, 0, false).unwrap();
+            st.cards.reload(&app.db);
+            assert_eq!(st.cards.proposals[0].candidates[0].transaction.id, paid);
+            app.db.link_card_payment(st.cards.proposals[0].statement.id, paid, None).unwrap();
+            st.cards.reload(&app.db);
+            assert!(st.cards.proposals.is_empty() && st.cards.statements[0].payment_id == Some(paid));
+            st.table = None;
+            app.dialog = Some(Dialog::Import(st));
+            draw(&mut app);
+        });
+    }
+}
+
+/// The window goes on while a file is read, and what was not waited for is not shown.
+#[test]
+fn a_file_is_read_beside_the_window() {
+    use crate::gui::ImportState;
+    let file = std::env::temp_dir().join(format!("cashcraft-ui-{}.csv", std::process::id()));
+    std::fs::write(&file, "Data;Descrizione;Importo\n01/02/2026;Bar;-1,20\n").unwrap();
+    let mut st = ImportState { path_text: file.display().to_string(), ..Default::default() };
+    st.load();
+    assert!(st.loading.is_some() && st.table.is_none());
+    let start = std::time::Instant::now();
+    while !st.poll() {
+        assert!(start.elapsed().as_secs() < 20);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(st.loading.is_none() && st.rows.len() == 1 && st.can_import() == st.account.is_some());
+    st.load();
+    st.loading = None;
+    assert!(!st.poll() && st.table.is_none());
+    st.path_text.push('x');
+    st.load();
+    while !st.poll() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!st.error.is_empty());
+    std::fs::remove_file(&file).unwrap();
+}

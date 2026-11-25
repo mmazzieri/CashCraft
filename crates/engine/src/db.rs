@@ -2,6 +2,7 @@
 //! regole di categorizzazione automatica e movimenti pianificati.
 //! Gli importi sono sempre in centesimi (i64): negativi = uscite, positivi = entrate.
 
+use crate::cards::CARD_SCHEMA;
 use crate::i18n::{Lang, lang, tr, trf, trn, with_lang};
 use crate::ledger::{self, COUNTED, Draft, LEDGER_SCHEMA, Line, PROFIT_AND_LOSS, UNCATEGORIZED};
 use crate::money::checked_total;
@@ -140,6 +141,9 @@ pub struct Transaction {
     pub transfer_peer: Option<i64>,
     /// A side of a transfer that was added and not seen on a statement yet.
     pub added: bool,
+    /// A row of a card statement.
+    #[serde(skip)]
+    pub card_row: bool,
     /// Saldo progressivo (solo quando si filtra per un conto).
     pub balance: Option<Cents>,
 }
@@ -154,6 +158,8 @@ pub struct NewTx {
     pub category_id: Option<i64>,
     pub cleared: bool,
     pub import_hash: Option<String>,
+    /// A row of a card statement.
+    pub card_row: bool,
 }
 
 /// The editable part of a transaction.
@@ -294,8 +300,8 @@ pub struct Db {
 
 /// Version of the data file format, kept in `PRAGMA user_version` (0 is CashCraft 0.1, 1 is 0.2.0 with
 /// the same tables, 2 the double-entry ledger, 3 adds dates of single postings, 4 was never
-/// released, 5 tells the added sides of transfers: see `docs/ledger.md`).
-pub const SCHEMA_VERSION: i64 = 5;
+/// released, 5 tells the added sides of transfers, 6 the card statements: see `docs/ledger.md`).
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Tables of formats 0 and 1 with their name in 2. A window of an older program that has the file open
 /// fails at once when it writes to one, instead of doing half of what it was asked.
@@ -427,6 +433,7 @@ impl Db {
             } else {
                 self.conn.execute_batch(SCHEMA)?;
                 self.conn.execute_batch(LEDGER_SCHEMA)?;
+                self.conn.execute_batch(CARD_SCHEMA)?;
             }
             self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             Ok(())
@@ -809,6 +816,7 @@ impl Db {
                 cleared: r.get::<_, i64>(8)? != 0,
                 transfer_peer: peer.filter(|_| kind == TxKind::Transfer),
                 added: kind == TxKind::Transfer && r.get::<_, Option<String>>(15)?.as_deref() == Some(ledger::ADDED),
+                card_row: r.get::<_, Option<String>>(15)?.as_deref() == Some(ledger::CARD_ROW),
                 balance: None,
             })
         })?;
@@ -923,6 +931,7 @@ impl Db {
                         currency: currency.clone(),
                         cleared: tx.cleared,
                         import_hash: tx.import_hash.clone(),
+                        origin: tx.card_row.then(|| ledger::CARD_ROW.into()),
                         ..Default::default()
                     },
                     Line {
@@ -1401,6 +1410,7 @@ impl Db {
                         category_id: s.category_id,
                         cleared: false,
                         import_hash: None,
+                        card_row: false,
                     })?;
                 }
             }

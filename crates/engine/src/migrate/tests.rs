@@ -534,9 +534,11 @@ fn a_file_without_transactions_and_an_empty_file_open() {
 }
 
 #[test]
-fn files_of_formats_2_and_3_open() {
+fn files_of_formats_2_to_5_open() {
     ledger_file_opens(2, include_str!("v2.sql"));
     ledger_file_opens(3, include_str!("v3.sql"));
+    ledger_file_opens(4, include_str!("v4.sql"));
+    ledger_file_opens(5, include_str!("v5.sql"));
 }
 
 /// What is new is added, after a copy; everything else stays as it was.
@@ -558,15 +560,36 @@ fn ledger_file_opens(version: i64, schema: &str) {
     )
     .unwrap();
     old.pragma_update(None, "user_version", version).unwrap();
-    if version > 2 {
+    if (3..5).contains(&version) {
         // What format 3 left of a transfer whose other account was deleted.
         old.execute_batch("UPDATE postings SET date='2026-02-01' WHERE id=1").unwrap();
+    }
+    if version == 4 {
+        old.execute_batch(
+            "INSERT INTO card_statements VALUES (1,2,'2026-01-01','2026-01-05',900,'2026-01-01|2026-01-05|900|1234',3,1);
+             INSERT INTO entries(id,date,payee) VALUES (3,'2026-01-02','Refund');
+             INSERT INTO postings(id,entry_id,ledger_account_id,amount,currency,import_hash)
+             SELECT 5,3,id,70,'EUR','r' FROM ledger_accounts WHERE money_account_id=2 UNION ALL
+             SELECT 6,3,id,-70,'EUR',NULL FROM ledger_accounts WHERE category_id=1;",
+        )
+        .unwrap();
+    }
+    if version == 5 {
+        old.execute_batch("UPDATE postings SET origin='added' WHERE id=4").unwrap();
     }
     let before = dump(&old);
     let (db, _) = Db::open(&dir.file()).unwrap();
     assert_sound(&db, "opened");
+    if version == 4 {
+        let s = &db.card_statements().unwrap()[0];
+        assert_eq!((s.payment_id, s.matches, db.transaction(5).unwrap().card_row), (Some(3), true, true));
+        let key: String = db.conn.query_row("SELECT import_key FROM card_statements", [], |r| r.get(0)).unwrap();
+        assert_eq!(key, "2026-01-01|1234");
+        db.conn.execute("DELETE FROM card_statements", []).unwrap();
+        db.delete_transaction(5).unwrap();
+    }
     let t = db.transaction(1).unwrap();
-    let date = if version > 2 { "2026-02-01" } else { "2026-01-05" };
+    let date = if (3..5).contains(&version) { "2026-02-01" } else { "2026-01-05" };
     assert_eq!((d2s(t.date), d2s(db.entry(1).unwrap().date)), (date.into(), date.into()));
     assert_eq!((db.transaction(3).unwrap().added, db.transaction(4).unwrap().added), (false, true));
     let figures = v2_figures(&db);

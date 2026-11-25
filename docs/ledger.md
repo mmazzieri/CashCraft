@@ -114,10 +114,12 @@ was opened. It is read and changed as `opening_balance` of the account.
 `trial_balance` (up to a date) lists every balance with equal totals of debits and credits.
 `verify_ledger` checks each entry, posting and account and reports what is wrong; it changes nothing.
 
-## Migration from formats 2 to 4
+## Migration from formats 2 to 5
 
-The columns `postings.date` and `postings.origin` are added, and the dates of sides left alone put right,
-after a copy as `cashcraft.v2-backup.db` (or `v3`, `v4`) with the rules below.
+The columns `postings.date` and `postings.origin` and the table `card_statements` ([cards.md](cards.md)) are
+added where they are missing, and the dates of sides left alone put right, after a copy as
+`cashcraft.v2-backup.db` (or `v3`, `v4`, `v5`) with the rules below. Lines with an import hash on a card with
+statements of format 4 are taken as rows of those statements.
 
 ## Migration from formats 0 and 1
 

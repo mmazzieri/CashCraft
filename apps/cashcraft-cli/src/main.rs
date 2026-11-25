@@ -28,6 +28,9 @@ struct Cli {
 }
 
 fn main() {
+    if cashcraft_engine::pdf::answer_if_child() {
+        return;
+    }
     let args = Cli::parse();
     let path = args.db.unwrap_or_else(db::default_db_path);
     let user = Lang::at_start(None);
@@ -64,6 +67,7 @@ mod tests {
             ("scheduled", "pianificati"),
             ("export", "esporta"),
             ("ledger", "contabilita"),
+            ("cards", "carte"),
         ] {
             let cli = Cli::command();
             let name = |n: &str| cli.find_subcommand(n).map(|c| c.get_name().to_string());

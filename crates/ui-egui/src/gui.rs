@@ -3,6 +3,7 @@
 
 use crate::ledger::{EntryForm, LedgerAccountForm, LedgerData};
 use anyhow::Result;
+use cashcraft_engine::cards::{CardStatement, PaymentProposal};
 use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Db, Scheduled, Transaction, TxFilter, TxKind};
 use cashcraft_engine::i18n::{self, Lang, lang, tr, trf};
 use cashcraft_engine::importer::{self, ImportResult, Mapping, ParsedRow, Table};
@@ -11,9 +12,10 @@ use cashcraft_engine::transfers::OtherSide;
 use cashcraft_engine::{demo, ops};
 use chrono::{Datelike, NaiveDate};
 use egui::{self, Align2, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 
 // ------------------------------------------------------------------ colori
 
@@ -248,16 +250,63 @@ pub struct ImportState {
     pub skipped: usize,
     pub error: String,
     pub result: Option<ImportResult>,
+    /// The user wants a card statement that does not add up.
+    pub allow_mismatch: bool,
+    pub cards: CardPayments,
+    pub loading: Option<mpsc::Receiver<Result<Table>>>,
+}
+
+/// Card statements, and what may pay those that are not paid.
+#[derive(Default)]
+pub struct CardPayments {
+    pub statements: Vec<CardStatement>,
+    pub proposals: Vec<PaymentProposal>,
+    /// The line of the card to join for a candidate, instead of adding its side.
+    pub join: HashMap<i64, i64>,
+    /// The statement whose link is about to be undone.
+    pub unlinking: Option<i64>,
+    pub error: String,
+}
+
+impl CardPayments {
+    pub fn reload(&mut self, db: &Db) {
+        self.error.clear();
+        self.join.clear();
+        self.unlinking = None;
+        match db.card_statements().and_then(|s| Ok((s, db.propose_card_payments()?))) {
+            Ok((statements, proposals)) => (self.statements, self.proposals) = (statements, proposals),
+            Err(e) => self.error = format!("{e:#}"),
+        }
+    }
 }
 
 impl ImportState {
+    /// Reads the file beside the window, which goes on drawing.
     pub fn load(&mut self) {
         self.error.clear();
         self.result = None;
         self.table = None;
         self.rows.clear();
-        let p = PathBuf::from(self.path_text.trim());
-        match importer::load(&p) {
+        self.allow_mismatch = false;
+        let path = PathBuf::from(self.path_text.trim());
+        let language = lang();
+        let (send, receive) = mpsc::channel();
+        std::thread::spawn(move || {
+            // Nobody may be waiting any more.
+            let _ = send.send(i18n::with_lang(language, || importer::load(&path)));
+        });
+        self.loading = Some(receive);
+    }
+    /// Takes what was read, once it is there; whether it has just come.
+    pub fn poll(&mut self) -> bool {
+        let Some(receive) = &self.loading else { return false };
+        let read = match receive.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Ok(read) => read,
+            Err(e) => Err(e.into()),
+        };
+        self.loading = None;
+        match read {
             Ok(t) => {
                 self.mapping = t.mapping.clone();
                 self.table = Some(t);
@@ -265,6 +314,13 @@ impl ImportState {
             }
             Err(e) => self.error = format!("{e:#}"),
         }
+        true
+    }
+    pub fn can_import(&self) -> bool {
+        let statement = self.table.as_ref().and_then(|t| t.statement.as_ref());
+        statement.is_none_or(|s| s.is_sound() || (s.is_identified() && self.allow_mismatch))
+            && !self.rows.is_empty()
+            && (self.account.is_some() || !self.new_account.trim().is_empty())
     }
     pub fn reparse(&mut self) {
         if let Some(t) = &self.table {
@@ -511,7 +567,8 @@ impl App {
             };
             app.reload_txs();
             if v == "import" || v == "importa" {
-                app.open_import(None);
+                // Optional file to read, for screenshots.
+                app.open_import(std::env::var_os("CASHCRAFT_START_FILE").map(PathBuf::from));
             }
             if v == "selected" || v == "transfer" {
                 let t = app.txs.iter().find(|t| has_category(t) && t.amount < 0).cloned();
@@ -664,11 +721,32 @@ impl App {
 
     pub fn open_import(&mut self, path: Option<PathBuf>) {
         let mut st = ImportState { account: self.default_account(), ..Default::default() };
+        st.cards.reload(&self.db);
         if let Some(p) = path {
             st.path_text = p.display().to_string();
             st.load();
         }
         self.dialog = Some(Dialog::Import(Box::new(st)));
+    }
+
+    /// A card statement goes to a credit card, a new one if there is none.
+    pub(crate) fn card_account(&self, st: &mut ImportState) {
+        let Some(s) = st.table.as_ref().and_then(|t| t.statement.as_ref()) else { return };
+        let cards: Vec<&Account> =
+            self.accounts.iter().filter(|a| a.kind == AccountKind::CreditCard && !a.archived).collect();
+        if cards.iter().any(|a| Some(a.id) == st.account) {
+            return;
+        }
+        st.account = match cards.as_slice() {
+            [one] => Some(one.id),
+            _ => None,
+        };
+        if cards.is_empty() && st.new_account.is_empty() {
+            st.new_account = match s.cards.first() {
+                Some(c) => trf("Card {digits}", &[("digits", c)]),
+                None => tr("Credit card").into(),
+            };
+        }
     }
 
     pub fn ensure_dash(&mut self) {

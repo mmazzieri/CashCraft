@@ -19,6 +19,8 @@ pub const UNCATEGORIZED: &str = "uncategorized";
 
 /// `origin` of a side of a transfer that no statement has brought yet: an imported line takes its place.
 pub(crate) const ADDED: &str = "added";
+/// `origin` of a row of a card statement: never the payment of one.
+pub(crate) const CARD_ROW: &str = "card";
 
 /// Date of the opening balances: before every transaction, so that they count in any period.
 pub const OPENING_DATE: &str = "0001-01-01";

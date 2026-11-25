@@ -90,7 +90,7 @@ impl App {
                                             error: String::new(),
                                         }));
                                     }
-                                    if ui.button(tr("⬇ Import CSV into this account…")).clicked() {
+                                    if ui.button(tr("⬇ Import a statement into this account…")).clicked() {
                                         self.go(View::Register(Some(a2.id)));
                                         self.open_import(None);
                                     }
@@ -227,7 +227,7 @@ impl App {
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .button(tr("⬇ Import CSV"))
+                            .button(tr("⬇ Import"))
                             .on_hover_text(tr(
                                 "Import a bank statement (⌘I). You can also drop the file on the window.",
                             ))
@@ -596,7 +596,7 @@ impl App {
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(tr("No transactions in this period.")).color(MUTED).size(15.0));
                     ui.add_space(8.0);
-                    if ui.button(tr("⬇ Import a CSV statement")).clicked() {
+                    if ui.button(tr("⬇ Import a statement")).clicked() {
                         want_import = true;
                     }
                 });

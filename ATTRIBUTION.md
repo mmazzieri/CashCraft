@@ -2,7 +2,7 @@
 
 ## Provenance of the design
 
-CashCraft was written by a coding agent from its author's description of the features expected from a personal finance manager. Nothing inside another product (its code, files, pictures or text) was read, run or decompiled. Bank CSV support is based on the column names commonly found in exported statements, not on any bank's software.
+CashCraft was written by a coding agent from its author's description of the features expected from a personal finance manager. Nothing inside another product (its code, files, pictures or text) was read, run or decompiled. Bank CSV support is based on the column names commonly found in exported statements, not on any bank's software. The reader of card statements is based on the layout of one statement (positions and headings, with its contents hidden).
 
 | File | Source | License |
 |---|---|---|
@@ -22,12 +22,17 @@ Rust crates are listed with their licenses by `cargo deny list`; `cargo deny che
 | rfd | 0.17.2 | MIT |
 | rusqlite, with SQLite bundled | 0.37 | MIT; SQLite is public domain |
 | craft-xls (storytold/craft-libs) | 0.1.0, pinned commit | MIT OR Apache-2.0 |
+| hayro-interpret, hayro-syntax (text of PDF files; no fonts or CMaps bundled; they use `unsafe` code of their own) | 0.7.0, 0.7.2, pinned | MIT OR Apache-2.0 |
+| kurbo | 0.13 | MIT OR Apache-2.0 |
+| epaint_default_fonts, flate2 (tests only) | 0.37, 1 | MIT OR Apache-2.0; fonts as below |
 | csv | 1.3 | Unlicense/MIT |
 | encoding_rs | 0.8 | (Apache-2.0 OR MIT) AND BSD-3-Clause |
 | image (PNG and ICO only) | 0.25 | MIT OR Apache-2.0 |
 | sys-locale | 0.3 | MIT OR Apache-2.0 |
 | clap | 4 | MIT OR Apache-2.0 |
 | anyhow, chrono, serde, serde_json | 1, 0.4, 1, 1 | MIT OR Apache-2.0 |
+
+The PDF crates bring in zune-jpeg, moxcms, skrifa, read-fonts, font-types, phf, fearless_simd (MIT, Apache-2.0, Zlib or BSD-3-Clause, at choice) and yoke, zerofrom (Unicode-3.0).
 
 Fonts bundled in the app through `epaint_default_fonts` 0.37 (egui's `default_fonts` feature):
 

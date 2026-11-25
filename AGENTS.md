@@ -9,6 +9,7 @@ Notes for people and coding agents working on CashCraft. The shared rules for Cr
 - The data file format is numbered in `PRAGMA user_version` (`SCHEMA_VERSION`). A change to the tables raises it, migrates older files and comes with a test that opens one. A file from a newer version is refused, never rewritten.
 - Every operation is in `ops.rs` as JSON in, JSON out, shared by the command line and MCP. `ops::Roots` confines MCP file access; the MCP server refuses to start without both roots.
 - Statements and MCP parameters are hostile input: capped sizes and errors, never a panic. A crash fix adds its input to the sweeps in the tests.
+- PDF files are read by the program started again (`pdf::answer_if_child`, the first line of each `main`): the PDF library can overflow the stack or never end. New binaries that import statements call it too.
 - A failed read is shown to the user (`or_report`), never drawn as "no data".
 - Text is written in English inside `tr`, `trf` or `trn` with a literal key, and its Italian goes in `crates/engine/src/i18n/it.tsv`; a test scans the sources for both. Command help and MCP text are English only. Tests pick a language with `with_lang`, never `set_lang`.
 - Checks: `cargo xtask ci` (fmt, clippy with `-D warnings`, tests). `unsafe` is forbidden; `unwrap`, `expect`, `panic`, `todo`, `unreachable` and `unimplemented` are denied outside tests. No `allow` attributes.
