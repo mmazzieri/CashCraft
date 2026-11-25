@@ -21,7 +21,8 @@ impl Place {
         let dir = std::env::temp_dir().join(format!("cashcraft-store-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("folder")).unwrap();
-        Place(dir)
+        // The real path: the temporary folder is behind a link on macOS and has a short name on Windows.
+        Place(resolved(&dir))
     }
     fn home(&self, computer: &str) -> Home {
         let name: String = computer.chars().filter(|c| c.is_alphanumeric()).collect();
@@ -439,7 +440,9 @@ fn a_folder_that_can_only_be_read_is_waited_for_and_permissions_stay() {
 fn a_link_to_the_file_is_followed_and_names_that_are_not_utf8_work() {
     use std::os::unix::ffi::OsStrExt;
     let p = Place::new();
-    let name = std::ffi::OsStr::from_bytes(b"conti \xe8.db");
+    // macOS has no names that are not UTF-8.
+    let bytes: &[u8] = if cfg!(target_os = "macos") { b"conti.db" } else { b"conti \xe8.db" };
+    let name = std::ffi::OsStr::from_bytes(bytes);
     let odd = p.folder().join(name);
     let home = p.home("one");
     let o = open(&home, &odd, Use::Shared, Lang::En, false).unwrap();
