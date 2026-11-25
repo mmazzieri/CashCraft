@@ -771,6 +771,12 @@ pub fn call(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
     Ok(to_eur(v))
 }
 
+/// [`call`] with amounts in whole cents: exact, whatever reads the JSON. No file is reached by path
+/// except by the operations that take one.
+pub fn call_in_cents(db: &Db, name: &str, a: &Value) -> Result<Value> {
+    call_raw(db, name, a, None)
+}
+
 fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Value> {
     Ok(match name {
         "list_accounts" => {

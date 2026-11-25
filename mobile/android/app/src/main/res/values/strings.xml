@@ -37,6 +37,5 @@
     <string name="not_plain">A transfer or a split transaction is edited on the computer.</string>
     <string name="offline">The shared file could not be reached. Changes are kept on the phone and written at the next try.</string>
     <string name="in_use">The file is open on a computer. Close CashCraft there to write from the phone.</string>
-    <string name="unsaved">There are changes not yet written to the shared file.</string>
-    <string name="conflict">The file was changed elsewhere too. What was on the phone is in %1$s.</string>
+    <string name="conflict">The phone\'s changes could not be put in the shared file, which was changed elsewhere or cannot be reached. They are in %1$s.</string>
 </resources>

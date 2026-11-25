@@ -21,14 +21,15 @@ The file is the desktop's, with the same `SCHEMA_VERSION`; a newer one is refuse
 |---|---|---|
 | `lang` | `lang` | language of messages and of amounts typed |
 | `new` | `path` | makes a data file |
+| `check` | `from` | checks a fetched file and brings it up to date |
 | `adopt` | `from`, `path` | checks a fetched file and puts it in the place of the copy |
 | `settle` | `path` | ends what a call that stopped left open |
-| `call` | `path`, `tool`, `args` | one of the operations in `ALLOWED` |
+| `call` | `path`, `tool`, `args` | one of the operations in `ALLOWED`; amounts come out in whole cents |
 
 ## Building
 
 Android, with the SDK and NDK: `rustup target add aarch64-linux-android x86_64-linux-android`, `cargo install cargo-ndk`, then `cd mobile/android && ./gradlew assembleDebug`.
 
-iOS, on a Mac with Xcode: `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`, `brew install xcodegen`, then `cd mobile/ios && xcodegen generate && open CashCraft.xcodeproj`.
+iOS, on a Mac with Xcode: `rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios`, `brew install xcodegen`, then `cd mobile/ios && xcodegen generate && open CashCraft.xcodeproj`.
 
 The `Mobile` workflow builds both; the Android build is kept as an artifact.

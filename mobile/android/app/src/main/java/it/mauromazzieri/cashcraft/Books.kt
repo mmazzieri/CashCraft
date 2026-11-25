@@ -6,7 +6,6 @@ import android.net.Uri
 import java.io.File
 import java.io.IOException
 import java.math.BigDecimal
-import java.math.RoundingMode
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -16,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -93,7 +93,7 @@ object Books {
                         show()
                     }
                 }.onFailure(::fail)
-                mutableState.value = mutableState.value.copy(ready = true, open = place != null)
+                mutableState.update { it.copy(ready = true, open = place != null) }
             }
         }
     }
@@ -101,12 +101,12 @@ object Books {
     /** Looks for the data files of a folder the person picked: one is opened, of more the person chooses. */
     fun choose(tree: Uri) = task {
         if (dirty()) sync()
-        if (dirty()) throw CoreException(app.getString(R.string.unsaved))
         val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         app.contentResolver.takePersistableUriPermission(tree, flags)
         val names = Place.dataFiles(app.contentResolver, tree)
+        if (dirty()) rescue(tree)
         if (names.size == 1) open(Place(app.contentResolver, tree, names.first()))
-        else mutableState.value = mutableState.value.copy(picked = Picked(tree, names))
+        else mutableState.update { it.copy(picked = Picked(tree, names)) }
     }
 
     fun pick(name: String) = task { mutableState.value.picked?.let { open(Place(app.contentResolver, it.tree, name)) } }
@@ -125,16 +125,35 @@ object Books {
     }
 
     fun cancel() {
-        mutableState.value = mutableState.value.copy(picked = null)
+        mutableState.update { it.copy(picked = null) }
+    }
+
+    /** Changes that cannot reach their file are kept, whole, in the folder the person has just chosen. */
+    private fun rescue(tree: Uri) {
+        val copy = besides(prefs().getString("name", null) ?: NEW_NAME)
+        Core.ask("settle") { put("path", work().path) }
+        Place(app.contentResolver, tree, copy).make(work().readBytes())
+        prefs().edit().putBoolean("dirty", false).commit()
+        mutableState.update { it.copy(notice = copy) }
+    }
+
+    private fun besides(name: String): String {
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date())
+        val dot = name.lastIndexOf('.')
+        return "${name.substring(0, dot)} (phone $stamp)${name.substring(dot)}"
     }
 
     private fun open(chosen: Place) {
         val bytes = chosen.read()
-        adopt(bytes)
+        check(bytes)
+        // First whose the copy is, with no base: if what follows stops, the file is read again.
         prefs().edit().putString("tree", chosen.tree.toString()).putString("name", chosen.name)
-            .putString("base", hash(bytes)).putBoolean("dirty", false).commit()
+            .putString("base", "").putBoolean("dirty", false).commit()
         place = chosen
-        mutableState.value = BooksState(ready = true, open = true)
+        pending().delete()
+        adopt(bytes)
+        prefs().edit().putString("base", hash(bytes)).commit()
+        mutableState.update { BooksState(ready = true, open = true, notice = it.notice) }
         sync()
         show()
     }
@@ -157,32 +176,37 @@ object Books {
         sync()
         if (mutableState.value.inUse) throw CoreException(app.getString(R.string.in_use))
         // Said before it happens: a change that stops halfway is carried or kept, never forgotten.
+        val before = dirty()
         prefs().edit().putBoolean("dirty", true).commit()
         runCatching { call(tool, JSONObject().apply(fill)) }.onFailure {
             fail(it)
-            // Refused: the copy is as it was.
-            if (it is CoreException && mutableState.value.offline.not() && same()) prefs().edit().putBoolean("dirty", false).commit()
+            // Refused: nothing of it is in the copy.
+            if (it is CoreException && !before && same()) prefs().edit().putBoolean("dirty", false).commit()
         }
         sync()
         show()
     }
 
-    fun dismiss() {
-        mutableState.value = mutableState.value.copy(error = null, notice = null)
+    fun dismissError() {
+        mutableState.update { it.copy(error = null) }
+    }
+
+    fun dismissNotice() {
+        mutableState.update { it.copy(notice = null) }
     }
 
     private fun task(body: () -> Unit) {
         scope.launch {
             lock.withLock {
-                mutableState.value = mutableState.value.copy(busy = true)
+                mutableState.update { it.copy(busy = true) }
                 runCatching(body).onFailure(::fail)
-                mutableState.value = mutableState.value.copy(busy = false)
+                mutableState.update { it.copy(busy = false) }
             }
         }
     }
 
     private fun fail(e: Throwable) {
-        mutableState.value = mutableState.value.copy(error = e.message ?: e.toString())
+        mutableState.update { it.copy(error = e.message ?: e.toString()) }
     }
 
     /** Whether the copy still is the shared file as it was read. */
@@ -193,13 +217,13 @@ object Books {
         val shared = place ?: return
         if (work().exists()) Core.ask("settle") { put("path", work().path) }
         val bytes = try {
-            mutableState.value = mutableState.value.copy(inUse = shared.inUse())
+            mutableState.update { it.copy(inUse = shared.inUse()) }
             fetch(shared)
         } catch (e: SecurityException) {
             throw e
         } catch (e: IOException) {
             if (!work().exists()) throw e
-            mutableState.value = mutableState.value.copy(offline = true)
+            mutableState.update { it.copy(offline = true) }
             return
         }
         val now = hash(bytes)
@@ -211,27 +235,31 @@ object Books {
                 prefs().edit().putString("base", now).commit()
             }
         } else if (changedThere) {
-            // Both changed: the phone's goes beside, whole, and the shared one is taken.
-            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date())
-            val dot = shared.name.lastIndexOf('.')
-            val copy = "${shared.name.substring(0, dot)} (phone $stamp)${shared.name.substring(dot)}"
+            // Both changed: the phone's goes beside, whole, and the shared one is taken. A shared file
+            // that cannot be taken is refused before a copy is made.
+            check(bytes)
+            val copy = besides(shared.name)
             Place(app.contentResolver, shared.tree, copy).make(work().readBytes())
             adopt(bytes)
             prefs().edit().putString("base", now).putBoolean("dirty", false).commit()
-            mutableState.value = mutableState.value.copy(notice = copy)
+            mutableState.update { it.copy(notice = copy) }
         } else if (!mutableState.value.inUse) {
             val ours = work().readBytes()
             keep(pending(), ours)
             try {
-                shared.write(ours)
+                // Changed since it was read a moment ago: the next turn tells the two apart.
+                if (!shared.replace(bytes, ours)) {
+                    pending().delete()
+                    return sync()
+                }
             } catch (e: IOException) {
-                mutableState.value = mutableState.value.copy(offline = true)
+                mutableState.update { it.copy(offline = true) }
                 return
             }
             prefs().edit().putString("base", hash(ours)).putBoolean("dirty", false).commit()
             pending().delete()
         }
-        mutableState.value = mutableState.value.copy(offline = false)
+        mutableState.update { it.copy(offline = false) }
     }
 
     /** The shared file. A write of ours that stopped halfway is done again first. */
@@ -241,7 +269,7 @@ object Books {
         val ours = pending().readBytes()
         // A write starts by emptying the file: what stopped halfway is the beginning of ours.
         val torn = bytes.size < ours.size && ours.copyOf(bytes.size).contentEquals(bytes)
-        if (torn) shared.write(ours)
+        if (torn && !shared.replace(bytes, ours)) throw IOException("the file is changing")
         val now = if (torn) ours else bytes
         if (now.contentEquals(ours)) {
             // The write had ended: what the phone has since changed is told by comparing.
@@ -252,9 +280,15 @@ object Books {
         return now
     }
 
+    private fun fetched(bytes: ByteArray) = File(app.filesDir, "fetched.db").apply { writeBytes(bytes) }
+
+    private fun check(bytes: ByteArray) {
+        val from = fetched(bytes)
+        Core.ask("check") { put("from", from.path) }
+    }
+
     private fun adopt(bytes: ByteArray) {
-        val from = File(app.filesDir, "fetched.db")
-        from.writeBytes(bytes)
+        val from = fetched(bytes)
         Core.ask("adopt") { put("from", from.path); put("path", work().path) }
     }
 
@@ -269,7 +303,8 @@ object Books {
         val movements = call("list_transactions", JSONObject().put("limit", 300).put("search", search))
         val categories = call("list_categories")
         val budget = call("budget_status")
-        mutableState.value = mutableState.value.copy(
+        mutableState.update { state ->
+            state.copy(
             accounts = objects(accounts.getJSONArray("accounts")).map {
                 Account(it.getLong("id"), it.getString("name"), it.optString("currency"), money(it, "balance"))
             },
@@ -285,12 +320,11 @@ object Books {
             budget = objects(budget.getJSONArray("lines")).map {
                 BudgetLine(it.getString("category"), money(it, "budget"), money(it, "spent"), money(it, "remaining"))
             },
-        )
+        ) }
     }
 
-    /** Two exact decimals: the engine counts whole cents. */
-    private fun money(o: JSONObject, key: String): BigDecimal =
-        if (o.isNull(key)) BigDecimal.ZERO else BigDecimal(o.getDouble(key)).setScale(2, RoundingMode.HALF_UP)
+    /** The engine counts whole cents. */
+    private fun money(o: JSONObject, key: String): BigDecimal = BigDecimal.valueOf(o.getLong(key), 2)
 
     private fun objects(a: JSONArray) = (0 until a.length()).map { a.getJSONObject(it) }
 

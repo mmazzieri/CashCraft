@@ -17,17 +17,17 @@ class Place(private val resolver: ContentResolver, val tree: Uri, val name: Stri
 
         private fun uri(tree: Uri, id: String): Uri = DocumentsContract.buildDocumentUriUsingTree(tree, id)
 
-        /** The files of the folder: name, document id and size. */
-        private fun files(resolver: ContentResolver, tree: Uri): Map<String, Pair<String, Long>> {
+        /** The files of the folder: name and document id. */
+        private fun files(resolver: ContentResolver, tree: Uri): Map<String, String> {
             val list = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
-            val columns = arrayOf(Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME, Document.COLUMN_SIZE)
+            val columns = arrayOf(Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME)
             val cursor = resolver.query(list, columns, null, null, null) ?: throw IOException("the folder could not be listed")
             return cursor.use { c ->
-                val out = HashMap<String, Pair<String, Long>>()
+                val out = HashMap<String, String>()
                 while (c.moveToNext()) {
                     val id = c.getString(0) ?: continue
                     val name = c.getString(1) ?: continue
-                    out[name] = id to (if (c.isNull(2)) 0L else c.getLong(2))
+                    out[name] = id
                 }
                 out
             }
@@ -40,18 +40,20 @@ class Place(private val resolver: ContentResolver, val tree: Uri, val name: Stri
     private fun all() = files(resolver, tree)
 
     fun read(): ByteArray {
-        val id = all()[name]?.first ?: throw FileNotFoundException("$name is not in the folder")
+        val id = all()[name] ?: throw FileNotFoundException("$name is not in the folder")
         return resolver.openInputStream(uri(tree, id))?.use { it.readBytes() } ?: throw IOException("$name could not be opened")
     }
 
     /** A log beside the file: a computer has it open, and the file alone may not hold everything. */
-    fun inUse(): Boolean = all().let { f -> listOf("-wal", "-journal").any { (f[name + it]?.second ?: 0L) > 0L } }
+    fun inUse(): Boolean = all().let { f -> listOf("-wal", "-journal").any { name + it in f } }
 
-    /** Replaces the content and reads it back. */
-    fun write(bytes: ByteArray) {
-        val id = all()[name]?.first ?: throw FileNotFoundException("$name is not in the folder")
+    /** Replaces the content, if it still is [expected], and reads it back. False: it changed. */
+    fun replace(expected: ByteArray, bytes: ByteArray): Boolean {
+        val id = all()[name] ?: throw FileNotFoundException("$name is not in the folder")
+        if (!read().contentEquals(expected)) return false
         put(id, bytes)
         if (!read().contentEquals(bytes)) throw IOException("$name was not written whole")
+        return true
     }
 
     /** Makes a new file, which must not be there. */
@@ -61,12 +63,18 @@ class Place(private val resolver: ContentResolver, val tree: Uri, val name: Stri
         val made = DocumentsContract.createDocument(resolver, root, "application/octet-stream", name)
             ?: throw IOException("$name could not be made")
         val id = DocumentsContract.getDocumentId(made)
-        if (all()[name]?.first != id) {
+        if (all()[name] != id) {
             DocumentsContract.deleteDocument(resolver, made)
             throw IOException("$name could not be made with this name")
         }
-        put(id, bytes)
-        if (!read().contentEquals(bytes)) throw IOException("$name was not written whole")
+        try {
+            put(id, bytes)
+            if (!read().contentEquals(bytes)) throw IOException("$name was not written whole")
+        } catch (e: IOException) {
+            // So that the next try finds the name free.
+            runCatching { DocumentsContract.deleteDocument(resolver, made) }
+            throw e
+        }
     }
 
     private fun put(id: String, bytes: ByteArray) {

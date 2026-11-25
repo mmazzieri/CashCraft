@@ -67,8 +67,6 @@ final class Books: ObservableObject {
                 try w.sync()
                 try w.show()
             }
-        } then: {
-            $0.ready = true
         }
     }
 
@@ -82,7 +80,7 @@ final class Books: ObservableObject {
         run { w in
             names = try w.look(folder)
             if names.count == 1 { try w.open(names[0]) }
-        } then: {
+        } done: {
             if names.count != 1 { $0.picked = names }
         }
     }
@@ -98,7 +96,7 @@ final class Books: ObservableObject {
     /// A change: an operation of the engine.
     func change(_ tool: String, _ args: [String: Any]) { run { w in try w.change(tool, args) } }
 
-    private func run(_ body: @escaping (Worker) throws -> Void, then: @escaping (Books) -> Void = { _ in }) {
+    private func run(_ body: @escaping (Worker) throws -> Void, done: @escaping (Books) -> Void = { _ in }) {
         busy = true
         let worker = self.worker
         work.async {
@@ -111,8 +109,7 @@ final class Books: ObservableObject {
                 self.shown = shown
                 self.open = open
                 if let notice = shown.notice { self.notice = notice }
-                if let failure { self.error = failure }
-                then(self)
+                if let failure { self.error = failure } else { done(self) }
                 self.ready = true
             }
         }
@@ -150,13 +147,31 @@ final class Worker: @unchecked Sendable {
     }
 
     func look(_ url: URL) throws -> [String] {
-        if dirty { try sync() }
-        if dirty { throw CoreError(message: String(localized: "There are changes not yet written to the shared file.")) }
-        looked = url
-        return try manager.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
+        looked = nil
+        // A shared file that cannot be reached must not keep the person from choosing another.
+        if dirty { try? sync() }
+        let names = try manager.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
             .map { Self.visible($0.lastPathComponent) }
             .filter { Self.extensions.contains(($0 as NSString).pathExtension) }
             .sorted()
+        if dirty {
+            // Changes that cannot reach their file are kept, whole, in the folder just chosen.
+            let copy = besides(defaults.string(forKey: "name") ?? "cashcraft.db")
+            try Core.ask("settle", ["path": try work().path])
+            try write(try Data(contentsOf: try work()), url.appendingPathComponent(copy), replacing: nil)
+            dirty = false
+            shown.notice = copy
+        }
+        looked = url
+        return names
+    }
+
+    private func besides(_ name: String) -> String {
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.dateFormat = "yyyyMMdd-HHmmss"
+        let parts = name as NSString
+        return "\(parts.deletingPathExtension) (phone \(stamp.string(from: Date()))).\(parts.pathExtension)"
     }
 
     /// The name of a file; one that iCloud has not downloaded is `.name.icloud`.
@@ -167,14 +182,21 @@ final class Worker: @unchecked Sendable {
     func open(_ name: String) throws {
         guard let url = looked else { return }
         let bytes = try read(url.appendingPathComponent(name))
-        try adopt(bytes)
-        defaults.set(try url.bookmarkData(), forKey: "folder")
+        let bookmark = try url.bookmarkData()
+        try check(bytes)
+        // First whose the copy is, with no base: if what follows stops, the file is read again.
+        defaults.set("", forKey: "base")
+        defaults.set(bookmark, forKey: "folder")
         defaults.set(name, forKey: "name")
-        defaults.set(hash(bytes), forKey: "base")
         dirty = false
+        defaults.synchronize()
         folder = url
         self.name = name
+        try adopt(bytes)
+        defaults.set(hash(bytes), forKey: "base")
+        let notice = shown.notice
         shown = Shown()
+        shown.notice = notice
         try refresh()
     }
 
@@ -185,7 +207,7 @@ final class Worker: @unchecked Sendable {
         try Core.ask("new", ["path": file.path])
         let bytes = try Data(contentsOf: file)
         try manager.removeItem(at: file)
-        try write(bytes, url.appendingPathComponent("cashcraft.db"), new: true)
+        try write(bytes, url.appendingPathComponent("cashcraft.db"), replacing: nil)
         try open("cashcraft.db")
     }
 
@@ -227,8 +249,7 @@ final class Worker: @unchecked Sendable {
         let bytes: Data
         do {
             shown.inUse = ["-wal", "-journal"].contains { suffix in
-                let log = folder.appendingPathComponent(name + suffix)
-                return ((try? log.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
+                manager.fileExists(atPath: folder.appendingPathComponent(name + suffix).path)
             }
             bytes = try read(shared)
         } catch {
@@ -246,13 +267,11 @@ final class Worker: @unchecked Sendable {
         } else if changedThere {
             let ours = try Data(contentsOf: copy)
             if ours != bytes {
-                // Both changed: the phone's goes beside, whole, and the shared one is taken.
-                let stamp = DateFormatter()
-                stamp.locale = Locale(identifier: "en_US_POSIX")
-                stamp.dateFormat = "yyyyMMdd-HHmmss"
-                let parts = name as NSString
-                let beside = "\(parts.deletingPathExtension) (phone \(stamp.string(from: Date()))).\(parts.pathExtension)"
-                try write(ours, folder.appendingPathComponent(beside), new: true)
+                // Both changed: the phone's goes beside, whole, and the shared one is taken. A shared
+                // file that cannot be taken is refused before a copy is made.
+                try check(bytes)
+                let beside = besides(name)
+                try write(ours, folder.appendingPathComponent(beside), replacing: nil)
                 try adopt(bytes)
                 shown.notice = beside
             }
@@ -261,7 +280,10 @@ final class Worker: @unchecked Sendable {
         } else if !shown.inUse {
             let ours = try Data(contentsOf: copy)
             do {
-                try write(ours, shared, new: false)
+                try write(ours, shared, replacing: bytes)
+            } catch is Changed {
+                // Changed since it was read a moment ago: the next turn tells the two apart.
+                return try sync()
             } catch {
                 shown.offline = true
                 return
@@ -272,9 +294,16 @@ final class Worker: @unchecked Sendable {
         shown.offline = false
     }
 
-    private func adopt(_ bytes: Data) throws {
+    private func fetched(_ bytes: Data) throws -> URL {
         let from = try support("fetched.db")
         try bytes.write(to: from, options: .atomic)
+        return from
+    }
+
+    private func check(_ bytes: Data) throws { try Core.ask("check", ["from": try fetched(bytes).path]) }
+
+    private func adopt(_ bytes: Data) throws {
+        let from = try fetched(bytes)
         try Core.ask("adopt", ["from": from.path, "path": try work().path])
     }
 
@@ -309,11 +338,8 @@ final class Worker: @unchecked Sendable {
     private func list(_ v: Any?) -> [[String: Any]] { v as? [[String: Any]] ?? [] }
     private func string(_ v: Any?) -> String { v as? String ?? "" }
 
-    /// Two exact decimals: the engine counts whole cents.
-    private func money(_ v: Any?) -> Decimal {
-        guard let n = v as? NSNumber else { return 0 }
-        return Decimal(Int((n.doubleValue * 100).rounded())) / 100
-    }
+    /// The engine counts whole cents.
+    private func money(_ v: Any?) -> Decimal { Decimal((v as? NSNumber)?.int64Value ?? 0) / 100 }
 
     private func read(_ url: URL) throws -> Data {
         var result: Result<Data, Error> = .failure(CoreError(message: "not read"))
@@ -325,11 +351,18 @@ final class Worker: @unchecked Sendable {
         return try result.get()
     }
 
-    private func write(_ bytes: Data, _ url: URL, new: Bool) throws {
+    /// The file is not the one that was read any more.
+    private struct Changed: Error {}
+
+    /// Replaces a file that still holds `old`, or makes a new one when there is no `old`.
+    private func write(_ bytes: Data, _ url: URL, replacing old: Data?) throws {
         var failure: Error?
         var coordination: NSError?
-        NSFileCoordinator().coordinate(writingItemAt: url, options: new ? [] : .forReplacing, error: &coordination) { at in
-            do { try bytes.write(to: at, options: new ? .withoutOverwriting : .atomic) } catch { failure = error }
+        NSFileCoordinator().coordinate(writingItemAt: url, options: old == nil ? [] : .forReplacing, error: &coordination) { at in
+            do {
+                if let old, try Data(contentsOf: at) != old { throw Changed() }
+                try bytes.write(to: at, options: old == nil ? .withoutOverwriting : .atomic)
+            } catch { failure = error }
         }
         if let coordination { throw coordination }
         if let failure { throw failure }

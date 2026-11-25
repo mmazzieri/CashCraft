@@ -36,6 +36,13 @@ fn tool(path: &Path, name: &str, args: Value) -> Value {
     ask(json!({"op": "call", "path": path, "tool": name, "args": args}))
 }
 
+/// Debits equal credits, whatever the calls did.
+fn assert_sound(path: &Path) {
+    let (db, _) = cashcraft_engine::db::Db::open(path).unwrap();
+    let problems = ops::call(&db, "verify_ledger", &json!({}), None).unwrap();
+    assert_eq!(problems["ok"], true, "{problems}");
+}
+
 /// The file of one phone, carried whole to another, has everything, and no log lies beside it.
 #[test]
 fn a_file_is_whole_after_every_call() {
@@ -47,7 +54,9 @@ fn a_file_is_whole_after_every_call() {
     assert!(!beside(&a, "-wal").exists());
     std::fs::copy(&a, d.file("fetched")).unwrap();
     ask(json!({"op": "adopt", "from": d.file("fetched"), "path": b}));
-    assert_eq!(tool(&b, "list_accounts", json!({}))["accounts"][0]["balance"], json!(-12.5));
+    assert_eq!(tool(&b, "list_accounts", json!({}))["accounts"][0]["balance"], json!(-1250));
+    assert_sound(&a);
+    assert_sound(&b);
     assert!(!d.file("fetched").exists());
 }
 
@@ -64,6 +73,7 @@ fn an_old_log_does_not_follow_a_new_file() {
     ask(json!({"op": "adopt", "from": b, "path": a}));
     assert!(!beside(&a, "-wal").exists());
     assert_eq!(tool(&a, "list_accounts", json!({}))["accounts"][0]["name"], "New");
+    assert_sound(&a);
 }
 
 #[test]
@@ -75,6 +85,14 @@ fn what_is_not_a_whole_data_file_is_not_adopted() {
     let bytes = std::fs::read(&good).unwrap();
     let other = d.file("other.db");
     rusqlite::Connection::open(&other).unwrap().execute_batch("CREATE TABLE x(y); PRAGMA user_version = 3;").unwrap();
+    let empty = d.file("empty.db");
+    rusqlite::Connection::open(&empty)
+        .unwrap()
+        .execute_batch(&format!(
+            "CREATE TABLE categories(x); CREATE TABLE meta(x); PRAGMA user_version = {};",
+            cashcraft_engine::db::SCHEMA_VERSION
+        ))
+        .unwrap();
     let newer = d.file("newer.db");
     std::fs::copy(&good, &newer).unwrap();
     rusqlite::Connection::open(&newer).unwrap().pragma_update(None, "user_version", 1_000_000).unwrap();
@@ -83,6 +101,7 @@ fn what_is_not_a_whole_data_file_is_not_adopted() {
         b"hello".to_vec(),
         bytes.get(..bytes.len() / 2).unwrap().to_vec(),
         std::fs::read(&other).unwrap(),
+        std::fs::read(&empty).unwrap(),
         std::fs::read(&newer).unwrap(),
     ];
     for (i, case) in cases.iter().enumerate() {
@@ -140,6 +159,7 @@ fn hostile_params_never_panic() {
         let a: Value = serde_json::from_str(&call(junk)).unwrap();
         assert!(a.get("error").is_some(), "{junk:?}");
     }
+    assert_sound(&f);
     let request = std::ffi::CString::new("{}").unwrap();
     // SAFETY: a valid string in, and the answer freed once.
     #[allow(unsafe_code)]

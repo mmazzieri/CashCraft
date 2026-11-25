@@ -8,11 +8,10 @@
 "New data file" = "Nuovo file";
 "Something went wrong" = "Qualcosa non ha funzionato";
 "Close" = "Chiudi";
-"The file was changed elsewhere too" = "Il file è cambiato anche altrove";
-"What was on the phone is in %@." = "Quello che era sul telefono è in %@.";
+"The shared file was changed elsewhere or cannot be reached" = "Il file condiviso è cambiato altrove o non è raggiungibile";
+"The phone's changes are in %@." = "Le modifiche del telefono sono in %@.";
 "The file is open on a computer. Close CashCraft there to write from the phone." = "Il file è aperto su un computer. Chiudi lì CashCraft per scrivere dal telefono.";
 "The shared file could not be reached. Changes are kept on the phone and written at the next try." = "Il file condiviso non è raggiungibile. Le modifiche restano sul telefono e verranno scritte al prossimo tentativo.";
-"There are changes not yet written to the shared file." = "Ci sono modifiche non ancora scritte nel file condiviso.";
 "Net worth" = "Patrimonio";
 "Open" = "Apri";
 "New account" = "Nuovo conto";

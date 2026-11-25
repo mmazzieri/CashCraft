@@ -668,3 +668,8 @@ transaction {id} is not one that row {n} may be	il movimento {id} non è tra que
 {columns}; sign {sign}, dates {dates}, decimals {decimals}	{columns}; segno {sign}, date {dates}, decimali {decimals}
 {n} are left	{n} da decidere
 {n} is left	{n} da decidere
+the data file is damaged or not all here yet	l'archivio è danneggiato o non è ancora tutto qui
+the data file is in use	l'archivio è in uso
+the file is not a CashCraft data file	il file non è un archivio di CashCraft
+the file is there already	il file c'è già
+there is no data file on the phone	sul telefono non c'è nessun archivio

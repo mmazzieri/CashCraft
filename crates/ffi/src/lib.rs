@@ -13,9 +13,9 @@ mod android;
 #[cfg(not(target_os = "android"))]
 pub mod c;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use cashcraft_engine::db::Db;
-use cashcraft_engine::i18n::{Lang, set_lang};
+use cashcraft_engine::i18n::{Lang, set_lang, tr, trf};
 use cashcraft_engine::ops;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -45,28 +45,36 @@ pub enum Request {
     Lang { lang: String },
     /// Makes a new data file at `path`, which must not be there.
     New { path: PathBuf },
+    /// Checks the file just fetched, `from`, and brings it up to date.
+    Check { from: PathBuf },
     /// Checks the file just fetched, `from`, and puts it in the place of the private copy.
     Adopt { from: PathBuf, path: PathBuf },
     /// Ends whatever a call that stopped left open in the private copy.
     Settle { path: PathBuf },
-    /// Runs an operation on the private copy, which is whole again when it ends.
+    /// Runs an operation on the private copy; amounts come out in whole cents.
     Call { path: PathBuf, tool: String, args: Value },
 }
 
 /// Opens, uses and closes the private copy. The last connection that closes leaves no log beside
-/// it: the file alone holds everything.
+/// it: the file alone holds everything. A close that fails is not an error of `body`, whose changes
+/// are in: the log stays, and [`Request::Settle`] says so before the file is carried.
 fn with_db<T>(path: &Path, body: impl FnOnce(&Db) -> Result<T>) -> Result<T> {
     if !path.is_file() {
-        bail!("there is no data file on the phone");
+        bail!(tr("there is no data file on the phone"));
     }
     let (db, _) = Db::open(path)?;
     let out = body(&db)?;
     let Db { conn, .. } = db;
-    conn.close().map_err(|(_, e)| e).context("the data file could not be closed")?;
-    if beside(path, "-wal").exists() {
-        bail!("the data file is in use");
-    }
+    drop(conn);
     Ok(out)
+}
+
+fn settle(path: &Path) -> Result<()> {
+    with_db(path, |_| Ok(()))?;
+    if beside(path, "-wal").exists() {
+        bail!(tr("the data file is in use"));
+    }
+    Ok(())
 }
 
 fn beside(path: &Path, suffix: &str) -> PathBuf {
@@ -92,7 +100,7 @@ fn check(path: &Path) -> Result<()> {
     let mut head = [0u8; 16];
     let whole = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut head)).is_ok();
     if !whole || &head != b"SQLite format 3\0" {
-        bail!("the file is not a CashCraft data file");
+        bail!(tr("the file is not a CashCraft data file"));
     }
     let conn = rusqlite::Connection::open(path)?;
     let tables: i64 = conn.query_row(
@@ -101,14 +109,28 @@ fn check(path: &Path) -> Result<()> {
         |r| r.get(0),
     )?;
     if tables != 2 {
-        bail!("the file is not a CashCraft data file");
+        bail!(tr("the file is not a CashCraft data file"));
     }
     let state: String = conn.query_row("PRAGMA quick_check(1)", [], |r| r.get(0))?;
     if state != "ok" {
-        bail!("the data file is damaged or not all here yet");
+        bail!(tr("the data file is damaged or not all here yet"));
     }
     conn.close().map_err(|(_, e)| e)?;
     Ok(())
+}
+
+/// Checks a fetched file and brings it up to date: a newer format is refused, and what the screens
+/// show must be readable, so that a file that only looks like one never takes the copy's place.
+fn stage(from: &Path) -> Result<()> {
+    remove_logs(from)?;
+    check(from)?;
+    with_db(from, |db| {
+        for tool in ["list_accounts", "list_transactions", "list_categories", "budget_status"] {
+            ops::call_in_cents(db, tool, &json!({}))?;
+        }
+        Ok(())
+    })?;
+    settle(from)
 }
 
 fn run(request: Request) -> Result<Value> {
@@ -116,25 +138,23 @@ fn run(request: Request) -> Result<Value> {
         Request::Lang { lang } => set_lang(if lang.starts_with("it") { Lang::It } else { Lang::En }),
         Request::New { path } => {
             if path.symlink_metadata().is_ok() {
-                bail!("the file is there already");
+                bail!(tr("the file is there already"));
             }
             let (db, _) = Db::open(&path)?;
             db.conn.close().map_err(|(_, e)| e)?;
         }
+        Request::Check { from } => stage(&from)?,
         Request::Adopt { from, path } => {
-            remove_logs(&from)?;
-            check(&from)?;
-            // A newer format is refused and an older one brought up to date, on the copy.
-            with_db(&from, |_| Ok(()))?;
+            stage(&from)?;
             remove_logs(&path)?;
             std::fs::rename(&from, &path)?;
         }
-        Request::Settle { path } => with_db(&path, |_| Ok(()))?,
+        Request::Settle { path } => settle(&path)?,
         Request::Call { path, tool, args } => {
             if !ALLOWED.contains(&tool.as_str()) {
-                bail!("unknown operation {tool}");
+                bail!(trf("unknown operation \"{name}\"", &[("name", &tool)]));
             }
-            return with_db(&path, |db| ops::call(db, &tool, &args, None));
+            return with_db(&path, |db| ops::call_in_cents(db, &tool, &args));
         }
     }
     Ok(Value::Null)

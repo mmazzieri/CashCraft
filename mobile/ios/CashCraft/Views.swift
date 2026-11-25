@@ -62,10 +62,10 @@ struct RootView: View {
             message: { Text(books.error ?? "") }
         )
         .alert(
-            "The file was changed elsewhere too",
+            "The shared file was changed elsewhere or cannot be reached",
             isPresented: Binding(get: { books.notice != nil }, set: { if !$0 { books.notice = nil } }),
             actions: { Button("Close") { books.notice = nil } },
-            message: { Text("What was on the phone is in \(books.notice ?? "").") }
+            message: { Text("The phone's changes are in \(books.notice ?? "").") }
         )
     }
 }

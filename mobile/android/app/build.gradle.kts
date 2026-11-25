@@ -21,6 +21,7 @@ val buildRust by tasks.registering(Exec::class) {
     inputs.dir(repository.resolve("crates/ffi"))
     for (c in listOf("engine")) inputs.dir(repository.resolve("crates/$c"))
     inputs.file(repository.resolve("Cargo.lock"))
+    inputs.file(repository.resolve("Cargo.toml"))
     outputs.dir(out)
 }
 

@@ -37,6 +37,5 @@
     <string name="not_plain">Un giroconto o un movimento suddiviso si modifica sul computer.</string>
     <string name="offline">Il file condiviso non è raggiungibile. Le modifiche restano sul telefono e verranno scritte al prossimo tentativo.</string>
     <string name="in_use">Il file è aperto su un computer. Chiudi lì CashCraft per scrivere dal telefono.</string>
-    <string name="unsaved">Ci sono modifiche non ancora scritte nel file condiviso.</string>
-    <string name="conflict">Il file è cambiato anche altrove. Quello che era sul telefono è in %1$s.</string>
+    <string name="conflict">Le modifiche del telefono non potevano entrare nel file condiviso, cambiato altrove o non raggiungibile. Sono in %1$s.</string>
 </resources>

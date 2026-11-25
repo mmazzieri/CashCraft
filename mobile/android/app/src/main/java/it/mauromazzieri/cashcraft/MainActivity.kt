@@ -161,14 +161,17 @@ private fun App() {
 }
 
 @Composable
-private fun Messages(state: BooksState) {
-    val message = state.error ?: state.notice?.let { stringResource(R.string.conflict, it) }
-    if (message != null) {
-        Row(Modifier.fillMaxWidth().padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(message, Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
-            TextButton(onClick = Books::dismiss) { Text(stringResource(R.string.close)) }
-        }
+private fun Message(text: String, dismiss: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(text, Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
+        TextButton(onClick = dismiss) { Text(stringResource(R.string.close)) }
     }
+}
+
+@Composable
+private fun Messages(state: BooksState) {
+    state.error?.let { Message(it, Books::dismissError) }
+    state.notice?.let { Message(stringResource(R.string.conflict, it), Books::dismissNotice) }
     val note = if (state.inUse) R.string.in_use else if (state.offline) R.string.offline else null
     if (note != null) Text(stringResource(note), Modifier.padding(16.dp, 4.dp), style = MaterialTheme.typography.bodySmall)
 }
