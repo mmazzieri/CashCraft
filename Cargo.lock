@@ -586,7 +586,7 @@ dependencies = [
 
 [[package]]
 name = "cashcraft"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cashcraft-engine",
  "cashcraft-ui-egui",
@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "cashcraft-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "cashcraft-engine",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "cashcraft-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -627,14 +627,14 @@ dependencies = [
 
 [[package]]
 name = "cashcraft-icon"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "image",
 ]
 
 [[package]]
 name = "cashcraft-ui-egui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "cashcraft-engine",
@@ -4421,7 +4421,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cashcraft-icon",
  "image",
