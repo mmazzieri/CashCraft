@@ -118,18 +118,26 @@ impl Db {
     }
 
     /// An imported line takes the place of an added side: its date, text and key move onto it.
-    pub(crate) fn adopt(&self, side: i64, date: NaiveDate, payee: &str, memo: &str, hash: &str) -> Result<()> {
+    pub(crate) fn adopt(
+        &self,
+        t: &Transaction,
+        date: NaiveDate,
+        payee: &str,
+        memo: &str,
+        hash: &str,
+        marks: &str,
+    ) -> Result<()> {
         self.atomically(|| {
-            let t = self.transaction(side)?;
-            if !t.added {
+            let mut d = self.load_draft(t.entry_id)?;
+            if !d.lines.iter().any(|l| l.id == Some(t.id) && l.origin.as_deref() == Some(ADDED)) {
                 bail!(tr("the side of the transfer is on a statement already"));
             }
-            let mut d = self.load_draft(t.entry_id)?;
-            for l in d.lines.iter_mut().filter(|l| l.id == Some(side)) {
+            for l in d.lines.iter_mut().filter(|l| l.id == Some(t.id)) {
                 l.payee = Some(payee.trim().into());
                 l.memo = Some(memo.trim().into());
                 l.date = Some(d2s(date));
                 l.import_hash = Some(hash.into());
+                l.other_hashes = Some(marks.into());
                 l.cleared = true;
                 l.origin = None;
             }
@@ -238,11 +246,11 @@ impl Db {
             // It pays no statement any more.
             self.conn.execute(
                 "UPDATE card_statements SET payment_id=NULL
-                 WHERE payment_id IN (SELECT id FROM postings WHERE entry_id=?1)",
+                 WHERE payment_id IN (SELECT id FROM ledger_postings WHERE entry_id=?1)",
                 [t.entry_id],
             )?;
             let spare = self.system_ledger(UNCATEGORIZED)?;
-            let last: i64 = self.conn.query_row("SELECT MAX(id) FROM postings", [], |r| r.get(0))?;
+            let last: i64 = self.conn.query_row("SELECT MAX(id) FROM ledger_postings", [], |r| r.get(0))?;
             // Ids above every other: that of the side that leaves must not be taken.
             let next = |n: i64| last.checked_add(n).ok_or_else(too_big);
             let alone = |l: &Line, entry: Option<i64>, counter: i64| -> Draft {

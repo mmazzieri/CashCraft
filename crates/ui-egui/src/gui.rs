@@ -5,7 +5,7 @@ use crate::ledger::{EntryForm, LedgerAccountForm, LedgerData};
 use anyhow::Result;
 use cashcraft_engine::cards::{CardStatement, PaymentProposal};
 use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Db, Scheduled, Transaction, TxFilter, TxKind};
-use cashcraft_engine::duplicates::LikelyDuplicate;
+use cashcraft_engine::duplicates::{Choice, Deletion, LikelyDuplicate};
 use cashcraft_engine::i18n::{self, Lang, lang, tr, trf};
 use cashcraft_engine::importer::{self, ImportResult, Mapping, ParsedRow, Problem, Settings, Table};
 
@@ -251,14 +251,25 @@ pub struct ImportState {
     pub dates: DateOrder,
     /// The id of the saved columns in use.
     pub saved: Option<i64>,
+    /// The id of saved columns that cannot be read: forgotten first.
+    pub broken: Option<i64>,
+    /// The account whose settings were loaded, and those settings.
+    pub loaded_for: Option<Option<i64>>,
+    pub loaded: Settings,
+    /// Whether the user chose the sign.
+    pub sign_by_hand: bool,
     pub account: Option<i64>,
     pub new_account: String,
     pub rows: Vec<ParsedRow>,
     pub skipped: usize,
     pub problems: Vec<Problem>,
-    /// Rows that may be in the books already, and what the user said of each: whether it is skipped.
+    /// Whether most rows were read.
+    pub convincing: bool,
+    /// Rows that may be in the books already, and what the user said of each, for every account.
     pub likely: Vec<LikelyDuplicate>,
-    pub decided: BTreeMap<usize, bool>,
+    pub decided: BTreeMap<usize, Choice>,
+    pub said: HashMap<Option<i64>, BTreeMap<usize, Choice>>,
+    pub deletions: Vec<Deletion>,
     /// The account that the rows were compared with.
     pub compared: Option<Option<i64>>,
     /// The balance in the books on the day of the one that the statement states.
@@ -325,6 +336,10 @@ impl ImportState {
         match read {
             Ok(t) => {
                 self.use_settings(Settings::detected(&t), None);
+                self.loaded = self.settings();
+                self.loaded_for = None;
+                self.sign_by_hand = false;
+                self.broken = None;
                 self.table = Some(t);
                 self.reparse();
             }
@@ -336,18 +351,23 @@ impl ImportState {
         let statement = self.table.as_ref().and_then(|t| t.statement.as_ref());
         statement.is_none_or(|s| s.is_sound() || (s.is_identified() && self.allow_mismatch))
             && !self.rows.is_empty()
+            && self.broken.is_none()
+            && (self.sign_by_hand || !self.signs_contradict())
             && self.likely.iter().all(|l| self.decided.contains_key(&l.index))
             && (self.account.is_some() || !self.new_account.trim().is_empty())
     }
     pub fn reparse(&mut self) {
         if let Some(t) = &self.table {
             let read = importer::read_rows(t, &self.settings());
+            self.convincing = read.is_convincing();
             self.rows = read.rows;
             self.skipped = read.skipped;
             self.problems = read.problems;
         }
         self.likely.clear();
+        self.deletions.clear();
         self.decided.clear();
+        self.said.clear();
         self.compared = None;
         self.books = None;
     }
@@ -367,21 +387,71 @@ impl ImportState {
     pub fn target(&self) -> Option<i64> {
         self.account.filter(|_| self.new_account.trim().is_empty())
     }
+    pub fn signs_contradict(&self) -> bool {
+        let statement = self.table.as_ref().and_then(|t| t.ofx.as_ref()).and_then(|o| o.statement());
+        statement.is_some_and(|s| s.signs_contradict())
+    }
+    /// Loads what was remembered for the account, when it changed. What the user changed by hand stays, and a
+    /// sign that was remembered for another account does not.
+    pub fn load_saved(&mut self, db: &Db) -> Result<()> {
+        let target = self.target();
+        let Some(t) = &self.table else { return Ok(()) };
+        if self.loaded_for == Some(target) {
+            return Ok(());
+        }
+        self.loaded_for = Some(target);
+        let before = self.settings();
+        let layout = db.layout_of(t, target)?;
+        let mut settings = Settings::detected(t);
+        self.broken = None;
+        let mut saved = None;
+        if let Some(l) = layout {
+            match l.settings() {
+                Ok(s) => {
+                    settings = s;
+                    saved = Some(l.id);
+                }
+                Err(_) => self.broken = Some(l.id),
+            }
+        }
+        let remembered = settings.clone();
+        let edited = before != self.loaded;
+        if edited {
+            let invert = if self.sign_by_hand { before.invert } else { settings.invert };
+            settings = Settings { invert, ..before.clone() };
+        }
+        let changed = settings != before;
+        self.use_settings(settings, saved);
+        self.loaded = remembered;
+        if changed {
+            self.reparse();
+        }
+        Ok(())
+    }
     /// Looks again for the rows that may be in the books, when the account or the rows changed.
     pub fn compare(&mut self, db: &Db) -> Result<()> {
         let target = self.target();
         if self.table.is_none() || self.compared == Some(target) {
             return Ok(());
         }
-        // What was said of another account says nothing of this one.
-        if self.compared.is_some() {
-            self.decided.clear();
+        // What was said of another account says nothing of this one, and is there when the user comes back.
+        if let Some(old) = self.compared {
+            let said = std::mem::take(&mut self.decided);
+            self.said.insert(old, said);
+            self.decided = self.said.remove(&target).unwrap_or_default();
         }
         self.compared = Some(target);
         self.likely.clear();
+        self.deletions.clear();
         self.likely = db.likely_duplicates(target, &self.rows)?;
-        let likely = &self.likely;
-        self.decided.retain(|i, _| likely.iter().any(|l| l.index == *i));
+        self.deletions = db.deletions(target, &self.rows)?;
+        let likely: HashMap<usize, &LikelyDuplicate> = self.likely.iter().map(|l| (l.index, l)).collect();
+        self.decided.retain(|i, c| {
+            likely.get(i).is_some_and(|l| match c {
+                Choice::Skip(Some(id)) => l.existing.iter().any(|t| t.id == *id),
+                _ => true,
+            })
+        });
         self.read_balance(db)
     }
     pub fn read_balance(&mut self, db: &Db) -> Result<()> {
@@ -790,19 +860,6 @@ impl App {
             st.load();
         }
         self.dialog = Some(Dialog::Import(Box::new(st)));
-    }
-
-    /// The columns the user confirmed for a file like this one.
-    pub(crate) fn saved_columns(&self, st: &mut ImportState) {
-        let Some(t) = &st.table else { return };
-        match Settings::of(&self.db, t) {
-            Ok((s, Some(id))) => {
-                st.use_settings(s, Some(id));
-                st.reparse();
-            }
-            Ok(_) => {}
-            Err(e) => st.error = format!("{e:#}"),
-        }
     }
 
     /// A card statement goes to a credit card, a new one if there is none.

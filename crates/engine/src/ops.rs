@@ -3,7 +3,7 @@
 //! operations are English in every language; messages and errors are in the language in use.
 
 use crate::db::{self, AccountKind, CategoryTotal, Cents, Db, NewScheduled, NewTx, TxEdit, TxFilter, TxKind};
-use crate::duplicates::Decision;
+use crate::duplicates::{Choice, Decision};
 use crate::i18n::{Lang, lang, tr, trf, trn};
 use crate::importer::{self, Settings};
 use crate::layouts;
@@ -15,7 +15,6 @@ use crate::transfers::OtherSide;
 use anyhow::{Result, anyhow, bail};
 use chrono::{Datelike, Months, NaiveDate};
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 pub struct ToolDef {
@@ -45,8 +44,7 @@ const STATEMENT: &str =
     "Which statement of an OFX file that has several: its number from 1, or the number of the account.";
 const DECIMALS: &str = "Decimal separator of the file: \",\", \".\" or \"auto\".";
 const DATES: &str = "Order of the dates of the file: dmy, mdy, ymd or auto.";
-const SAVED: &str =
-    "Start from the columns remembered for this layout (default true); false starts from those detected.";
+const SAVED: &str = "Use and remember the columns of this layout in this account (default true); false starts from those detected and remembers nothing.";
 const CATEGORY: &str = "Category: id, name or path \"Parent:Child\" (e.g. \"Home:Utilities\").";
 
 pub fn tools() -> Vec<ToolDef> {
@@ -139,9 +137,9 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "preview_csv",
-            description: "Analyzes a statement (CSV, Excel 97 .xls, OFX or the PDF of a credit card) without importing it: separator, recognized columns, first rows and the lines that could not be read; for a card statement its dates and whether the rows add up to its totals; for OFX its statements and the balance they state, a check only. With an account, also likely_duplicates: rows that may be there already.",
+            description: "Analyzes a statement (CSV, Excel 97 .xls, OFX or the PDF of a credit card) without importing it: separator, recognized columns, first rows and the lines that could not be read; for a card statement its dates and whether the rows add up to its totals; for OFX its statements and the balance they state, a check only. With an account, also likely_duplicates: rows that may be there already, each with the transactions it may be and the one proposed (certain: same date, amount and payee, and only one).",
             schema: obj(
-                json!({"path": s("Path of the file."), "account": s("Account to look for likely duplicates in: numeric id or name (optional)."),
+                json!({"path": s("Path of the file."), "account": s("Account to look for likely duplicates and remembered columns in: numeric id or name (optional)."),
                 "statement": s(STATEMENT), "invert": b("Invert the sign of the amounts."), "limit": n("Preview rows (default 10)."),
                 "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."), "credit_column": s("Money-in column."),
                 "debit_column": s("Money-out column."), "description_column": s("Description column."), "payee_column": s("Payee column."),
@@ -151,14 +149,14 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "import_csv",
-            description: "Imports a CSV or Excel 97 .xls file exported by a bank, an OFX statement in the currency of the account, or the PDF statement of a credit card (into a credit_card account), into an account. Columns, separator, encoding and amount format are detected, or are those of the last import of a file with the same headings; transactions already imported are skipped; rules assign the categories. When rows may be there already from another statement the call is refused and lists them: ask the user, then pass skip_rows and add_rows.",
+            description: "Imports a CSV or Excel 97 .xls file exported by a bank, an OFX statement in the currency of the account, or the PDF statement of a credit card (into a credit_card account), into an account. Columns, separator, encoding and amount format are detected, or are those of the last import into this account of a file with the same headings; transactions already imported are skipped; rules assign the categories. When rows may be there already from another statement the call is refused and lists them: ask the user, then pass skip_rows and add_rows.",
             schema: obj(
-                json!({"path": s("Path of the file."), "account": s(ACCOUNT), "statement": s(STATEMENT), "invert": b("Invert the sign (e.g. credit card statements with positive expenses)."),
-                "dry_run": b("Trial run: saves nothing."), "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."),
+                json!({"path": s("Path of the file."), "account": s(ACCOUNT), "statement": s(STATEMENT), "invert": b("Invert the sign (e.g. credit card statements with positive expenses), or not. When it is not given the sign is that of the last import into this account. It also confirms the sign of an OFX statement that contradicts its types."),
+                "dry_run": b("Trial run: the same checks, saves nothing; refused says why the import would be refused."), "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."),
                 "credit_column": s("Money-in column."), "debit_column": s("Money-out column."), "description_column": s("Description column."),
                 "payee_column": s("Payee column."), "decimal_separator": s(DECIMALS), "date_format": s(DATES), "use_saved": b(SAVED),
-                "skip_rows": s("Rows of likely_duplicates that the user says are in the books already: numbers separated by commas (\"2,5\"), or \"all\"."),
-                "add_rows": s("Rows of likely_duplicates that the user says are other transactions: numbers separated by commas (\"2,5\"), or \"all\"."),
+                "skip_rows": s("Rows of likely_duplicates that the user says are in the books already: numbers separated by commas, each with =id for a transaction other than the proposed one (\"2,5=31\"), and \"same\" for all those that are certain."),
+                "add_rows": s("Rows of likely_duplicates that the user says are other transactions: numbers separated by commas, or \"all\" for those that are left."),
                 "allow_mismatch": b("Import a card statement even if its rows do not add up to its totals; only after the user agreed."),
                 "any_account": b("Import the statement of a card into an account that is not a credit card; only after the user agreed.")}),
                 &["path", "account"],
@@ -166,7 +164,7 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_saved_columns",
-            description: "Lists the columns and formats remembered for each layout of CSV and Excel files.",
+            description: "Lists the columns, formats and sign remembered for each layout of CSV and Excel files in each account.",
             schema: obj(json!({}), &[]),
         },
         ToolDef {
@@ -614,10 +612,10 @@ fn mapping_overrides(t: &importer::Table, saved: &importer::Mapping, a: &Value) 
 }
 
 /// How to read a file: the settings remembered or detected, with what the call changes.
-fn file_settings(db: &Db, t: &importer::Table, a: &Value) -> Result<(Settings, Option<i64>)> {
+fn file_settings(db: &Db, t: &importer::Table, account: Option<i64>, a: &Value) -> Result<(Settings, Option<i64>)> {
     let (mut s, saved) = match given_bool(a, "use_saved")? {
         Some(false) => (Settings::detected(t), None),
-        _ => Settings::of(db, t)?,
+        _ => Settings::of(db, t, account)?,
     };
     s.mapping = mapping_overrides(t, &s.mapping, a)?;
     if let Some(i) = given_bool(a, "invert")? {
@@ -635,8 +633,8 @@ fn file_settings(db: &Db, t: &importer::Table, a: &Value) -> Result<(Settings, O
             anyhow!(trf("\"{text}\" is not an order of dates: use dmy, mdy, ymd or auto", &[("text", &d)]))
         })?;
     }
-    if t.ofx.is_some() && s != Settings::detected(t) {
-        bail!(tr("the columns and the sign of an OFX statement cannot be changed"));
+    if t.ofx.is_some() && s != (Settings { invert: s.invert, ..Settings::detected(t) }) {
+        bail!(tr("an OFX statement has no columns to change"));
     }
     if t.statement.is_some() && s != Settings::detected(t) {
         bail!(tr("the columns and the sign of a card statement cannot be changed"));
@@ -651,54 +649,52 @@ fn file_settings(db: &Db, t: &importer::Table, a: &Value) -> Result<(Settings, O
     Ok((s, saved))
 }
 
-/// Some rows by their number, or all.
-enum Rows {
-    All,
-    These(BTreeSet<usize>),
-}
-
-fn rows_arg(a: &Value, k: &str) -> Result<Rows> {
-    let wrong = || anyhow!(trf("the parameter \"{name}\" must have row numbers, or \"all\"", &[("name", &k)]));
-    let index =
-        |n: Option<u64>| n.and_then(|n| usize::try_from(n).ok()).and_then(|n| n.checked_sub(1)).ok_or_else(wrong);
-    let set: Result<BTreeSet<usize>> = match a.get(k) {
-        None | Some(Value::Null) => Ok(BTreeSet::new()),
-        Some(Value::String(t)) if t.trim().eq_ignore_ascii_case("all") => return Ok(Rows::All),
-        Some(Value::String(t)) => {
-            t.split([',', ' ']).filter(|p| !p.is_empty()).map(|p| index(p.parse().ok())).collect()
-        }
-        Some(Value::Array(l)) => l.iter().map(|v| index(v.as_u64())).collect(),
-        Some(v) => index(v.as_u64()).map(|i| BTreeSet::from([i])),
+/// The parts of a parameter with rows: text, a number, or a list of them.
+fn rows_arg(a: &Value, k: &str) -> Result<Vec<String>> {
+    let wrong = || anyhow!(trf("the parameter \"{name}\" must have row numbers", &[("name", &k)]));
+    let one = |v: &Value| match v {
+        Value::String(t) => Ok(t.clone()),
+        Value::Number(n) => Ok(n.to_string()),
+        _ => Err(wrong()),
     };
-    Ok(Rows::These(set?))
+    let text = match a.get(k) {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(l)) => l.iter().map(one).collect::<Result<Vec<_>>>()?.join(","),
+        Some(v) => one(v)?,
+    };
+    Ok(text.split([',', ' ']).filter(|p| !p.is_empty()).map(str::to_lowercase).collect())
 }
 
 /// What the call says of the rows that may be there already.
-fn decision(db: &Db, account: i64, rows: &[importer::ParsedRow], a: &Value) -> Result<Decision> {
-    Ok(match (rows_arg(a, "skip_rows")?, rows_arg(a, "add_rows")?) {
-        (Rows::All, Rows::All) => bail!(tr("the same rows cannot be both skipped and added")),
-        (Rows::These(s), Rows::These(d)) if s.is_empty() && d.is_empty() => Decision::Ask,
-        (Rows::These(s), Rows::These(d)) => {
-            if !s.is_disjoint(&d) {
-                bail!(tr("the same rows cannot be both skipped and added"));
-            }
-            Decision::Each(s.into_iter().map(|i| (i, true)).chain(d.into_iter().map(|i| (i, false))).collect())
-        }
-        (Rows::All, Rows::These(d)) if d.is_empty() => Decision::SkipAll,
-        (Rows::These(s), Rows::All) if s.is_empty() => Decision::AddAll,
-        (one, other) => {
-            let mut each = BTreeMap::new();
-            for l in db.likely_duplicates(Some(account), rows)? {
-                each.insert(l.index, matches!(one, Rows::All));
-            }
-            for (set, skip) in [(one, true), (other, false)] {
-                if let Rows::These(s) = set {
-                    each.extend(s.into_iter().map(|i| (i, skip)));
+fn decision(a: &Value) -> Result<Decision> {
+    let mut d = Decision::default();
+    for (k, skip) in [("skip_rows", true), ("add_rows", false)] {
+        let wrong = || anyhow!(trf("the parameter \"{name}\" must have row numbers", &[("name", &k)]));
+        for part in rows_arg(a, k)? {
+            match (part.as_str(), skip) {
+                ("same", true) => d.skip_same = true,
+                ("all", false) => d.add_others = true,
+                ("all", true) => {
+                    bail!(tr(
+                        "rows that may be there are skipped one by one, or with \"same\" when they are surely the same"
+                    ))
+                }
+                (part, _) => {
+                    let (row, id) = match part.split_once('=') {
+                        Some((r, id)) if skip => (r, Some(id.parse::<i64>().map_err(|_| wrong())?)),
+                        Some(_) => return Err(wrong()),
+                        None => (part, None),
+                    };
+                    let row = row.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).ok_or_else(wrong)?;
+                    let choice = if skip { Choice::Skip(id) } else { Choice::Add };
+                    if d.each.insert(row, choice).is_some_and(|old| old != choice) {
+                        bail!(tr("the same rows cannot be both skipped and added"));
+                    }
                 }
             }
-            Decision::Each(each)
         }
-    })
+    }
+    Ok(d)
 }
 
 /// The balance that an OFX statement states, against the books.
@@ -834,6 +830,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 category_id,
                 cleared: opt_bool(a, "cleared")?,
                 import_hash: None,
+                import_marks: None,
                 card_row: false,
             };
             db.atomically(|| {
@@ -930,40 +927,32 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                     None => bail!(tr("only an OFX file has statements to choose")),
                 }
             }
-            let (settings, saved) = file_settings(db, &t, a)?;
+            let dry = name == "preview_csv" || opt_bool(a, "dry_run")?;
+            let account = match opt_str(a, "account").filter(|k| !k.trim().is_empty()) {
+                Some(k) => Some(db.find_account(&k)?),
+                None if name == "import_csv" => return Err(missing("account")),
+                None => None,
+            };
+            let id = account.as_ref().map(|x| x.id);
+            let (settings, saved) = file_settings(db, &t, id, a)?;
+            let remembered = saved.is_some() && given_bool(a, "invert")?.is_none();
+            let sign_of = account.as_ref().filter(|_| remembered).map(|x| x.name.as_str());
+            let notices = layouts::notices(&t, &settings, sign_of);
             let read = importer::read_rows(&t, &settings);
             let rows = &read.rows;
             let mut info = importer::describe(&t, &settings.mapping);
-            if let (Some(i), true) = (info.as_object_mut(), t.has_columns()) {
-                i.insert("decimal_separator".into(), json!(if settings.comma(&t) { "," } else { "." }));
-                i.insert("date_format".into(), json!(settings.dates.code()));
+            if let Some(i) = info.as_object_mut() {
                 i.insert("invert".into(), json!(settings.invert));
-                i.insert("saved_columns".into(), json!(saved));
+                if t.has_columns() {
+                    i.insert("decimal_separator".into(), json!(if settings.comma(&t) { "," } else { "." }));
+                    i.insert("date_format".into(), json!(settings.dates.code()));
+                    i.insert("saved_columns".into(), json!(saved));
+                }
             }
             let ofx = t.ofx.as_ref().map(crate::ofx::Ofx::json);
             let statement = t.statement.as_ref().map(importer::Statement::json);
-            if name == "preview_csv" || opt_bool(a, "dry_run")? {
-                let limit = opt_i64(a, "limit").unwrap_or(10).max(1) as usize;
-                let total = checked_total(rows.iter().map(|r| r.amount)).ok_or_else(too_big)?;
-                let account = match opt_str(a, "account") {
-                    Some(k) if !k.trim().is_empty() => Some(db.find_account(&k)?.id),
-                    _ => None,
-                };
-                let likely: Vec<Value> = db
-                    .likely_duplicates(account, rows)?
-                    .iter()
-                    .map(|l| {
-                        json!({"row": l.index + 1, "reason": l.reason, "date": l.date, "payee": l.payee,
-                               "amount": l.amount, "existing": l.existing})
-                    })
-                    .collect();
-                json!({"format": info, "rows_found": rows.len(), "rows_skipped": read.skipped, "sum": total,
-                       "first_date": rows.first().map(|r| r.date), "last_date": rows.last().map(|r| r.date),
-                       "preview": rows.iter().take(limit).collect::<Vec<_>>(), "problems": read.problems,
-                       "likely_duplicates": likely, "statement": statement, "ofx": ofx,
-                       "ledger_balance": ledger_balance(db, account, &t)?})
-            } else {
-                let acc = db.find_account(&req_str(a, "account")?)?;
+            let import = || -> Result<(importer::ImportResult, Value)> {
+                let acc = account.as_ref().ok_or_else(|| missing("account"))?;
                 if let Some(o) = t.ofx.as_ref().filter(|o| o.chosen.is_none()) {
                     return Err(importer::choose_statement(o));
                 }
@@ -978,30 +967,64 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                         &[("name", &acc.name)]
                     ));
                 }
-                let allow_mismatch = opt_bool(a, "allow_mismatch")?;
-                let (res, balance) = db.atomically(|| {
-                    let likely = decision(db, acc.id, rows, a)?;
-                    let choices = importer::Choices { allow_mismatch, likely, settings: Some(&settings) };
+                let remember = given_bool(a, "use_saved")?.unwrap_or(true) && read.is_convincing();
+                let choices = importer::Choices {
+                    allow_mismatch: opt_bool(a, "allow_mismatch")?,
+                    likely: decision(a)?,
+                    settings: remember.then_some(&settings),
+                    sign_confirmed: given_bool(a, "invert")?.is_some(),
+                };
+                db.atomically(|| {
                     let res = importer::import_with(db, acc.id, &t, rows, read.skipped, &choices)?;
                     Ok((res, ledger_balance(db, Some(acc.id), &t)?))
-                })?;
+                })
+            };
+            if dry {
+                let limit = opt_i64(a, "limit").unwrap_or(10).max(1) as usize;
+                let total = checked_total(rows.iter().map(|r| r.amount)).ok_or_else(too_big)?;
+                let likely: Vec<Value> = db
+                    .likely_duplicates(id, rows)?
+                    .iter()
+                    .map(|l| {
+                        json!({"row": l.index + 1, "reason": l.reason, "date": l.date, "payee": l.payee,
+                               "amount": l.amount, "existing": l.existing, "proposed": l.proposed,
+                               "certain": l.certain})
+                    })
+                    .collect();
+                // The import itself, undone: its checks are the same.
+                let mut refused = None;
+                let mut result = None;
+                if name == "import_csv" {
+                    let undone: Result<()> = db.atomically(|| {
+                        result = Some(import()?.0);
+                        bail!("undone")
+                    });
+                    if let (Err(e), None) = (undone, &result) {
+                        refused = Some(format!("{e:#}"));
+                    }
+                }
+                let counts = result.map(|r| {
+                    json!({"added": r.added, "duplicates": r.duplicates, "same": r.same, "adopted": r.adopted.len()})
+                });
+                json!({"format": info, "rows_found": rows.len(), "rows_skipped": read.skipped, "sum": total,
+                       "first_date": rows.first().map(|r| r.date), "last_date": rows.last().map(|r| r.date),
+                       "preview": rows.iter().take(limit).collect::<Vec<_>>(), "problems": read.problems,
+                       "likely_duplicates": likely, "deletions": db.deletions(id, rows)?, "notices": notices,
+                       "refused": refused, "would_import": counts, "statement": statement, "ofx": ofx,
+                       "ledger_balance": ledger_balance(db, id, &t)?})
+            } else {
+                let (res, balance) = import()?;
                 let proposals: Vec<_> =
                     db.propose_card_payments()?.into_iter().filter(|p| !p.candidates.is_empty()).collect();
                 let present = res.duplicates + res.same;
-                json!({"account": acc.name, "format": info, "result": res, "card_payments": proposals,
-                       "statement": statement, "ofx": ofx, "problems": read.problems, "ledger_balance": balance,
+                json!({"account": account.as_ref().map(|x| &x.name), "format": info, "result": res, "card_payments": proposals,
+                       "statement": statement, "ofx": ofx, "problems": read.problems, "notices": notices,
+                       "ledger_balance": balance,
                        "message": trf("{added} imported, {present} already present, {categorized} categorized automatically", &[("added", &res.added), ("present", &present), ("categorized", &res.categorized)])})
             }
         }
         "list_saved_columns" => {
-            let all: Vec<Value> = db
-                .layouts()?
-                .iter()
-                .map(|l| {
-                    json!({"id": l.id, "layout": l.signature, "settings": l.settings,
-                           "description": layouts::describe(&l.settings)})
-                })
-                .collect();
+            let all: Vec<Value> = db.layouts()?.iter().map(layouts::Layout::json).collect();
             json!({"saved_columns": all})
         }
         "forget_saved_columns" => {
@@ -1422,19 +1445,73 @@ mod tests {
             let db = one_account();
             let run = |name: &str, a: Value| call(&db, name, &a, Some(&roots));
             let v = run("preview_csv", json!({"path": "a.csv", "amount_column": "Netto", "invert": true})).unwrap();
+            // Read as it always was for these arguments, and said.
+            assert_eq!((&v["format"]["decimal_separator"], &v["preview"][0]["amount"]), (&json!(","), &json!(-1250.0)));
+            assert!(v["notices"][0].as_str().unwrap().contains("decimals"), "{v}");
+            let v = run(
+                "preview_csv",
+                json!({"path": "a.csv", "amount_column": "Netto", "invert": true, "decimal_separator": "."}),
+            )
+            .unwrap();
             assert_eq!((&v["format"]["decimal_separator"], &v["problems"][0]["line"]), (&json!("."), &json!(3)));
-            let how = json!({"path": "a.csv", "account": "A", "amount_column": "Netto", "invert": true, "date_format": "dmy"});
-            assert_eq!(run("import_csv", how).unwrap()["result"]["added"], 1);
-            // Remembered: no columns are given this time.
-            let v = run("preview_csv", json!({"path": "a.csv"})).unwrap();
+            let how = json!({"path": "a.csv", "account": "A", "amount_column": "Netto", "invert": true,
+                             "date_format": "dmy", "decimal_separator": "."});
+            // Not remembered when the columns are not used, and not read either.
+            let mut alone = how.clone();
+            alone["use_saved"] = json!(false);
+            alone["dry_run"] = json!(true);
+            assert_eq!(run("import_csv", alone.clone()).unwrap()["would_import"]["added"], 1);
+            assert!(db.transactions(&TxFilter::default()).unwrap().is_empty(), "a trial");
+            alone["dry_run"] = json!(false);
+            assert_eq!(run("import_csv", alone).unwrap()["result"]["added"], 1);
+            assert!(db.layouts().unwrap().is_empty());
+            assert_eq!(run("import_csv", how).unwrap()["result"]["duplicates"], 1);
+            // Remembered for this account: no columns are given this time, and the sign is said.
+            let v = run("preview_csv", json!({"path": "a.csv", "account": "A"})).unwrap();
             assert_eq!(
-                (&v["format"]["mapping"]["amount"], &v["preview"][0]["amount"]),
-                (&json!("Netto"), &json!(-12.5))
+                (&v["format"]["mapping"]["amount"], &v["preview"][0]["amount"], &v["format"]["invert"]),
+                (&json!("Netto"), &json!(-12.5), &json!(true))
             );
+            assert!(v["notices"][0].as_str().unwrap().contains("\"A\""), "{v}");
             assert_eq!(v["format"]["saved_columns"], 1);
-            let v = run("preview_csv", json!({"path": "a.csv", "use_saved": false})).unwrap();
-            assert_eq!((&v["format"]["mapping"]["amount"], &v["format"]["invert"]), (&json!("Importo"), &json!(false)));
-            assert_eq!(run("list_saved_columns", json!({})).unwrap()["saved_columns"][0]["settings"]["dates"], "dmy");
+            // What is given wins, and then it is not a remembered sign.
+            let v = run("preview_csv", json!({"path": "a.csv", "account": "A", "invert": false})).unwrap();
+            assert_eq!((&v["preview"][0]["amount"], &v["notices"]), (&json!(12.5), &json!([])));
+            run("create_account", json!({"name": "Other"})).unwrap();
+            for other in [
+                json!({"path": "a.csv"}),
+                json!({"path": "a.csv", "account": "Other"}),
+                json!({"path": "a.csv", "account": "A", "use_saved": false}),
+            ] {
+                let v = run("preview_csv", other).unwrap();
+                assert_eq!(
+                    (&v["format"]["mapping"]["amount"], &v["format"]["invert"]),
+                    (&json!("Importo"), &json!(false))
+                );
+            }
+            // Columns of which most rows make no sense are not remembered.
+            std::fs::write(
+                dir.join("odd.csv"),
+                "Data;Nome;Importo\n04/02/2026;a;7,00\n05/02/2026;b;x\n06/02/2026;c;y\n",
+            )
+            .unwrap();
+            assert_eq!(
+                run("import_csv", json!({"path": "odd.csv", "account": "Other"})).unwrap()["result"]["added"],
+                1
+            );
+            std::fs::write(dir.join("none.csv"), "Data;Nome;Importo;X\n04/02/2026;a;;\n").unwrap();
+            assert_eq!(
+                run("import_csv", json!({"path": "none.csv", "account": "Other"})).unwrap()["result"]["added"],
+                0
+            );
+            assert_eq!(db.layouts().unwrap().len(), 1);
+            let list = run("list_saved_columns", json!({})).unwrap();
+            let one = &list["saved_columns"][0];
+            assert_eq!(
+                (&one["account"], &one["invert"], &one["columns"]["amount"]),
+                (&json!("A"), &json!(true), &json!("Netto"))
+            );
+            assert_eq!((&one["date_format"], &one["decimal_separator"]), (&json!("dmy"), &json!(".")));
             assert!(run("forget_saved_columns", json!({})).is_err());
             assert!(run("forget_saved_columns", json!({"id": 99})).is_err());
             run("forget_saved_columns", json!({"id": 1})).unwrap();
@@ -1445,7 +1522,10 @@ mod tests {
             }
             let v = run("preview_csv", json!({"path": "one.ofx", "account": "A"})).unwrap();
             assert_eq!((&v["rows_found"], &v["likely_duplicates"][0]["row"]), (&json!(2), &json!(1)));
-            assert_eq!(v["likely_duplicates"][0]["existing"][0]["payee"], "Bar");
+            let there = &v["likely_duplicates"][0];
+            assert_eq!((&there["existing"][0]["payee"], &there["certain"]), (&json!("Bar"), &json!(false)));
+            assert_eq!(there["existing"][0]["id"], there["proposed"]);
+            let bar = there["proposed"].as_i64().unwrap();
             assert_eq!(
                 v["ledger_balance"],
                 json!({"stated": "1487.50", "date": "2026-01-31", "books": "-12.50", "agrees": false})
@@ -1458,25 +1538,61 @@ mod tests {
                 run("import_csv", a)
             };
             let refused = import(json!({})).unwrap_err().to_string();
-            assert!(refused.contains("1: 2026-01-05, BAR & CAFFE, -12.50"), "{refused}");
+            assert!(
+                refused.contains("1: 2026-01-05, BAR & CAFFE, -12.50") && refused.contains(&format!("→ {bar} ")),
+                "{refused}"
+            );
+            let before = db.transactions(&TxFilter::default()).unwrap().len();
             for bad in [
                 json!({"skip_rows": [2]}),
                 json!({"skip_rows": [1], "add_rows": "1"}),
-                json!({"skip_rows": "all", "add_rows": "all"}),
+                json!({"skip_rows": "all"}),
+                json!({"skip_rows": "same"}),
                 json!({"skip_rows": [0]}),
                 json!({"skip_rows": {}}),
                 json!({"skip_rows": "x"}),
-                json!({"invert": true, "skip_rows": "all"}),
-                json!({"statement": "7", "skip_rows": "all"}),
+                json!({"skip_rows": ["x"]}),
+                json!({"skip_rows": [1.5]}),
+                json!({"skip_rows": [true]}),
+                json!({"skip_rows": "1=99"}),
+                json!({"skip_rows": "1=x"}),
+                json!({"add_rows": format!("1={bar}")}),
+                json!({"add_rows": "same"}),
+                json!({"date_column": "1", "skip_rows": "1"}),
+                json!({"statement": "7", "skip_rows": "1"}),
             ] {
                 assert!(import(bad.clone()).is_err(), "{bad}");
+                // A trial refuses the same, and says it.
+                let mut trial = bad.clone();
+                trial["dry_run"] = json!(true);
+                let seen = import(trial);
+                assert!(seen.is_err() || !seen.unwrap()["refused"].is_null(), "{bad}");
+                assert_eq!(db.transactions(&TxFilter::default()).unwrap().len(), before);
             }
-            let v = import(json!({"skip_rows": "1"})).unwrap();
+            let trial = import(json!({"skip_rows": ["1"], "dry_run": true})).unwrap();
+            assert_eq!((&trial["refused"], &trial["would_import"]["same"]), (&Value::Null, &json!(1)));
+            assert_eq!(db.transactions(&TxFilter::default()).unwrap().len(), before);
+            let v = import(json!({"skip_rows": [format!("1={bar}")]})).unwrap();
             assert_eq!(
                 (&v["result"]["added"], &v["result"]["same"], &v["ledger_balance"]["agrees"]),
                 (&json!(1), &json!(1), &json!(true))
             );
             assert_eq!(import(json!({})).unwrap()["result"]["duplicates"], 2);
+            // Signs that contradict the types.
+            std::fs::write(
+                dir.join("sign.ofx"),
+                crate::ofx::tests::sgml().replace("-12,50", "12,50").replace("+1500", "-1500"),
+            )
+            .unwrap();
+            let sign = |extra: Value| {
+                let mut a = json!({"path": "sign.ofx", "account": "Other"});
+                a.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+                run("import_csv", a)
+            };
+            assert!(sign(json!({})).unwrap_err().to_string().contains("contradict"));
+            assert!(sign(json!({"dry_run": true})).unwrap()["refused"].as_str().unwrap().contains("contradict"));
+            assert_eq!(sign(json!({"invert": true, "dry_run": true})).unwrap()["preview"][0]["amount"], -12.5);
+            assert_eq!(sign(json!({"invert": false})).unwrap()["result"]["added"], 2);
             // Several statements: none is taken without a choice, nor in another currency or kind of account.
             let v = run("preview_csv", json!({"path": "two.ofx"})).unwrap();
             assert_eq!((&v["rows_found"], &v["ofx"]["chosen"]), (&json!(0), &Value::Null));
@@ -1490,7 +1606,7 @@ mod tests {
             }
             let v = two(json!({"path": "two.ofx", "account": "Dollars", "statement": "0000111122223333"})).unwrap();
             assert_eq!(v["result"]["added"], 1);
-            let v = two(json!({"path": "two.ofx", "account": "A", "statement": 1, "skip_rows": "all"})).unwrap();
+            let v = two(json!({"path": "two.ofx", "account": "A", "statement": 1})).unwrap();
             assert_eq!(v["result"]["added"], 1);
             crate::ledger::tests::assert_sound(&db, "ops");
             std::fs::remove_dir_all(&dir).unwrap();

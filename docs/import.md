@@ -7,11 +7,17 @@ CSV, Excel 97 (`.xls`), OFX, and the PDF statements of credit cards ([cards.md](
 
 The separator, encoding, headings, columns and decimal separator are found in the file and can be changed, with
 the order of the dates (automatic, or day, month and year as given) and the sign. After an import these settings
-are remembered in `csv_layouts` and used for the next file with the same separator and headings, whatever their
-case, accents and spaces. A file without headings is not remembered: two banks may have as many columns. An
-import that fails, or a trial, remembers nothing. "Forget them" in the window, `columns forget` and
-`forget_saved_columns` go back to what is found. The 200 layouts used last are kept. Remembered columns that cannot be
-read are an error, never replaced in silence.
+are remembered in `csv_layouts` for that account, and used for the next file with the same separator and headings
+(whatever their case and spaces) into it. Another account starts from what is found: the sign of a card is not
+that of a bank account. What is given for a file wins over what is remembered, and a remembered sign is said
+before anything is written. Nothing is remembered of a file without headings (two banks may have as many columns),
+of an import that fails, of a trial, or when no row was read or more lines look wrong than were read; `--no-saved`
+and `use_saved: false` neither use nor remember. "Forget them" in the window, `columns forget` and
+`forget_saved_columns` go back to what is found. The 200 layouts used last are kept. Remembered columns that cannot
+be read stop the import until they are forgotten.
+
+With other columns than those found, the decimal separator stays that of the columns found, as in 0.3.0; when the
+chosen ones seem to have the other one it is said.
 
 A quotation mark that opens a value and is never closed refuses the file, with its line: it would swallow the
 rest. So does a table with more than 1,000 columns or 2,000,000 cells. Rows that have something of a
@@ -27,8 +33,10 @@ UTF-8 that is not is read as Windows-1252, and one declared otherwise that is UT
 
 - What is wrong with a transaction or with the nesting refuses the whole file, with the line: a missing or
   invalid `DTPOSTED` or `TRNAMT`, a block that does not end, a file that is cut.
-- `TRNAMT` is exact: a sign, digits, one point or comma. More than two decimals, unless zero, are refused. The
-  sign is that of the file.
+- `TRNAMT` is exact: a sign, digits, one point or comma. More than two decimals are refused unless they are
+  zeros; three digits after the separator always are: `1.500` may be a thousand and a half.
+- The sign is that of the file, and can be inverted. When most types (`DEBIT`, `CREDIT`, `CHECK`, `DEP`…; not those
+  that go either way) say the opposite, the import is refused until the user says which sign is right.
 - The date is the day written in `DTPOSTED`; its time zone is checked and does not move it.
 - The payee is `NAME`, else `PAYEE/NAME`, `EXTDNAME`, or what is found in `MEMO`; `MEMO` goes into the notes.
 - `CURDEF` must be the currency of the account; a transaction in another one (`CURRENCY`) is refused.
@@ -44,26 +52,38 @@ Each row has a key, unique in its account:
 
 | Row | Key |
 |---|---|
-| OFX with `FITID` | FITID, date, amount, order |
-| OFX without | date, amount, payee, order |
+| OFX with a FITID that is believed | FITID, date, amount, order |
+| Other OFX | date, amount, payee, order |
 | CSV, Excel | date, amount, payee, notes, order |
 | Card statement in PDF | see [cards.md](cards.md) |
 
-A row whose key is known is skipped. Date and amount are part of it because some banks use a FITID more than
-once. These rows may be there already, and the import is refused until the user says of each whether it is
-the same:
+A row whose key is known is skipped. Date and amount are in it because some banks use a FITID more than once. One
+is not believed when the file or the books have it on several dates or amounts; none is when the bank numbers
+each file again: FITIDs in order of which one is on something else in the books, or at least two and half of those
+that are there.
 
-- an OFX row with the amount of an imported transaction at most one day apart, or a row of another file with
-  that of a transaction that came from OFX alone;
-- a FITID that the account has with another date or amount (unless it is used for several in the file or in
-  the account: then it tells nothing);
+These rows may be there already. The import is refused until the user says of each what it is:
+
+- a row with the amount of a transaction that came from a file of another format, at most 5 days apart: the day
+  of the purchase and that of the bank can be a weekend with a holiday apart. Only a question is asked. Between two
+  OFX files it is one day, for they tell transactions apart by FITID and a daily coffee would be asked every time;
+  two files of any other one format are compared by key alone;
+- a FITID that is believed and that the account has with another date or amount;
 - a row that the file has twice, FITID and all;
-- a correction (`CORRECTFITID`). It is never applied: whoever adds it changes the old transaction by hand.
+- one that replaces another (`CORRECTFITID`): it can be added, and the user deletes the old one, or skipped.
 
-A transaction can be the same as one row only; saying more is refused. What is skipped gives its key to the
-transaction (`postings.other_hashes`), so that either file can be imported again without questions. Rows are
-numbered by date, as in the preview. Two CSV files are compared by key alone. Transactions typed by hand are
-not compared.
+For each row the transactions it may be are shown, the likeliest first: what is exactly the same, the same date, the
+payee, the distance. One is proposed, and the user can choose another. Rows and transactions are paired in this
+order: same date and payee; same date and a payee alike (one contains the other, or a word of four letters in
+common); same date; then other dates, the same payee first, then alike, then any, the nearest first. What comes
+later never takes what comes before. A transaction is one row only. "Surely the same" is the
+same date, amount and payee with no other row or transaction like it: only those can be skipped together
+(`same`); the others one by one. What is skipped gives its key to the transaction (`ledger_postings.other_hashes`),
+so that either file can be imported again without questions. Rows are numbered by date, as in the preview.
+Transactions typed by hand are not compared.
+
+What the bank deletes (`CORRECTACTION` `DELETE`) is never added. If the transaction is there it is said, until an
+import is made, and the user deletes it.
 
 After that, sides of transfers are taken as for every import ([ledger.md](ledger.md)).
 

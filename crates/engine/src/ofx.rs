@@ -38,8 +38,16 @@ pub struct OfxRow {
     pub name: String,
     pub memo: String,
     pub fitid: Option<String>,
-    /// The FITID of the transaction that this one corrects or deletes.
-    pub corrects: Option<String>,
+    pub corrects: Option<Correction>,
+    /// What its type says of the sign, when it says something: whether money goes out.
+    pub goes_out: Option<bool>,
+}
+
+/// The FITID of the transaction that this one replaces, or deletes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Correction {
+    pub fitid: String,
+    pub delete: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,6 +69,13 @@ impl OfxStatement {
             return self.account.clone();
         }
         format!("…{}", self.account.chars().skip(n - 4).collect::<String>())
+    }
+
+    /// Whether most of the types say the opposite of the signs: the bank may write expenses as positive.
+    pub fn signs_contradict(&self) -> bool {
+        let said = self.rows.iter().filter(|r| r.amount != 0).filter_map(|r| Some(r.goes_out? == (r.amount < 0)));
+        let (agree, not): (Vec<bool>, Vec<bool>) = said.partition(|agrees| *agrees);
+        not.len() > agree.len()
     }
 
     pub fn first_date(&self) -> Option<NaiveDate> {
@@ -121,7 +136,7 @@ impl Ofx {
             let balance = s.balance.map(|(c, d)| serde_json::json!({"stated": fmt_machine(c), "date": d}));
             serde_json::json!({"n": i + 1, "kind": s.kind, "account": s.account_label(), "currency": s.currency,
                 "transactions": s.rows.len(), "first_date": s.first_date(), "last_date": s.last_date(),
-                "ledger_balance": balance})
+                "ledger_balance": balance, "signs_contradict_types": s.signs_contradict()})
         };
         let all: Vec<_> = self.statements.iter().enumerate().map(one).collect();
         serde_json::json!({"statements": all, "chosen": self.chosen.map(|i| i + 1)})
@@ -143,11 +158,14 @@ fn head(bytes: &[u8]) -> (String, bool) {
 
 pub fn is_ofx(bytes: &[u8]) -> bool {
     let (head, _) = head(bytes);
-    if starts_with(&head, "OFXHEADER") || starts_with(&head, "<OFX>") || starts_with(&head, "<?OFX") {
-        return true;
-    }
     let upper = head.to_ascii_uppercase();
-    upper.starts_with("<?XML") && (upper.contains("<?OFX") || upper.contains("<OFX>"))
+    let root =
+        |t: &str| t.strip_prefix("<OFX").is_some_and(|r| r.starts_with('>') || r.starts_with(char::is_whitespace));
+    let anywhere = || upper.match_indices("<OFX").any(|(i, _)| upper.get(i..).is_some_and(root));
+    starts_with(&upper, "OFXHEADER")
+        || root(&upper)
+        || starts_with(&upper, "<?OFX")
+        || (upper.starts_with("<?XML") && (upper.contains("<?OFX") || anywhere()))
 }
 
 /// What follows `key` and the sign in the declarations: `CHARSET:1252`, `encoding="UTF-8"`.
@@ -280,13 +298,34 @@ impl<'a> Tokens<'a> {
     }
 }
 
+/// Whether a tag starts here. A "<" in a text is told from one: a name that is not of OFX, followed by
+/// something other than its end or an attribute, is text.
 fn is_tag(s: &str) -> bool {
-    let mut c = s.chars();
-    c.next() == Some('<')
-        && match c.next() {
-            Some('/') => c.next().is_some_and(|c| c.is_ascii_alphabetic()),
-            c => c.is_some_and(|c| c.is_ascii_alphabetic()),
-        }
+    let Some(body) = s.strip_prefix('<') else { return false };
+    let body = body.strip_prefix('/').unwrap_or(body);
+    if !body.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    let end =
+        body.find(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_' | '-' | ':')).unwrap_or(body.len());
+    let (name, rest) = body.split_at_checked(end).unwrap_or((body, ""));
+    if rest.starts_with('>') || rest.starts_with("/>") {
+        return true;
+    }
+    if name.len() <= 20 && is_name(&name.to_ascii_uppercase()) {
+        return true;
+    }
+    if !rest.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let rest = rest.trim_start();
+    let end =
+        rest.find(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_' | '-' | ':')).unwrap_or(rest.len());
+    rest.starts_with('>') || rest.starts_with("/>") || (end > 0 && rest.get(end..).is_some_and(|r| r.starts_with('=')))
+}
+
+fn is_name(name: &str) -> bool {
+    BLOCKS.contains(&name) || OF_TRANSACTION.iter().chain(&OF_STATEMENT).any(|(_, n, _)| *n == name)
 }
 
 /// Line ends, however they are written.
@@ -361,6 +400,13 @@ pub(crate) fn amount(s: &str) -> Result<Cents> {
         None => (false, s.strip_prefix('+').unwrap_or(s)),
     };
     let (units, decimals) = digits.split_once(['.', ',']).unwrap_or((digits, ""));
+    if decimals.contains(['.', ',']) {
+        return Err(wrong());
+    }
+    // A thousand or a thousandth? Banks write both.
+    if decimals.len() == 3 && decimals.ends_with('0') && decimals.bytes().all(|b| b.is_ascii_digit()) {
+        bail!(trf("\"{amount}\" may be read in two ways: three digits after the separator", &[("amount", &quoted(s))]));
+    }
     if units.len() + decimals.len() == 0 || !units.bytes().chain(decimals.bytes()).all(|b| b.is_ascii_digit()) {
         return Err(wrong());
     }
@@ -386,13 +432,18 @@ pub(crate) fn date(s: &str) -> Option<NaiveDate> {
         None => (s, None),
     };
     if let Some(z) = zone {
+        // "+1:CET", "-0500:EST", "-03.30", "GMT", "GMT+1".
         let offset = z.split(':').next().unwrap_or_default().trim();
-        let number = offset.strip_prefix(['+', '-']).unwrap_or(offset);
-        let (h, m) = number.split_once('.').unwrap_or((number, "0"));
+        let named = offset.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+        let number = named.strip_prefix(['+', '-']).unwrap_or(named);
+        let (h, m) = match number.split_once('.') {
+            Some(parts) => parts,
+            None if number.len() == 4 && number.is_ascii() => number.split_at(2),
+            None => (number, "0"),
+        };
         let digits = |t: &str| (1..=2).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_digit());
-        // A zone can also be given by its name alone.
-        let named = !offset.is_empty() && offset.bytes().all(|b| b.is_ascii_alphabetic());
-        if !named && !(digits(h) && digits(m) && h.parse::<u8>().is_ok_and(|h| h <= 14)) {
+        let in_day = digits(h) && digits(m) && h.parse::<u8>().is_ok_and(|h| h <= 14);
+        if offset.is_empty() || !(in_day || named.is_empty()) {
             return None;
         }
     }
@@ -438,9 +489,33 @@ const BLOCKS: [&str; 18] = [
     "IMAGEDATA",
 ];
 
+/// What is kept of a transaction and of a statement: the block it is in ("": the one itself), the element, and
+/// the name it is kept by.
+const OF_TRANSACTION: [(&str, &str, &str); 11] = [
+    ("", "TRNTYPE", "TRNTYPE"),
+    ("", "DTPOSTED", "DTPOSTED"),
+    ("", "TRNAMT", "TRNAMT"),
+    ("", "FITID", "FITID"),
+    ("", "CORRECTFITID", "CORRECTFITID"),
+    ("", "CORRECTACTION", "CORRECTACTION"),
+    ("", "NAME", "NAME"),
+    ("PAYEE", "NAME", "PAYEE.NAME"),
+    ("", "EXTDNAME", "EXTDNAME"),
+    ("", "MEMO", "MEMO"),
+    ("CURRENCY", "CURSYM", "CURRENCY.CURSYM"),
+];
+const OF_STATEMENT: [(&str, &str, &str); 6] = [
+    ("", "CURDEF", "CURDEF"),
+    ("BANKACCTFROM", "ACCTID", "BANKACCTFROM.ACCTID"),
+    ("BANKACCTFROM", "ACCTTYPE", "BANKACCTFROM.ACCTTYPE"),
+    ("CCACCTFROM", "ACCTID", "CCACCTFROM.ACCTID"),
+    ("LEDGERBAL", "BALAMT", "LEDGERBAL.BALAMT"),
+    ("LEDGERBAL", "DTASOF", "LEDGERBAL.DTASOF"),
+];
+
 /// A transaction or a statement while it is read: the value of each element, with its line.
 #[derive(Default)]
-struct Fields(HashMap<String, (usize, String)>);
+struct Fields(HashMap<&'static str, (usize, String)>);
 
 impl Fields {
     fn get(&self, key: &str) -> Option<(usize, &str)> {
@@ -452,7 +527,7 @@ impl Fields {
     }
 
     /// The value of an element, or of the rest of one that is in pieces.
-    fn put(&mut self, key: &str, line: usize, value: &str, again: bool) -> Result<()> {
+    fn put(&mut self, key: &'static str, line: usize, value: &str, again: bool) -> Result<()> {
         const MANY: [&str; 4] = ["MEMO", "NAME", "EXTDNAME", "PAYEE.NAME"];
         match self.0.get_mut(key) {
             Some((_, old)) if again || MANY.contains(&key) => {
@@ -463,7 +538,7 @@ impl Fields {
             }
             Some(_) => return Err(at_line(line, trf("{tag} is there twice", &[("tag", &key)]))),
             None => {
-                self.0.insert(key.to_string(), (line, value.to_string()));
+                self.0.insert(key, (line, value.to_string()));
             }
         }
         Ok(())
@@ -495,7 +570,16 @@ fn row(f: &Fields, line: usize, currency: &str) -> Result<OfxRow> {
         name: first.unwrap_or_default(),
         memo: tidy(&f.text("MEMO")),
         fitid: f.get("FITID").map(|(_, v)| v.to_string()),
-        corrects: f.get("CORRECTFITID").map(|(_, v)| v.to_string()),
+        corrects: f.get("CORRECTFITID").map(|(_, v)| Correction {
+            fitid: v.to_string(),
+            delete: f.text("CORRECTACTION").eq_ignore_ascii_case("DELETE"),
+        }),
+        // The other types say nothing of the sign.
+        goes_out: match f.text("TRNTYPE").to_ascii_uppercase().as_str() {
+            "DEBIT" | "FEE" | "SRVCHG" | "CHECK" | "CASH" | "DIRECTDEBIT" | "REPEATPMT" => Some(true),
+            "CREDIT" | "DEP" | "DIRECTDEP" => Some(false),
+            _ => None,
+        },
     })
 }
 
@@ -514,8 +598,7 @@ fn statement(o: Open) -> Result<OfxStatement> {
     if currency.len() != 3 || !currency.bytes().all(|b| b.is_ascii_alphabetic()) {
         return Err(at_line(l, trf("\"{currency}\" is not a currency code", &[("currency", &quoted(&currency))])));
     }
-    let from = if o.card { "CCACCTFROM" } else { "BANKACCTFROM" };
-    let (_, account) = required(&o.fields, &format!("{from}.ACCTID"), o.line)?;
+    let (_, account) = required(&o.fields, if o.card { "CCACCTFROM.ACCTID" } else { "BANKACCTFROM.ACCTID" }, o.line)?;
     let savings = o
         .fields
         .get("BANKACCTFROM.ACCTTYPE")
@@ -544,8 +627,8 @@ fn parse(text: &str) -> Result<Ofx> {
     let mut now: Option<Open> = None;
     let mut transactions = 0;
     let mut ended = false;
-    // The element that a text is the value of; whether some of it was read.
-    let mut leaf: Option<(String, bool)> = None;
+    // The element that a text is the value of, if it is kept; whether some of it was read.
+    let mut leaf: Option<(Option<&'static str>, bool)> = None;
     loop {
         let (line, token) = t.next()?;
         match token {
@@ -553,50 +636,18 @@ fn parse(text: &str) -> Result<Ofx> {
             Token::Empty => leaf = None,
             Token::Text(s, raw) => {
                 let value = if raw { s.to_string() } else { unescape(s) };
-                let Some((name, again)) = &mut leaf else { continue };
+                let Some((Some(key), again)) = &mut leaf else { continue };
                 if !*again && value.trim().is_empty() {
                     continue;
                 }
                 let value = if *again { value.trim_end() } else { value.trim() };
-                let block = open.iter().rev().find(|(_, n)| BLOCKS.contains(&n.as_str())).map(|(_, n)| n.as_str());
                 if let Some(now) = &mut now {
                     let in_transaction = open.iter().any(|(_, n)| n == "STMTTRN");
                     let fields = match now.rows.last_mut() {
                         Some((_, f)) if in_transaction => f,
                         _ => &mut now.fields,
                     };
-                    let key = match block {
-                        Some("STMTTRN" | "STMTRS" | "CCSTMTRS") | None => name.clone(),
-                        Some(b) => format!("{b}.{name}"),
-                    };
-                    // Only what is asked for is kept, and checked for being there twice.
-                    let kept = if in_transaction {
-                        [
-                            "DTPOSTED",
-                            "TRNAMT",
-                            "FITID",
-                            "CORRECTFITID",
-                            "NAME",
-                            "PAYEE.NAME",
-                            "EXTDNAME",
-                            "MEMO",
-                            "CURRENCY.CURSYM",
-                        ]
-                        .contains(&key.as_str())
-                    } else {
-                        [
-                            "CURDEF",
-                            "BANKACCTFROM.ACCTID",
-                            "BANKACCTFROM.ACCTTYPE",
-                            "CCACCTFROM.ACCTID",
-                            "LEDGERBAL.BALAMT",
-                            "LEDGERBAL.DTASOF",
-                        ]
-                        .contains(&key.as_str())
-                    };
-                    if kept {
-                        fields.put(&key, line, value, *again)?;
-                    }
+                    fields.put(key, line, value, *again)?;
                 }
                 *again = true;
             }
@@ -648,7 +699,14 @@ fn parse(text: &str) -> Result<Ofx> {
                     }
                     open.push((line, name));
                 } else {
-                    leaf = Some((name, false));
+                    let block = match parent {
+                        Some("STMTTRN" | "STMTRS" | "CCSTMTRS") | None => "",
+                        Some(b) => b,
+                    };
+                    let in_transaction = open.iter().any(|(_, n)| n == "STMTTRN");
+                    let all = if in_transaction { OF_TRANSACTION.as_slice() } else { &OF_STATEMENT };
+                    let kept = all.iter().find(|(b, n, _)| *b == block && *n == name).map(|(_, _, k)| *k);
+                    leaf = Some((kept, false));
                 }
             }
             Token::Close(name) => {

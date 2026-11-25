@@ -61,10 +61,11 @@ pub enum Cmd {
         /// Import the statement of a card into an account that is not a credit card
         #[arg(long)]
         any_account: bool,
-        /// Rows that are in the books already, among those that may be: "all" or numbers ("2,5")
+        /// Rows that are in the books already, among those that may be: numbers, with =id for another transaction
+        /// than the proposed one ("2,5=31"), and "same" for those that are surely the same
         #[arg(long)]
         skip_rows: Option<String>,
-        /// Rows that are other transactions, among those that may be there: "all" or numbers
+        /// Rows that are other transactions, among those that may be there: numbers, or "all" that are left
         #[arg(long)]
         add_rows: Option<String>,
         #[command(flatten)]
@@ -140,7 +141,7 @@ pub struct ColumnArgs {
     /// Order of the dates: dmy, mdy, ymd or auto
     #[arg(long)]
     dates: Option<String>,
-    /// Start from the detected columns, not from those remembered for this layout
+    /// Start from the detected columns, and remember nothing
     #[arg(long)]
     no_saved: bool,
     /// Date column (name, or number from 1)
@@ -745,6 +746,13 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
             ("export_csv", args(&[("path", v(file)), ("account", o(&account)), ("from", o(&from)), ("to", o(&to))]))
         }
     };
+    // A remembered sign is told before anything is written.
+    if tool == "import_csv" && !as_json && a.get("dry_run") == Some(&json!(false)) {
+        let seen = ops::call(db, "preview_csv", &a, None)?;
+        for n in field(&seen, "notices").as_array().into_iter().flatten() {
+            println!("! {}", st(n));
+        }
+    }
     let r = ops::call(db, tool, &a, None)?;
     if as_json {
         println!("{}", serde_json::to_string_pretty(&r)?);
@@ -868,30 +876,45 @@ fn print_ofx(ofx: &Value, balance: &Value) {
 /// Rows that may be in the books already.
 fn print_likely(rows: &[Value]) {
     for l in rows {
-        let reason = match st(field(l, "reason")).as_str() {
-            "same_amount" => Reason::SameAmount,
-            "same_id" => Reason::SameId,
-            "repeated" => Reason::Repeated,
-            _ => Reason::Corrects,
-        };
+        let reason = Reason::from_code(&st(field(l, "reason"))).map_or("", Reason::label);
+        let reason = if field(l, "certain") == &json!(true) { tr("the same date, amount and payee") } else { reason };
         let line = format!(
             "{}  {}  {}  {} ({})",
             st(field(l, "row")),
             date(field(l, "date")),
             st(field(l, "payee")),
             eur(field(l, "amount")),
-            reason.label()
+            reason
         );
         println!("{}", trf("It may be there already (--skip-rows or --add-rows): {line}", &[("line", &line)]));
         for t in field(l, "existing").as_array().into_iter().flatten() {
+            let mark = if field(t, "id") == field(l, "proposed") { "→" } else { " " };
             println!(
-                "  {:>5}  {}  {:<40} {:>13}",
+                " {mark}{:>5}  {}  {:<40} {:>13}",
                 st(field(t, "id")),
                 date(field(t, "date")),
                 cut(&st(field(t, "payee")), 40),
                 eur(field(t, "amount"))
             );
         }
+    }
+}
+
+/// What the bank takes back.
+fn print_deletions(list: &Value) {
+    for d in list.as_array().into_iter().flatten() {
+        let t = field(d, "existing");
+        let line = format!(
+            "{} {} {} {}",
+            st(field(t, "id")),
+            date(field(t, "date")),
+            st(field(t, "payee")),
+            eur(field(t, "amount"))
+        );
+        println!(
+            "! {}",
+            trf("the bank deletes a transaction, do it by hand if it is right: {line}", &[("line", &line)])
+        );
     }
 }
 
@@ -1166,11 +1189,28 @@ fn print_human(tool: &str, r: &Value) {
         "list_saved_columns" => {
             for l in arr("saved_columns") {
                 println!(
-                    "{:>4}  {}  ({})",
+                    "{:>4}  {}  {}",
                     st(field(&l, "id")),
-                    cut(&st(field(&l, "layout")), 80),
-                    st(field(&l, "description"))
+                    st(field(&l, "account")),
+                    cut(&st(field(&l, "layout")), 70)
                 );
+                if field(&l, "readable") == &json!(false) {
+                    println!("      {}", tr("it cannot be read: forget it"));
+                    continue;
+                }
+                let columns = field(&l, "columns").as_object().into_iter().flatten();
+                let columns: Vec<String> = columns.map(|(k, c)| format!("{k}={}", st(c))).collect();
+                let sign = if field(&l, "invert") == &json!(true) { tr("inverted") } else { tr("as in the file") };
+                let text = trf(
+                    "{columns}; sign {sign}, dates {dates}, decimals {decimals}",
+                    &[
+                        ("columns", &columns.join(", ")),
+                        ("sign", &sign),
+                        ("dates", &st(field(&l, "date_format"))),
+                        ("decimals", &st(field(&l, "decimal_separator"))),
+                    ],
+                );
+                println!("      {text}");
             }
         }
         "propose_card_payments" => print_payments(&arr("card_payments")),
@@ -1217,7 +1257,13 @@ fn print_human(tool: &str, r: &Value) {
                 let (line, error) = (st(field(&p, "line")), st(field(&p, "error")));
                 println!("  ! {}", trf("line {line}: {error}", &[("line", &line), ("error", &error)]));
             }
+            // Those of an import were told before it.
+            for n in arr("notices").iter().filter(|_| r.get("message").is_none()) {
+                println!("! {}", st(n));
+            }
             print_likely(&arr("likely_duplicates"));
+            print_deletions(field(r, "deletions"));
+            print_deletions(field(field(r, "result"), "deletions"));
             if let Some(msg) = r.get("message") {
                 println!("{}", st(msg));
                 print_payments(&arr("card_payments"));
@@ -1236,9 +1282,14 @@ fn print_human(tool: &str, r: &Value) {
                         ]
                     )
                 );
-                for p in arr("preview") {
+                if !field(r, "refused").is_null() {
+                    let error = st(field(r, "refused"));
+                    println!("! {}", trf("The import would be refused: {error}", &[("error", &error)]));
+                }
+                for (i, p) in arr("preview").into_iter().enumerate() {
                     println!(
-                        "  {}  {:<40} {:>12}",
+                        "{:>4}  {}  {:<40} {:>12}",
+                        i + 1,
                         date(field(&p, "date")),
                         cut(&st(field(&p, "payee")), 40),
                         eur(field(&p, "amount"))

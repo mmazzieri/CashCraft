@@ -8,13 +8,15 @@ use crate::gui::{
 use anyhow::Result;
 use cashcraft_engine::cards::{CardStatement, PaymentProposal};
 use cashcraft_engine::db::{Account, AccountKind, NewScheduled, NewTx, Transaction, TxEdit};
-use cashcraft_engine::duplicates::Decision;
+use cashcraft_engine::duplicates::{Choice, Decision, LikelyDuplicate};
 use cashcraft_engine::i18n::{tr, trf, trn};
 use cashcraft_engine::importer::{self, ImportResult, Statement};
+use cashcraft_engine::layouts;
 use cashcraft_engine::money::{DateOrder, fmt_date, fmt_eur, fmt_plain, parse_amount, parse_date, total};
 use cashcraft_engine::ofx::Kind;
 use cashcraft_engine::transfers::OtherSide;
 use egui::{self, Color32, CornerRadius, Frame, Id, Margin, RichText, Ui};
+use std::collections::BTreeMap;
 
 impl App {
     pub fn dialogs(&mut self, ctx: &egui::Context) {
@@ -626,6 +628,7 @@ impl App {
                     category_id: f.category,
                     cleared: f.cleared,
                     import_hash: None,
+                    import_marks: None,
                     card_row: false,
                 })?;
                 Ok(tr("Transaction recorded").into())
@@ -673,7 +676,6 @@ impl App {
             }
         });
         if st.poll() {
-            self.saved_columns(st);
             self.card_account(st);
         }
         if st.loading.is_some() {
@@ -735,6 +737,9 @@ impl App {
         if st.table.is_none() && st.loading.is_none() {
             self.card_payments(ui, &mut st.cards);
         }
+        if let Err(e) = st.load_saved(&self.db) {
+            st.error = format!("{e:#}");
+        }
         let statement = st.table.as_ref().and_then(|t| t.statement.clone());
         if let Some(s) = &statement {
             statement_summary(ui, s, &mut st.allow_mismatch);
@@ -785,7 +790,9 @@ impl App {
                 ui.label(tr("Details"));
                 changed |= column_combo(ui, "m_extra", &headers, &mut st.mapping.extra);
                 ui.label("");
-                changed |= ui.checkbox(&mut st.invert, tr("Invert the sign (credit cards)")).changed();
+                let sign = ui.checkbox(&mut st.invert, tr("Invert the sign (credit cards)")).changed();
+                st.sign_by_hand |= sign;
+                changed |= sign;
                 ui.end_row();
                 ui.label(tr("Dates"));
                 egui::ComboBox::from_id_salt("m_dates").selected_text(st.dates.label()).width(190.0).show_ui(
@@ -811,7 +818,10 @@ impl App {
                 ui.end_row();
             });
             let detected = importer::Settings::detected(t);
-            if let Some(id) = st.saved {
+            if st.broken.is_some() {
+                ui.label(RichText::new(tr("The columns remembered for this layout cannot be read")).color(RED));
+            }
+            if let Some(id) = st.saved.or(st.broken) {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(tr("Columns remembered from the last import of this layout"))
@@ -822,6 +832,7 @@ impl App {
                         match self.db.forget_layout(id) {
                             Ok(()) => {
                                 st.use_settings(detected, None);
+                                st.loaded_for = None;
                                 changed = true;
                             }
                             Err(e) => st.error = format!("{e:#}"),
@@ -850,6 +861,7 @@ impl App {
             }
             ui.label(RichText::new(summary).strong());
             problems(ui, st);
+            notices(ui, st, accounts);
             Frame::new().fill(ZEBRA).corner_radius(CornerRadius::same(6)).inner_margin(Margin::same(8)).show(
                 ui,
                 |ui| {
@@ -858,10 +870,11 @@ impl App {
                         .max_height(200.0)
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
-                            egui::Grid::new("preview").striped(true).num_columns(4).spacing([14.0, 4.0]).show(
+                            egui::Grid::new("preview").striped(true).num_columns(5).spacing([14.0, 4.0]).show(
                                 ui,
                                 |ui| {
-                                    for r in st.rows.iter().rev().take(50) {
+                                    for (i, r) in st.rows.iter().enumerate().rev().take(50) {
+                                        ui.label(RichText::new((i + 1).to_string()).color(MUTED).size(12.0));
                                         ui.label(RichText::new(fmt_date(r.date)).color(MUTED));
                                         ui.label(cut(&r.payee, 38));
                                         ui.label(RichText::new(cut(&r.memo, 40)).color(MUTED).size(12.0));
@@ -925,8 +938,9 @@ impl App {
                     let settings = st.settings();
                     let choices = importer::Choices {
                         allow_mismatch: st.allow_mismatch,
-                        likely: Decision::Each(st.decided.clone()),
-                        settings: Some(&settings),
+                        likely: Decision { each: st.decided.clone(), ..Default::default() },
+                        settings: st.convincing.then_some(&settings),
+                        sign_confirmed: st.sign_by_hand,
                     };
                     let res = importer::import_with(&self.db, acc, table, &st.rows, st.skipped, &choices)?;
                     Ok((acc, res))
@@ -1124,6 +1138,27 @@ fn ofx_statements(ui: &mut Ui, st: &mut ImportState) {
         }
     });
     if o.chosen != before {
+        st.sign_by_hand = false;
+        st.invert = false;
+        st.reparse();
+    }
+    if !st.signs_contradict() {
+        if ui.checkbox(&mut st.invert, tr("Invert the sign (credit cards)")).changed() {
+            st.sign_by_hand = true;
+            st.reparse();
+        }
+        return;
+    }
+    let text = tr("The signs of the amounts contradict the types of the transactions: which are right?");
+    ui.label(RichText::new(text).color(RED));
+    let mut sign = st.sign_by_hand.then_some(st.invert);
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut sign, Some(false), tr("as in the file"));
+        ui.radio_value(&mut sign, Some(true), tr("inverted"));
+    });
+    if sign != st.sign_by_hand.then_some(st.invert) {
+        st.sign_by_hand = true;
+        st.invert = sign == Some(true);
         st.reparse();
     }
 }
@@ -1176,7 +1211,24 @@ fn problems(ui: &mut Ui, st: &ImportState) {
     });
 }
 
-/// The rows that may be in the books already: the user says what each is.
+/// What the file is read with and may not be expected, and what the bank takes back.
+fn notices(ui: &mut Ui, st: &ImportState, accounts: &[Account]) {
+    let Some(t) = &st.table else { return };
+    let account = accounts.iter().find(|a| Some(a.id) == st.target());
+    let remembered = account.filter(|_| st.saved.is_some() && !st.sign_by_hand).map(|a| a.name.as_str());
+    for n in layouts::notices(t, &st.settings(), remembered) {
+        ui.label(RichText::new(format!("⚠ {n}")).color(AMBER));
+    }
+    for d in &st.deletions {
+        let e = &d.existing;
+        let line = format!("{} · {} · {}", fmt_date(e.date), cut(&e.payee, 40), fmt_plain(e.amount));
+        let text = trf("the bank deletes a transaction, do it by hand if it is right: {line}", &[("line", &line)]);
+        ui.label(RichText::new(format!("⚠ {text}")).color(AMBER));
+    }
+}
+
+/// The rows that may be in the books already: the user says what each is. Only those that are surely the same
+/// can be skipped together.
 fn likely_duplicates(ui: &mut Ui, st: &mut ImportState) {
     if st.likely.is_empty() {
         return;
@@ -1184,35 +1236,59 @@ fn likely_duplicates(ui: &mut Ui, st: &mut ImportState) {
     ui.add_space(8.0);
     card(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(tr("Are these there already? Say it for each one")).strong());
-            for (text, skip) in [(tr("All the same: skip"), true), (tr("All others: import"), false)] {
-                if ui.button(text).clicked() {
-                    st.decided = st.likely.iter().map(|l| (l.index, skip)).collect();
+        let left = st.likely.iter().filter(|l| !st.decided.contains_key(&l.index)).count();
+        ui.label(RichText::new(tr("Are these there already? Say it for each one")).strong());
+        ui.label(RichText::new(trn(left, "{n} is left", "{n} are left")).color(MUTED).size(12.0));
+        egui::ScrollArea::vertical().id_salt("likely").max_height(220.0).show(ui, |ui| {
+            for certain in [true, false] {
+                let group: Vec<&LikelyDuplicate> = st.likely.iter().filter(|l| l.certain == certain).collect();
+                if group.is_empty() {
+                    continue;
                 }
-            }
-        });
-        egui::ScrollArea::vertical().id_salt("likely").max_height(150.0).show(ui, |ui| {
-            for l in &st.likely {
-                let mut said = st.decided.get(&l.index).copied();
                 ui.horizontal(|ui| {
-                    ui.label(format!("{} · {}", fmt_date(l.date), cut(&l.payee, 34)));
-                    ui.label(money(l.amount));
-                    ui.radio_value(&mut said, Some(true), tr("the same: skip"));
-                    ui.radio_value(&mut said, Some(false), tr("another: import"));
-                });
-                if let Some(s) = said {
-                    st.decided.insert(l.index, s);
-                }
-                ui.indent(("likely", l.index), |ui| {
-                    ui.label(RichText::new(l.reason.label()).color(MUTED).size(12.0));
-                    for t in &l.existing {
-                        ui.label(format!("{} · {} · {}", fmt_date(t.date), cut(&t.payee, 44), fmt_plain(t.amount)));
+                    let (title, button, choice): (_, _, fn(&LikelyDuplicate) -> Choice) = if certain {
+                        (tr("The same date, amount and payee"), tr("All the same: skip"), |l| Choice::Skip(l.proposed))
+                    } else {
+                        (tr("To look at one by one"), tr("All others: import"), |_| Choice::Add)
+                    };
+                    ui.label(RichText::new(title).strong());
+                    if ui.button(button).clicked() {
+                        st.decided.extend(group.iter().map(|l| (l.index, choice(l))));
                     }
                 });
+                for l in group {
+                    likely_row(ui, l, &mut st.decided);
+                }
             }
         });
     });
+}
+
+fn likely_row(ui: &mut Ui, l: &LikelyDuplicate, decided: &mut BTreeMap<usize, Choice>) {
+    let mut said = decided.get(&l.index).copied();
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("{}.", l.index + 1)).color(MUTED));
+        ui.label(format!("{} · {}", fmt_date(l.date), cut(&l.payee, 34)));
+        ui.label(money(l.amount));
+        ui.radio_value(&mut said, Some(Choice::Add), tr("another: import"));
+        if l.existing.is_empty() {
+            ui.radio_value(&mut said, Some(Choice::Skip(None)), tr("the same: skip"));
+        }
+    });
+    ui.indent(("likely", l.index), |ui| {
+        if !l.certain {
+            ui.label(RichText::new(l.reason.label()).color(MUTED).size(12.0));
+        }
+        for t in &l.existing {
+            let line = format!("{} · {} · {}", fmt_date(t.date), cut(&t.payee, 44), fmt_plain(t.amount));
+            let text = trf("skip, it is this: {line}", &[("line", &line)]);
+            let text = if l.proposed == Some(t.id) { RichText::new(text).strong() } else { RichText::new(text) };
+            ui.radio_value(&mut said, Some(Choice::Skip(Some(t.id))), text);
+        }
+    });
+    if let Some(s) = said {
+        decided.insert(l.index, s);
+    }
 }
 
 /// What a card statement says of itself, against what was read.

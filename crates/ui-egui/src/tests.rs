@@ -218,7 +218,7 @@ fn deleting_a_split_asks_first() {
         ctx.run_ui(Default::default(), |ui| app.ledger_view(ui)).textures_delta.clear();
     }
     assert_eq!(app.ledger.as_ref().unwrap().journal.as_ref().unwrap().0.len(), 2);
-    app.db.conn.execute_batch("ALTER TABLE postings RENAME TO gone").unwrap();
+    app.db.conn.execute_batch("ALTER TABLE ledger_postings RENAME TO gone").unwrap();
     app.ledger = None;
     ctx.run_ui(Default::default(), |ui| app.ledger_view(ui)).textures_delta.clear();
     let l = app.ledger.as_ref().unwrap();
@@ -464,13 +464,22 @@ fn likely_duplicates_wait_for_the_user() {
             draw(&mut app);
             let Some(Dialog::Import(st)) = &mut app.dialog else { panic!("no dialog") };
             assert_eq!((st.likely.len(), st.books, st.can_import()), (1, Some(-120), false));
-            st.decided.insert(0, true);
+            let proposed = st.likely[0].proposed;
+            st.decided.insert(0, cashcraft_engine::duplicates::Choice::Skip(proposed));
             assert!(st.can_import());
             // Another account is compared again.
             st.new_account = "New".into();
             draw(&mut app);
             let Some(Dialog::Import(st)) = &mut app.dialog else { panic!("no dialog") };
             assert!(st.likely.is_empty() && st.decided.is_empty() && st.books.is_none() && st.can_import());
+            // What was said is there again when the typing is undone, and for every letter of it.
+            st.new_account = "Ne".into();
+            draw(&mut app);
+            let Some(Dialog::Import(st)) = &mut app.dialog else { panic!("no dialog") };
+            st.new_account.clear();
+            draw(&mut app);
+            let Some(Dialog::Import(st)) = &mut app.dialog else { panic!("no dialog") };
+            assert!(st.decided.len() == 1 && st.likely.len() == 1 && st.can_import());
             st.table.as_mut().unwrap().ofx.as_mut().unwrap().chosen = Some(1);
             st.new_account.clear();
             st.reparse();
@@ -478,4 +487,77 @@ fn likely_duplicates_wait_for_the_user() {
         });
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The sign and the columns are those of the account; saved columns that cannot be read stop the import.
+#[test]
+fn saved_columns_are_of_the_account() {
+    use crate::gui::ImportState;
+    use cashcraft_engine::importer::{self, Settings, analyze};
+    let text = "Data;Descrizione;Importo\n05/01/2026;Bar;-1,20\n";
+    let db = Db::open_in_memory().unwrap();
+    let bank = db.add_account("Bank", AccountKind::Bank, "EUR", 0, "").unwrap();
+    let card = db.add_account("Card", AccountKind::CreditCard, "EUR", 0, "").unwrap();
+    let t = analyze(text, "UTF-8").unwrap();
+    let inverted = Settings { invert: true, ..Settings::detected(&t) };
+    let rows = importer::read_rows(&t, &inverted).rows;
+    let choices = importer::Choices { settings: Some(&inverted), ..Default::default() };
+    importer::import_with(&db, card, &t, &rows, 0, &choices).unwrap();
+    let mut app = App::new(db, None);
+    app.accounts = app.db.accounts(true).unwrap();
+    let ctx = egui::Context::default();
+    let draw = |app: &mut App| {
+        for _ in 0..2 {
+            ctx.run_ui(Default::default(), |ui| app.dialogs(&ui.ctx().clone())).textures_delta.clear();
+        }
+    };
+    let mut st = ImportState { account: Some(card), table: Some(t.clone()), ..Default::default() };
+    st.use_settings(Settings::detected(&t), None);
+    st.loaded = st.settings();
+    st.reparse();
+    app.dialog = Some(Dialog::Import(Box::new(st)));
+    let state = |app: &mut App, f: &mut dyn FnMut(&mut ImportState)| match &mut app.dialog {
+        Some(Dialog::Import(st)) => f(st),
+        _ => panic!("no dialog"),
+    };
+    draw(&mut app);
+    state(&mut app, &mut |st| assert!(st.invert && st.saved.is_some() && st.rows[0].amount == 120));
+    state(&mut app, &mut |st| st.account = Some(bank));
+    draw(&mut app);
+    state(&mut app, &mut |st| {
+        assert!(!st.invert && st.saved.is_none() && st.rows[0].amount == -120);
+        // Changed by hand, and only that stays.
+        st.account = Some(card);
+    });
+    draw(&mut app);
+    state(&mut app, &mut |st| {
+        st.mapping.extra = Some(1);
+        st.reparse();
+        st.account = Some(bank);
+    });
+    draw(&mut app);
+    state(&mut app, &mut |st| {
+        assert!(!st.invert && st.mapping.extra == Some(1), "the sign of the card is not that of the bank");
+        st.sign_by_hand = true;
+        st.invert = true;
+        st.account = Some(card);
+    });
+    draw(&mut app);
+    state(&mut app, &mut |st| {
+        assert!(st.invert);
+        st.account = Some(bank);
+    });
+    draw(&mut app);
+    state(&mut app, &mut |st| assert!(st.invert, "chosen by hand"));
+    app.db.conn.execute("UPDATE csv_layouts SET settings='{'", []).unwrap();
+    state(&mut app, &mut |st| {
+        st.loaded_for = None;
+        st.account = Some(card);
+    });
+    draw(&mut app);
+    state(&mut app, &mut |st| assert!(st.broken.is_some() && !st.can_import()));
+    app.db.forget_layout(app.db.layouts().unwrap()[0].id).unwrap();
+    state(&mut app, &mut |st| st.loaded_for = None);
+    draw(&mut app);
+    state(&mut app, &mut |st| assert!(st.broken.is_none() && st.can_import()));
 }

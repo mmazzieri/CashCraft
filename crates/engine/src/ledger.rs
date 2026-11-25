@@ -61,7 +61,7 @@ CREATE TABLE entries (
     opening_account_id INTEGER UNIQUE REFERENCES accounts(id)
 );
 CREATE INDEX entry_date ON entries(date);
-CREATE TABLE postings (
+CREATE TABLE ledger_postings (
     id INTEGER PRIMARY KEY,
     entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
     ledger_account_id INTEGER NOT NULL REFERENCES ledger_accounts(id),
@@ -75,18 +75,18 @@ CREATE TABLE postings (
     origin TEXT,
     other_hashes TEXT
 );
-CREATE INDEX posting_entry ON postings(entry_id);
-CREATE INDEX posting_account ON postings(ledger_account_id);
-CREATE UNIQUE INDEX posting_import_hash ON postings(ledger_account_id, import_hash) WHERE import_hash IS NOT NULL;
+CREATE INDEX posting_entry ON ledger_postings(entry_id);
+CREATE INDEX posting_account ON ledger_postings(ledger_account_id);
+CREATE UNIQUE INDEX posting_import_hash ON ledger_postings(ledger_account_id, import_hash) WHERE import_hash IS NOT NULL;
 CREATE TABLE ledger_turnover (id INTEGER PRIMARY KEY CHECK (id = 1), total INTEGER NOT NULL);
 INSERT INTO ledger_turnover VALUES (1, 0);
-CREATE TRIGGER posting_added AFTER INSERT ON postings BEGIN
+CREATE TRIGGER posting_added AFTER INSERT ON ledger_postings BEGIN
     UPDATE ledger_turnover SET total = total + abs(NEW.amount);
 END;
-CREATE TRIGGER posting_changed AFTER UPDATE OF amount ON postings BEGIN
+CREATE TRIGGER posting_changed AFTER UPDATE OF amount ON ledger_postings BEGIN
     UPDATE ledger_turnover SET total = total - abs(OLD.amount) + abs(NEW.amount);
 END;
-CREATE TRIGGER posting_removed AFTER DELETE ON postings BEGIN
+CREATE TRIGGER posting_removed AFTER DELETE ON ledger_postings BEGIN
     UPDATE ledger_turnover SET total = total - abs(OLD.amount);
 END;
 CREATE TRIGGER account_gets_ledger AFTER INSERT ON accounts BEGIN
@@ -113,7 +113,7 @@ pub(crate) const PROFIT_AND_LOSS: &str = "l.class IN ('income','expense')";
 /// The postings that count from ?1 to ?2, each with how many of them its entry has (`n`).
 pub(crate) const COUNTED: &str = "WITH counted AS (
     SELECT l.category_id, l.class, p.amount, COUNT(*) OVER (PARTITION BY p.entry_id) AS n
-    FROM postings p JOIN entries e ON e.id=p.entry_id JOIN ledger_accounts l ON l.id=p.ledger_account_id
+    FROM ledger_postings p JOIN entries e ON e.id=p.entry_id JOIN ledger_accounts l ON l.id=p.ledger_account_id
     WHERE l.class IN ('income','expense') AND e.date>=?1 AND e.date<=?2)";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -427,7 +427,7 @@ impl Db {
                     let kept: HashSet<i64> = d.lines.iter().filter_map(|l| l.id).collect();
                     for old in &current {
                         if !kept.contains(old) {
-                            self.conn.execute("DELETE FROM postings WHERE id=?1", [*old])?;
+                            self.conn.execute("DELETE FROM ledger_postings WHERE id=?1", [*old])?;
                         }
                     }
                     id
@@ -446,7 +446,7 @@ impl Db {
                         let n = self
                             .conn
                             .prepare_cached(
-                                "UPDATE postings SET ledger_account_id=?3, amount=?4, currency=?5, cleared=?6,
+                                "UPDATE ledger_postings SET ledger_account_id=?3, amount=?4, currency=?5, cleared=?6,
                                         import_hash=?7, payee=?8, memo=?9, date=?10,
                                         origin=?11, other_hashes=?12 WHERE id=?1 AND entry_id=?2",
                             )?
@@ -472,7 +472,7 @@ impl Db {
                     wanted => {
                         self.conn
                             .prepare_cached(
-                                "INSERT INTO postings(id,entry_id,ledger_account_id,amount,currency,cleared,
+                                "INSERT INTO ledger_postings(id,entry_id,ledger_account_id,amount,currency,cleared,
                                                       import_hash,payee,memo,date,origin,other_hashes)
                                  VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                             )?
@@ -536,7 +536,7 @@ impl Db {
             return Ok(());
         }
         let mut st = self.conn.prepare_cached(
-            "SELECT 1 FROM postings WHERE ledger_account_id=?1 GROUP BY currency HAVING SUM(amount) NOT BETWEEN -?2 AND ?2",
+            "SELECT 1 FROM ledger_postings WHERE ledger_account_id=?1 GROUP BY currency HAVING SUM(amount) NOT BETWEEN -?2 AND ?2",
         )?;
         for a in touched {
             if st.exists(params![a, MAX_BALANCE])? {
@@ -586,7 +586,7 @@ impl Db {
     }
 
     fn posting_ids(&self, entry: i64) -> Result<Vec<i64>> {
-        let mut st = self.conn.prepare_cached("SELECT id FROM postings WHERE entry_id=?1 ORDER BY id")?;
+        let mut st = self.conn.prepare_cached("SELECT id FROM ledger_postings WHERE entry_id=?1 ORDER BY id")?;
         Ok(st.query_map([entry], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?)
     }
 
@@ -625,7 +625,7 @@ impl Db {
         let mut st = self.conn.prepare_cached(
             "SELECT id, ledger_account_id, amount, currency, cleared, import_hash, payee, memo, date, origin,
                     other_hashes
-             FROM postings WHERE entry_id=?1 ORDER BY id",
+             FROM ledger_postings WHERE entry_id=?1 ORDER BY id",
         )?;
         let lines = st.query_map([id], |r| {
             Ok(Line {
@@ -653,7 +653,7 @@ impl Db {
         Ok(self
             .conn
             .prepare_cached(
-                "SELECT e.id FROM postings p JOIN entries e ON e.id=p.entry_id
+                "SELECT e.id FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
                  JOIN ledger_accounts l ON l.id=p.ledger_account_id
                  WHERE p.id=?1 AND l.money_account_id IS NOT NULL AND e.opening_account_id IS NULL",
             )?
@@ -868,7 +868,7 @@ impl Db {
     }
 
     fn entries_on(&self, ledger: i64) -> Result<Vec<i64>> {
-        let mut st = self.conn.prepare("SELECT DISTINCT entry_id FROM postings WHERE ledger_account_id=?1")?;
+        let mut st = self.conn.prepare("SELECT DISTINCT entry_id FROM ledger_postings WHERE ledger_account_id=?1")?;
         Ok(st.query_map([ledger], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?)
     }
 
@@ -930,8 +930,10 @@ impl Db {
     /// Gives a posting on income or expenses to another category, or to none.
     pub fn set_posting_category(&self, posting: i64, category: Option<i64>) -> Result<()> {
         self.atomically(|| {
-            let entry: Option<i64> =
-                self.conn.query_row("SELECT entry_id FROM postings WHERE id=?1", [posting], |r| r.get(0)).optional()?;
+            let entry: Option<i64> = self
+                .conn
+                .query_row("SELECT entry_id FROM ledger_postings WHERE id=?1", [posting], |r| r.get(0))
+                .optional()?;
             let mut d = self.load_draft(entry.ok_or_else(|| no_posting(posting))?)?;
             let account = self.category_ledger(category)?;
             for l in d.lines.iter_mut().filter(|l| l.id == Some(posting)) {
@@ -1140,7 +1142,7 @@ impl Db {
         self.atomically(|| {
             self.hand_made(id)?;
             let used: bool = self.conn.query_row(
-                "SELECT EXISTS (SELECT 1 FROM postings WHERE ledger_account_id=?1)
+                "SELECT EXISTS (SELECT 1 FROM ledger_postings WHERE ledger_account_id=?1)
                      OR EXISTS (SELECT 1 FROM ledger_accounts WHERE parent_id=?1)",
                 [id],
                 |r| r.get(0),
@@ -1158,7 +1160,7 @@ impl Db {
     /// Sums of the postings up to a date, by account and currency.
     fn ledger_sums(&self, until: Option<NaiveDate>) -> Result<Vec<(i64, String, Cents)>> {
         let mut st = self.conn.prepare(
-            "SELECT p.ledger_account_id, p.currency, SUM(p.amount) FROM postings p JOIN entries e ON e.id=p.entry_id
+            "SELECT p.ledger_account_id, p.currency, SUM(p.amount) FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
              WHERE ?1 IS NULL OR e.date<=?1 GROUP BY p.ledger_account_id, p.currency ORDER BY 1, 2",
         )?;
         let rows = st.query_map([until.map(d2s)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
@@ -1198,7 +1200,7 @@ impl Db {
     pub fn entries(&self, f: &EntryFilter) -> Result<Vec<Entry>> {
         let mut st = self.conn.prepare(
             "SELECT id FROM entries e
-             WHERE (?1 IS NULL OR EXISTS (SELECT 1 FROM postings p WHERE p.entry_id=e.id AND p.ledger_account_id=?1))
+             WHERE (?1 IS NULL OR EXISTS (SELECT 1 FROM ledger_postings p WHERE p.entry_id=e.id AND p.ledger_account_id=?1))
                AND (?2 IS NULL OR date>=?2) AND (?3 IS NULL OR date<=?3)
              ORDER BY date DESC, id DESC LIMIT ?4 OFFSET ?5",
         )?;
@@ -1241,28 +1243,30 @@ impl Db {
             let mut st = self.conn.prepare(sql)?;
             Ok(st.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?)
         };
-        for id in ids("SELECT e.id FROM entries e WHERE (SELECT COUNT(*) FROM postings p WHERE p.entry_id=e.id) < 2")? {
+        for id in
+            ids("SELECT e.id FROM entries e WHERE (SELECT COUNT(*) FROM ledger_postings p WHERE p.entry_id=e.id) < 2")?
+        {
             problems.push(trf("entry {id} has fewer than two postings", &[("id", &id)]));
         }
         for id in ids("SELECT DISTINCT entry_id FROM
-                       (SELECT entry_id FROM postings GROUP BY entry_id, currency HAVING SUM(amount) <> 0)")?
+                       (SELECT entry_id FROM ledger_postings GROUP BY entry_id, currency HAVING SUM(amount) <> 0)")?
         {
             problems.push(trf("entry {id} does not balance", &[("id", &id)]));
         }
-        for id in ids("SELECT p.id FROM postings p
+        for id in ids("SELECT p.id FROM ledger_postings p
                        LEFT JOIN entries e ON e.id=p.entry_id LEFT JOIN ledger_accounts l ON l.id=p.ledger_account_id
                        WHERE e.id IS NULL OR l.id IS NULL")?
         {
             problems.push(trf("posting {id} has no entry or no account", &[("id", &id)]));
         }
-        for id in ids("SELECT p.id FROM postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+        for id in ids("SELECT p.id FROM ledger_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
                        WHERE l.currency IS NOT NULL AND l.currency <> p.currency")?
         {
             problems.push(trf("posting {id} is not in the currency of its account", &[("id", &id)]));
         }
         for id in ids("SELECT e.id FROM entries e WHERE e.opening_account_id IS NOT NULL AND
-                       (SELECT COUNT(*) FROM postings p WHERE p.entry_id=e.id) <>
-                       (SELECT COUNT(*) FROM postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                       (SELECT COUNT(*) FROM ledger_postings p WHERE p.entry_id=e.id) <>
+                       (SELECT COUNT(*) FROM ledger_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
                         WHERE p.entry_id=e.id
                           AND (l.money_account_id=e.opening_account_id OR l.system='opening_balances'))")?
         {
@@ -1290,7 +1294,7 @@ impl Db {
             problems.push(trf("account {id} of the chart of accounts stands for nothing", &[("id", &id)]));
         }
         for _ in ids("SELECT id FROM ledger_turnover WHERE
-                      total <> (SELECT COALESCE(SUM(abs(amount)),0) FROM postings)")?
+                      total <> (SELECT COALESCE(SUM(abs(amount)),0) FROM ledger_postings)")?
         {
             problems.push(tr("the sum of the postings is not the one on record").into());
         }
@@ -1304,7 +1308,7 @@ impl Db {
         };
         Ok(Verification {
             entries: count("SELECT COUNT(*) FROM entries")?,
-            postings: count("SELECT COUNT(*) FROM postings")?,
+            postings: count("SELECT COUNT(*) FROM ledger_postings")?,
             problems,
         })
     }

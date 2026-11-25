@@ -94,7 +94,7 @@ fn imported() -> Vec<(String, i64, String, String)> {
     let mut st = db
         .conn
         .prepare(
-            "SELECT e.date, p.amount, e.payee, p.import_hash FROM postings p JOIN entries e ON e.id=p.entry_id
+            "SELECT e.date, p.amount, e.payee, p.import_hash FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
              WHERE p.import_hash IS NOT NULL ORDER BY p.id",
         )
         .unwrap();
@@ -394,7 +394,7 @@ fn v2_figures(db: &Db) -> Figures {
         register,
         hashes: rows(
             &db.conn,
-            "SELECT p.id, l.money_account_id, p.import_hash FROM postings p
+            "SELECT p.id, l.money_account_id, p.import_hash FROM ledger_postings p
              JOIN ledger_accounts l ON l.id=p.ledger_account_id WHERE p.import_hash IS NOT NULL ORDER BY p.id",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -620,6 +620,50 @@ fn ledger_file_opens(version: i64, schema: &str) {
     let (db, _) = Db::open(&dir.file()).unwrap();
     assert_sound(&db, "stamped");
     assert_eq!(db.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+}
+
+/// A window of 0.3.0 that has the file open can write no posting any more, and nothing of what it tries stays.
+#[test]
+fn a_window_of_format_6_with_the_file_open_is_kept_out() {
+    let dir = Dir::new("format-6-open");
+    let old = Connection::open(dir.file()).unwrap();
+    old.execute_batch(include_str!("v6.sql")).unwrap();
+    old.execute_batch(
+        "PRAGMA foreign_keys=ON;
+         INSERT INTO accounts(id,name,kind) VALUES (1,'Bank','bank'), (2,'Card','credit_card');
+         INSERT INTO entries(id,date,payee) VALUES (1,'2026-01-05','Shop');
+         INSERT INTO postings(id,entry_id,ledger_account_id,amount,currency,import_hash)
+         SELECT 1,1,id,-500,'EUR','h' FROM ledger_accounts WHERE money_account_id=1 UNION ALL
+         SELECT 2,1,id,500,'EUR',NULL FROM ledger_accounts WHERE system='uncategorized';",
+    )
+    .unwrap();
+    old.pragma_update(None, "user_version", 6).unwrap();
+    // Its statements are ready, as those of an open window.
+    let mut ready = old.prepare("SELECT id FROM postings WHERE entry_id=?1").unwrap();
+    assert!(ready.exists([1]).unwrap());
+    let (db, _) = Db::open(&dir.file()).unwrap();
+    db.conn.execute("UPDATE ledger_postings SET other_hashes='src:csv' WHERE id=1", []).unwrap();
+    let before = dump(&db.conn);
+    // Every change of 0.3.0 starts by reading the postings of what it changes, or adds some.
+    assert!(ready.exists([1]).is_err());
+    for sql in [
+        "INSERT INTO postings(entry_id,ledger_account_id,amount,currency) VALUES(1,1,5,'EUR')",
+        "UPDATE postings SET amount=1 WHERE id=1",
+        "UPDATE postings SET import_hash=NULL WHERE id=1 AND entry_id=1",
+        "DELETE FROM postings WHERE id=1",
+        "SELECT e.id FROM postings p JOIN entries e ON e.id=p.entry_id",
+        "BEGIN; INSERT INTO entries(date) VALUES('2026-01-01');
+         INSERT INTO postings(entry_id,ledger_account_id,amount,currency) VALUES(last_insert_rowid(),1,5,'EUR'); COMMIT;",
+    ] {
+        assert!(old.execute_batch(sql).is_err(), "{sql}");
+        if !old.is_autocommit() {
+            old.execute_batch("ROLLBACK").unwrap();
+        }
+        assert_eq!(dump(&db.conn), before, "{sql}");
+    }
+    // What a deleted entry takes with it is whole.
+    old.execute("DELETE FROM entries WHERE id=1", []).unwrap();
+    assert_sound(&db, "kept out");
 }
 
 #[test]

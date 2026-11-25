@@ -34,12 +34,16 @@ rest, with the reason.
 ## Statements
 
 `preview_csv` and `import_csv` read CSV, Excel 97, OFX and PDF ([import.md](import.md)). `problems` lists the
-lines that could not be read. Columns, `decimal_separator`, `date_format` and `invert` are remembered by an import for
-files with the same headings (`saved_columns` in `format`); `use_saved: false` starts from those detected,
-`list_saved_columns` and `forget_saved_columns` manage them. With several OFX statements pass `statement`.
-`preview_csv` with an `account` gives `likely_duplicates`; `import_csv` is refused while one is not in `skip_rows` or
-`add_rows` (row numbers, or `"all"`): ask the user. `ledger_balance` is the balance the bank states against the
-books, only a check.
+lines that could not be read, `notices` what may not be expected, such as a remembered sign. Columns,
+`decimal_separator`, `date_format` and `invert` are remembered by an import for that account and for files with the
+same headings (`saved_columns` in `format`); what is given wins; `use_saved: false` neither uses nor
+remembers them. `list_saved_columns` and `forget_saved_columns` manage them. With several OFX statements pass
+`statement`. `preview_csv` with an `account` gives `likely_duplicates`, each with `existing` and the one `proposed`;
+`import_csv` is refused while one is not in `skip_rows` (`"2,5=31"`: row 5 is transaction 31; `"same"`: all
+that are `certain`) or `add_rows` (`"3"`, or `"all"` that are left): ask the user. `dry_run` makes the same checks:
+`refused` says why, `would_import` what. An OFX statement whose signs contradict its types needs `invert`, true or
+false. `deletions` are transactions the bank takes back: nothing is done. `ledger_balance` is the balance the bank
+states against the books, only a check.
 
 ## Card statements
 

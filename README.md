@@ -43,7 +43,7 @@
   *Causale*, *Importo*, *Accrediti/Addebiti*, *Entrate/Uscite*, *Dare/Avere*…); reads Italian
   amounts (`1.234,56`) and dates (`dd/mm/yyyy`); pulls the merchant out of card payment
   descriptions; never imports the same transaction twice. Columns, date order, decimals and sign can be
-  changed by hand, and are remembered for the next file with the same headings. Lines that could not be read are listed.
+  changed by hand, and are remembered for the next file with the same headings into the same account. Lines that could not be read are listed.
 - **OFX statements**, 1.x and 2.x, of bank accounts and credit cards. A transaction that another file may have
   brought already is shown, and you say whether it is the same. See [docs/import.md](docs/import.md).
 - **Credit card statements (PDF)** in Nexi's layout: purchases, refunds, instalments and stamp duty, checked
@@ -89,7 +89,7 @@ On macOS, drag CashCraft to Applications. Until a release is signed with a Devel
     cashcraft-cli import statement.csv --account "Main account"
     cashcraft-cli import card.pdf --account "Card"
     cashcraft-cli preview statement.ofx --account "Main account"
-    cashcraft-cli import statement.ofx --account "Main account" --skip-rows 3 --add-rows 5,8
+    cashcraft-cli import statement.ofx --account "Main account" --skip-rows same,3=12 --add-rows 5,8
     cashcraft-cli columns list                      # remembered columns; forget <id> or --all
     cashcraft-cli cards payments                    # then cards link <statement> <transaction>
     cashcraft-cli tx list --account "Main account" --from 2026-01-01

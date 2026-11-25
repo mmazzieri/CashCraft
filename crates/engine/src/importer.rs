@@ -15,17 +15,17 @@
 //! Reimportare lo stesso file non crea doppioni.
 
 pub use crate::card_pdf::{CardRow, Check, CheckKind, Statement};
-use crate::db::{Cents, Db, NewTx, Transaction};
-use crate::duplicates::{Decision, State};
+use crate::db::{Cents, Db, NewTx, Transaction, TxFilter};
+use crate::duplicates::{Decision, Deletion, State};
 use crate::i18n::{tr, trf};
 use crate::money::{DateOrder, parse_amount_with, parse_date, parse_date_as};
-use crate::ofx::{self, Ofx, OfxStatement};
+use crate::ofx::{self, Correction, Ofx, OfxStatement};
 use crate::transfers::near;
 use crate::{pdf, xls};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read as _;
 use std::path::Path;
 
@@ -36,6 +36,9 @@ const MAX_FIELDS: usize = 1_000;
 const MAX_CELLS: usize = 2_000_000;
 /// How many rows that could not be read are told one by one.
 const MAX_PROBLEMS: usize = 100;
+/// How many sides of transfers a row is compared with.
+const MAX_SIDES: usize = 20;
+const EXCEL: &str = "Excel 97-2003";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Mapping {
@@ -85,19 +88,24 @@ impl Settings {
         Settings { mapping: t.mapping.clone(), ..Default::default() }
     }
 
-    /// Those the user confirmed for this layout before, or else what was found in the file.
-    pub fn of(db: &Db, t: &Table) -> Result<(Self, Option<i64>)> {
-        Ok(match db.layout_of(t)? {
-            Some(l) => (l.settings, Some(l.id)),
+    /// Those the user confirmed for this layout in this account, or else what was found in the file.
+    pub fn of(db: &Db, t: &Table, account: Option<i64>) -> Result<(Self, Option<i64>)> {
+        Ok(match db.layout_of(t, account)? {
+            Some(l) => (l.settings()?, Some(l.id)),
             None => (Self::detected(t), None),
         })
     }
 
     /// The decimal separator in use.
     pub fn comma(&self, t: &Table) -> bool {
-        self.decimal_comma.unwrap_or_else(|| {
-            if self.mapping == t.mapping { t.decimal_comma } else { detect_decimal_comma(t, &self.mapping) }
-        })
+        self.decimal_comma.unwrap_or(t.decimal_comma)
+    }
+
+    /// The decimal separator that the chosen columns seem to have, when it is not the one in use.
+    pub fn doubtful_decimals(&self, t: &Table) -> Option<char> {
+        let seems = detect_decimal_comma(t, &self.mapping);
+        let other = t.has_columns() && self.decimal_comma.is_none() && seems != t.decimal_comma;
+        other.then_some(if seems { ',' } else { '.' })
     }
 }
 
@@ -115,6 +123,49 @@ pub struct Read {
     pub skipped: usize,
     /// The first of those that were skipped and look like transactions.
     pub problems: Vec<Problem>,
+    /// How many there are in all.
+    pub problem_count: usize,
+}
+
+impl Read {
+    /// Whether most rows were read: the columns may be remembered.
+    pub fn is_convincing(&self) -> bool {
+        !self.rows.is_empty() && self.rows.len() >= self.problem_count
+    }
+}
+
+/// The kind of file that a row comes from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Format {
+    #[default]
+    Csv,
+    Xls,
+    Pdf,
+    Ofx,
+}
+
+impl Format {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Format::Csv => "csv",
+            Format::Xls => "xls",
+            Format::Pdf => "pdf",
+            Format::Ofx => "ofx",
+        }
+    }
+
+    pub(crate) fn from_code(s: &str) -> Option<Self> {
+        [Format::Csv, Format::Xls, Format::Pdf, Format::Ofx].into_iter().find(|f| f.code() == s)
+    }
+}
+
+/// What only a row of OFX has.
+#[derive(Clone, Debug)]
+pub struct OfxRowId {
+    pub fitid: Option<String>,
+    pub corrects: Option<Correction>,
+    /// The amount as the file has it.
+    pub raw: Cents,
 }
 
 #[derive(Clone, Debug)]
@@ -135,6 +186,15 @@ pub struct Table {
 }
 
 impl Table {
+    pub fn format(&self) -> Format {
+        match (&self.statement, &self.ofx) {
+            (Some(_), _) => Format::Pdf,
+            (_, Some(_)) => Format::Ofx,
+            _ if self.encoding == EXCEL => Format::Xls,
+            _ => Format::Csv,
+        }
+    }
+
     /// Whether there are columns to choose.
     pub fn has_columns(&self) -> bool {
         self.statement.is_none() && self.ofx.is_none()
@@ -150,13 +210,10 @@ pub struct ParsedRow {
     /// What tells it from the other rows of the account, instead of its contents.
     #[serde(skip)]
     pub key: Option<String>,
-    /// Whether it is of an OFX statement, with what the bank calls it.
     #[serde(skip)]
-    pub ofx: bool,
+    pub format: Format,
     #[serde(skip)]
-    pub fitid: Option<String>,
-    #[serde(skip)]
-    pub corrects: Option<String>,
+    pub ofx: Option<OfxRowId>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -167,6 +224,8 @@ pub struct ImportResult {
     pub skipped: usize,
     /// Rows that the user said are in the books already.
     pub same: usize,
+    /// What the bank takes back of what is in the books: nothing was done.
+    pub deletions: Vec<Deletion>,
     pub categorized: usize,
     /// Lines that took the place of the added side of a transfer.
     pub adopted: Vec<Adopted>,
@@ -198,7 +257,7 @@ pub fn read_text(path: &Path) -> Result<(String, &'static str)> {
 pub fn load(path: &Path) -> Result<Table> {
     let bytes = read_bytes(path)?;
     if xls::is_xls(&bytes) {
-        return Ok(table(xls::rows(&bytes)?, b'\t', "Excel 97-2003"));
+        return Ok(table(xls::rows(&bytes)?, b'\t', EXCEL));
     }
     if pdf::is_pdf(&bytes) {
         return Ok(card_table(pdf::statement(&bytes)?));
@@ -650,7 +709,7 @@ pub fn parse_rows(t: &Table, m: &Mapping, invert: bool) -> (Vec<ParsedRow>, usiz
 }
 
 /// The rows of an OFX statement.
-fn ofx_rows(s: &OfxStatement) -> Vec<ParsedRow> {
+fn ofx_rows(s: &OfxStatement, invert: bool) -> Vec<ParsedRow> {
     let mut rows: Vec<ParsedRow> = s
         .rows
         .iter()
@@ -666,13 +725,12 @@ fn ofx_rows(s: &OfxStatement) -> Vec<ParsedRow> {
             };
             ParsedRow {
                 date: r.date,
-                amount: r.amount,
+                amount: if invert { -r.amount } else { r.amount },
                 payee,
                 memo,
                 key: None,
-                ofx: true,
-                fitid: r.fitid.clone(),
-                corrects: r.corrects.clone(),
+                format: Format::Ofx,
+                ofx: Some(OfxRowId { fitid: r.fitid.clone(), corrects: r.corrects.clone(), raw: r.amount }),
             }
         })
         .collect();
@@ -684,7 +742,7 @@ fn ofx_rows(s: &OfxStatement) -> Vec<ParsedRow> {
 pub fn read_rows(t: &Table, settings: &Settings) -> Read {
     let (m, invert) = (&settings.mapping, settings.invert);
     if let Some(o) = &t.ofx {
-        return Read { rows: o.statement().map(ofx_rows).unwrap_or_default(), ..Default::default() };
+        return Read { rows: o.statement().map(|s| ofx_rows(s, invert)).unwrap_or_default(), ..Default::default() };
     }
     if let Some(s) = &t.statement {
         let row = |r: &CardRow| ParsedRow {
@@ -693,22 +751,23 @@ pub fn read_rows(t: &Table, settings: &Settings) -> Read {
             payee: r.payee.clone(),
             memo: r.memo.clone(),
             key: Some(r.key.clone()),
-            ofx: false,
-            fitid: None,
-            corrects: None,
+            format: Format::Pdf,
+            ofx: None,
         };
-        return Read { rows: s.rows.iter().map(row).collect(), skipped: s.unread, problems: Vec::new() };
+        return Read { rows: s.rows.iter().map(row).collect(), skipped: s.unread, ..Default::default() };
     }
     let start = t.header_row.map(|h| h + 1).unwrap_or(0);
     let mut out = Vec::new();
     let mut skipped = 0;
     let mut problems = Vec::new();
+    let mut problem_count = 0;
     let dc = Some(settings.comma(t));
     let get = |r: &Vec<String>, c: Option<usize>| -> String { c.and_then(|i| r.get(i)).cloned().unwrap_or_default() };
     let day = |r: &Vec<String>, c| parse_date_as(&get(r, c), settings.dates);
     for (i, r) in t.records.iter().enumerate().skip(start) {
         // A row with neither a date nor an amount is a heading or a note.
         let mut problem = |error: String| {
+            problem_count += 1;
             if problems.len() < MAX_PROBLEMS {
                 problems.push(Problem { line: t.lines.get(i).copied().unwrap_or(i + 1), error });
             }
@@ -789,10 +848,10 @@ pub fn read_rows(t: &Table, settings: &Settings) -> Read {
             let memo = if full == p { String::new() } else { full };
             (p, memo)
         };
-        out.push(ParsedRow { date, amount, payee, memo, key: None, ofx: false, fitid: None, corrects: None });
+        out.push(ParsedRow { date, amount, payee, memo, key: None, format: t.format(), ofx: None });
     }
     out.sort_by_key(|r| r.date);
-    Read { rows: out, skipped, problems }
+    Read { rows: out, skipped, problems, problem_count }
 }
 
 pub(crate) fn fnv(s: &str) -> u64 {
@@ -811,8 +870,10 @@ pub struct Choices<'a> {
     pub allow_mismatch: bool,
     /// The rows that may be in the books already.
     pub likely: Decision,
-    /// How the rows were read, remembered for the next file with this layout.
+    /// How the rows were read, remembered for the next file with this layout in this account.
     pub settings: Option<&'a Settings>,
+    /// The user said that the signs of an OFX statement are right, or inverted, whatever its types say.
+    pub sign_confirmed: bool,
 }
 
 /// [`import_with`] without any choice about duplicates.
@@ -848,6 +909,9 @@ pub fn import_with(
                     &[("statement", &s.currency), ("account", &currency)]
                 ));
             }
+            if s.signs_contradict() && !choices.sign_confirmed {
+                bail!(tr("the signs of the amounts contradict the types of the transactions: say whether to invert them; nothing was imported"));
+            }
             import_deciding(db, account_id, rows, skipped, &choices.likely)
         });
     }
@@ -855,7 +919,7 @@ pub fn import_with(
         return db.atomically(|| {
             let res = import_deciding(db, account_id, rows, skipped, &choices.likely)?;
             if let Some(settings) = choices.settings {
-                db.save_layout(t, settings)?;
+                db.save_layout(t, account_id, settings)?;
             }
             Ok(res)
         });
@@ -884,10 +948,10 @@ pub(crate) fn choose_statement(o: &Ofx) -> anyhow::Error {
 
 /// Salva i movimenti nel conto, saltando quelli già importati in precedenza.
 pub fn import_rows(db: &Db, account_id: i64, rows: &[ParsedRow], skipped: usize) -> Result<ImportResult> {
-    import_deciding(db, account_id, rows, skipped, &Decision::Ask)
+    import_deciding(db, account_id, rows, skipped, &Decision::default())
 }
 
-fn import_deciding(
+pub(crate) fn import_deciding(
     db: &Db,
     account_id: i64,
     rows: &[ParsedRow],
@@ -898,34 +962,58 @@ fn import_deciding(
     db.atomically(|| {
         let plan = db.plan_import(Some(account_id), rows)?;
         let same = db.decide(&plan, account_id, rows, decision)?;
-        let mut fresh: Vec<(usize, &ParsedRow, &str)> = Vec::new();
-        // The transaction that each row is.
+        res.deletions = db.describe_deletions(&plan, Some(account_id), rows)?;
+        let mut fresh: Vec<usize> = Vec::new();
+        // The transaction that each row is, and what each transaction is known by from now on.
         let mut place: HashMap<usize, i64> = HashMap::new();
-        for (i, (row, p)) in rows.iter().zip(&plan.rows).enumerate() {
+        let mut keys: BTreeMap<i64, Vec<&str>> = BTreeMap::new();
+        for (i, p) in plan.rows.iter().enumerate() {
             match (&p.state, same.get(&i)) {
-                (State::Known, _) => {
+                (State::Known(id), _) => {
                     res.duplicates += 1;
-                    place.extend(plan.posting(&p.hash).map(|id| (i, id)));
+                    place.insert(i, *id);
+                }
+                (State::Deletes(there), _) => {
+                    if let Some(id) = there {
+                        let all = std::iter::once(p.hash.as_str()).chain(p.marks.split(' '));
+                        keys.entry(*id).or_default().extend(all);
+                    }
                 }
                 (_, Some(there)) => {
                     res.same += 1;
                     place.extend(there.map(|id| (i, id)));
                 }
-                _ => fresh.push((i, row, &p.hash)),
+                _ => fresh.push(i),
             }
         }
-        let sides = db.added_sides(account_id)?;
         // The rows of a card statement are never sides of transfers.
         let fits =
             |row: &ParsedRow, t: &Transaction| row.key.is_none() && row.amount == t.amount && near(row.date, t.date);
+        let mut sides: HashMap<Cents, Vec<Transaction>> = HashMap::new();
+        for t in db.added_sides(account_id)? {
+            sides.entry(t.amount).or_default().push(t);
+        }
+        // How many rows each side fits.
+        let mut dates: HashMap<Cents, BTreeMap<NaiveDate, usize>> = HashMap::new();
+        for row in
+            fresh.iter().filter_map(|i| rows.get(*i)).filter(|r| r.key.is_none() && sides.contains_key(&r.amount))
+        {
+            *dates.entry(row.amount).or_default().entry(row.date).or_default() += 1;
+        }
+        let rows_of = |t: &Transaction| -> usize {
+            let near = dates.get(&t.amount).into_iter().flatten().filter(|(d, _)| near(**d, t.date));
+            near.map(|(_, n)| n).sum()
+        };
         let mut unsure = Vec::new();
-        for (i, row, hash) in &fresh {
-            let mine: Vec<&Transaction> = sides.iter().filter(|t| fits(row, t)).collect();
+        for i in &fresh {
+            let (Some(row), Some(p)) = (rows.get(*i), plan.rows.get(*i)) else { continue };
+            let mine: Vec<&Transaction> =
+                sides.get(&row.amount).into_iter().flatten().filter(|t| fits(row, t)).take(MAX_SIDES).collect();
             // Only when neither the line nor the side could be another one.
             if let [side] = mine.as_slice()
-                && fresh.iter().filter(|(_, r, _)| fits(r, side)).count() == 1
+                && rows_of(side) == 1
             {
-                db.adopt(side.id, row.date, &row.payee, &row.memo, hash)?;
+                db.adopt(side, row.date, &row.payee, &row.memo, &p.hash, &p.marks)?;
                 let payee = row.payee.clone();
                 res.adopted.push(Adopted { id: side.id, date: row.date, payee, amount: row.amount });
                 place.insert(*i, side.id);
@@ -939,7 +1027,8 @@ fn import_deciding(
                 memo: row.memo.clone(),
                 category_id: None,
                 cleared: true,
-                import_hash: Some(hash.to_string()),
+                import_hash: Some(p.hash.clone()),
+                import_marks: Some(p.marks.clone()),
                 card_row: row.key.is_some(),
             })?;
             let Some(id) = id else {
@@ -957,14 +1046,22 @@ fn import_deciding(
         }
         // What the user said is remembered: the same file asks nothing the second time.
         for (i, p) in plan.rows.iter().enumerate().filter(|(i, _)| same.contains_key(i)) {
-            let id = place.get(&i).or_else(|| place.get(&p.repeats?)).copied();
+            let id = place.get(&i).or_else(|| place.get(&p.repeats?));
             if let Some(id) = id {
-                db.add_import_key(id, &p.hash)?;
+                keys.entry(*id).or_default().extend(std::iter::once(p.hash.as_str()).chain(p.marks.split(' ')));
             }
         }
-        for (id, peers) in unsure {
-            let candidates = peers.into_iter().map(|p| db.transaction(p)).collect::<Result<_>>()?;
-            res.maybe_transfers.push(MaybeTransfer { transaction: db.transaction(id)?, candidates });
+        for (id, keys) in &keys {
+            db.add_import_keys(*id, keys)?;
+        }
+        if !unsure.is_empty() {
+            let all = db.transactions(&TxFilter::default())?;
+            let all: HashMap<i64, Transaction> = all.into_iter().map(|t| (t.id, t)).collect();
+            for (id, peers) in unsure {
+                let Some(transaction) = all.get(&id).cloned() else { continue };
+                let candidates = peers.iter().filter_map(|p| all.get(p).cloned()).collect();
+                res.maybe_transfers.push(MaybeTransfer { transaction, candidates });
+            }
         }
         Ok(())
     })?;
@@ -1019,7 +1116,7 @@ pub fn column_index(t: &Table, key: &str) -> Option<usize> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1195,18 +1292,22 @@ mod tests {
     fn damaged_files_keep_the_books_sound() {
         use crate::testing::{Seeded, mutate};
         let db = Db::open_in_memory().unwrap();
-        let acc = db.add_account("A", crate::db::AccountKind::Bank, "EUR", 0, "").unwrap();
         let mut r = Seeded(42);
+        let mut imported = 0;
         for n in 0..200 {
+            let acc = db.add_account(&format!("A{n}"), crate::db::AccountKind::Bank, "EUR", 0, "").unwrap();
             let bad = mutate(&mut r, ofx::tests::sgml().as_bytes(), &["-5,00", "20260107", "<FITID>1"]);
             let Ok(mut t) = read_any(&bad) else { continue };
             if let Some(o) = &mut t.ofx {
                 o.chosen = Some(0);
             }
             let rows = read_rows(&t, &Settings::detected(&t)).rows;
-            let likely = if n % 2 == 0 { Decision::SkipAll } else { Decision::AddAll };
-            let _ = import_with(&db, acc, &t, &rows, 0, &Choices { likely, ..Default::default() });
+            let likely = Decision { skip_same: n % 2 == 0, add_others: true, ..Default::default() };
+            let choices = Choices { likely, sign_confirmed: true, ..Default::default() };
+            let done = import_with(&db, acc, &t, &rows, 0, &choices);
+            imported += usize::from(done.is_ok_and(|d| d.added > 0));
         }
+        assert!(imported >= 20, "{imported}");
         crate::ledger::tests::assert_sound(&db, "damaged");
     }
 
@@ -1239,7 +1340,7 @@ mod tests {
         // The detected columns are wrong for this bank: the amount is "Netto", positive when it goes out.
         let text = |day: &str, v: &str| format!("Data;Nome;Importo;Netto\n{day};Bar;1;{v}\n");
         let t = analyze(&text("02/03/2026", "1.234"), "UTF-8").unwrap();
-        let (found, saved) = Settings::of(&db, &t).unwrap();
+        let (found, saved) = Settings::of(&db, &t, Some(acc)).unwrap();
         assert_eq!((&found, saved), (&Settings::detected(&t), None));
         let mut s = found.clone();
         s.mapping.amount = Some(3);
@@ -1255,30 +1356,61 @@ mod tests {
         import_with(&db, acc, &t, &rows, 0, &choices).unwrap();
         // Another file with the same headings, however they are written.
         let next = analyze(&text("12/31/2026", "5.00").replace("Netto", "NETTO "), "UTF-8").unwrap();
-        let (again, id) = Settings::of(&db, &next).unwrap();
+        let (again, id) = Settings::of(&db, &next, Some(acc)).unwrap();
         assert_eq!(again, s);
         assert_eq!(read_rows(&next, &again).rows[0].date.to_string(), "2026-12-31");
-        // Another separator or other headings are another layout; so is a workbook.
-        for other in [text("02/03/2026", "1").replace(';', ","), text("02/03/2026", "1").replace("Nome", "Note")] {
-            assert!(Settings::of(&db, &analyze(&other, "UTF-8").unwrap()).unwrap().1.is_none());
+        // Into another account, or a new one, it starts from what is found: the sign above all.
+        let card = db.add_account("Card", crate::db::AccountKind::CreditCard, "EUR", 0, "").unwrap();
+        for other in [Some(card), None] {
+            let (fresh, id) = Settings::of(&db, &next, other).unwrap();
+            assert_eq!((&fresh, id), (&Settings::detected(&next), None));
         }
+        import_with(
+            &db,
+            card,
+            &t,
+            &read_rows(&t, &found).rows,
+            0,
+            &Choices { settings: Some(&found), ..Default::default() },
+        )
+        .unwrap();
+        assert!(Settings::of(&db, &next, Some(acc)).unwrap().0.invert);
+        assert!(!Settings::of(&db, &next, Some(card)).unwrap().0.invert);
+        let shown = db.layouts().unwrap()[0].json();
+        assert_eq!(
+            (&shown["account"], &shown["invert"], &shown["columns"]["amount"]),
+            (&"A".into(), &true.into(), &"Netto".into())
+        );
+        // Another separator or other headings are another layout; so is a workbook, and so are two signs.
+        for other in [text("02/03/2026", "1").replace(';', ","), text("02/03/2026", "1").replace("Nome", "Note")] {
+            assert!(Settings::of(&db, &analyze(&other, "UTF-8").unwrap(), Some(acc)).unwrap().1.is_none());
+        }
+        let of = |text: &str| crate::layouts::signature(&analyze(text, "UTF-8").unwrap());
+        let (plus, minus) = (
+            "Data;Descrizione;Importo;+;-\n05/01/2026;Bar;1,00;;\n",
+            "Data;Descrizione;Importo;-;+\n05/01/2026;Bar;1,00;;\n",
+        );
+        assert!(of(plus).is_some() && of(plus) != of(minus));
         assert!(crate::layouts::signature(&load_bytes(&bper()).unwrap()).unwrap().starts_with("xls | "));
         // Without headings there is nothing to know it by.
-        assert!(crate::layouts::signature(&analyze("01/02/2025;1,20;Bar\n", "UTF-8").unwrap()).is_none());
+        assert!(of("01/02/2025;1,20;Bar\n").is_none());
         db.forget_layout(id.unwrap()).unwrap();
         assert!(db.forget_layout(id.unwrap()).is_err());
-        assert!(Settings::of(&db, &next).unwrap().1.is_none());
-        // One that cannot be read is an error, never the detected columns.
-        db.save_layout(&t, &s).unwrap();
-        for bad in ["{", "{\"mapping\":{\"amount\":-1}}"] {
-            db.conn.execute("UPDATE csv_layouts SET settings=?1", [bad]).unwrap();
-            assert!(Settings::of(&db, &t).is_err());
-        }
+        assert!(Settings::of(&db, &next, Some(acc)).unwrap().1.is_none());
+        // One that cannot be read is an error, never the detected columns, and can be seen and forgotten.
+        db.save_layout(&t, acc, &s).unwrap();
         let wide =
             serde_json::to_string(&Settings { mapping: Mapping { date: Some(99), ..found.mapping }, ..s }).unwrap();
-        db.conn.execute("UPDATE csv_layouts SET settings=?1", [wide]).unwrap();
-        assert!(Settings::of(&db, &t).is_err());
-        assert_eq!(db.forget_layouts().unwrap(), 1);
+        for bad in ["{", "{\"mapping\":{\"amount\":-1}}", &wide] {
+            db.conn.execute("UPDATE csv_layouts SET settings=?1", [bad]).unwrap();
+            assert!(Settings::of(&db, &t, Some(acc)).is_err());
+            assert_eq!(db.layouts().unwrap()[0].json()["readable"], false);
+        }
+        assert_eq!(db.forget_layouts().unwrap(), 2);
+        // It goes with its account.
+        db.save_layout(&t, card, &Settings::detected(&t)).unwrap();
+        db.delete_account(card).unwrap();
+        assert!(db.layouts().unwrap().is_empty());
         crate::ledger::tests::assert_sound(&db, "layouts");
     }
 
@@ -1339,8 +1471,8 @@ mod tests {
         craft_xls::testing::workbook(&[("Movimenti Conto", rows)]).unwrap()
     }
 
-    fn load_bytes(bytes: &[u8]) -> Result<Table> {
-        Ok(table(xls::rows(bytes)?, b'\t', "Excel 97-2003"))
+    pub(crate) fn load_bytes(bytes: &[u8]) -> Result<Table> {
+        Ok(table(xls::rows(bytes)?, b'\t', EXCEL))
     }
 
     #[test]

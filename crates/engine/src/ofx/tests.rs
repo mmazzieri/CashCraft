@@ -163,6 +163,12 @@ fn amounts_are_exact() {
         "€1",
         "１",
         "1000000000000.01",
+        "-1.500",
+        "2,000",
+        "0.500",
+        "1234.000",
+        "1.2.3",
+        "1,2.3",
         "99999999999999999999999999",
         "NaN",
     ] {
@@ -183,6 +189,10 @@ fn dates_with_time_zones() {
         "20260105120000[0:GMT]",
         "20260105[+1]",
         "20260105 [CET]",
+        "20260105120000[-0500:EST]",
+        "20260105[+0530]",
+        "20260105120000[GMT+1]",
+        "20260105120000.000[GMT-03.30:X]",
     ] {
         assert_eq!(date(text).map(|d| d.to_string()).as_deref(), Some("2026-01-05"), "{text}");
     }
@@ -196,6 +206,9 @@ fn dates_with_time_zones() {
         "20260105120000[",
         "20260105[99:X]",
         "20260105[]",
+        "20260105[+9999]",
+        "20260105[GMT+]",
+        "20260105[1x]",
         "00010101",
         "99991231",
         "2026010５",
@@ -244,6 +257,40 @@ fn what_is_wrong_is_told_with_its_line() {
 }
 
 #[test]
+fn a_root_with_attributes_and_tags_that_are_text() {
+    let xml = xml().replace("<OFX>", "<OFX xmlns=\"urn:x\" a='b'>");
+    assert!(is_ofx(xml.as_bytes()));
+    assert_eq!(read(xml.as_bytes()).unwrap().0.statements.len(), 2);
+    let bare = xml.split_once("-->").unwrap().1.trim_start();
+    assert!(is_ofx(bare.as_bytes()) && is_ofx(format!("<?xml version=\"1.0\"?>\n{bare}").as_bytes()));
+    assert!(!is_ofx(b"<OFXX>"));
+    for (text, kept) in [
+        ("A <B C> D", "A <B C> D"),
+        ("A<B", "A<B"),
+        ("A<B & C>D", "A<B & C>D"),
+        ("1 < 2 > 1", "1 < 2 > 1"),
+        ("x </b c> y", "x </b c> y"),
+        ("x <a href=\"y\">z", "x"),
+    ] {
+        for end in ["", "</MEMO>"] {
+            let file = sgml().replace("Operazione < 20", &format!("{text}{end}"));
+            let s = read(file.as_bytes()).unwrap().0.statements.remove(0);
+            assert_eq!((s.rows[0].memo.as_str(), s.rows.len()), (kept, 2), "{text}{end}");
+        }
+    }
+}
+
+#[test]
+fn corrections_and_types() {
+    let with = |x: &str| read(sgml().replace("<FITID>A1", x).as_bytes()).unwrap().0.statements.remove(0).rows.remove(0);
+    let c = |delete| Some(Correction { fitid: "Z".into(), delete });
+    assert_eq!(with("<FITID>B<CORRECTFITID>Z<CORRECTACTION>DELETE").corrects, c(true));
+    assert_eq!(with("<CORRECTFITID>Z<CORRECTACTION>REPLACE").corrects, c(false));
+    assert_eq!(with("<CORRECTFITID>Z").corrects, c(false));
+    assert_eq!((with("<FITID>B").corrects, with("<FITID>B").goes_out), (None, Some(true)));
+}
+
+#[test]
 fn nothing_is_expanded_but_the_standard_entities() {
     assert_eq!(unescape("a&amp;lt;b&#8364;&#x41;&nbsp;&apos;&quot;"), "a&lt;b€A '\"");
     for same in ["&", "&;", "&x;", "&#;", "&#xD800;", "&#99999999999;", "AT&T", "&amp", "&lol9;", "&è;"] {
@@ -274,6 +321,13 @@ fn large_files_are_refused_or_read_quickly() {
     ] {
         assert!(read(format!("{head}{s}").as_bytes()).is_err());
     }
+    // A long name, and a value in many pieces.
+    let pieces = format!(
+        "<STMTTRN><{}>{}<DTPOSTED>20260101<TRNAMT>1</STMTTRN>",
+        "A".repeat(1_000_000),
+        "x<!---->".repeat(200_000)
+    );
+    assert_eq!(read(format!("{head}{pieces}{tail}").as_bytes()).unwrap().0.statements[0].rows.len(), 1);
     let memo = format!("{head}<STMTTRN><DTPOSTED>20260101<TRNAMT>1<MEMO>{}</STMTTRN>{tail}", "è".repeat(100_000));
     assert_eq!(read(memo.as_bytes()).unwrap().0.statements[0].rows[0].memo.chars().count(), MAX_TEXT);
     let long = error(&format!("{head}<STMTTRN><DTPOSTED>20260101<TRNAMT>{}</STMTTRN>{tail}", "9".repeat(100_000)));
