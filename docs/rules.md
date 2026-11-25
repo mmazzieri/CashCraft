@@ -18,6 +18,8 @@ Actions: a category, tags, and a new payee. In a rule of regular expressions `$1
 are what a group matched (of the expression of the payee, else of the one for both, else of the notes) and `$$` is a
 dollar; a group that is not there is refused. A new payee that comes out empty changes nothing.
 
+Deleting a category deletes the rules that give it, with their tags and new payee.
+
 ## Order
 
 Rules run from the first to the last, in the order the user gives. The first that matches and has a category decides it. The

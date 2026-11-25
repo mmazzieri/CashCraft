@@ -241,6 +241,8 @@ fn what_cannot_work_is_refused_when_it_is_saved() {
         re(&format!("{}a{}", "(".repeat(60), ")".repeat(60)), "x"),
         re(&long, "x"),
         re("(a)", "$2"),
+        Rule { regex: false, ..re("a", "$1") },
+        Rule { regex: false, ..re("a", "x ${shop}") },
         re("(a)", "${name}"),
         re("(a)", "$"),
         re("(a)", "$1a"),
@@ -256,6 +258,8 @@ fn what_cannot_work_is_refused_when_it_is_saved() {
     let id = db.insert_rule(&words("x", c), false).unwrap();
     assert!(db.update_rule(&Rule { id, regex: true, ..words("(", c) }).is_err());
     assert!(db.update_rule(&Rule { id: 99, ..words("x", c) }).is_err() && db.move_rule(99, Place::Up).is_err());
+    let named = db.insert_rule(&re("(a)", "$1"), false).unwrap();
+    assert!(db.update_rule(&Rule { id: named, regex: false, ..re("a", "$1") }).is_err());
     assert_eq!(db.rule(id).unwrap().payee, "x");
     // A pattern that would take for ever elsewhere.
     db.insert_rule(&re("^(a+)+$", "x"), false).unwrap();

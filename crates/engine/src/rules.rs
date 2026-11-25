@@ -845,6 +845,11 @@ impl Db {
         if rule.rename_payee.chars().count() > MAX_REPLACEMENT {
             bail!(trf("the new payee is too long: at most {n} characters", &[("n", &MAX_REPLACEMENT)]));
         }
+        // What format 7 saved stays as it was; a new one would name every payee "$1".
+        let mut after = rule.rename_payee.split('$').skip(1);
+        if !rule.regex && after.any(|t| t.starts_with(|c: char| c.is_ascii_digit() || c == '{')) {
+            bail!(tr("a new payee with a group like $1 needs a regular expression"));
+        }
         let limits = [rule.amount_min, rule.amount_max];
         if limits.iter().flatten().any(|a| !(0..=MAX_AMOUNT).contains(a))
             || matches!(limits, [Some(a), Some(b)] if a > b)
