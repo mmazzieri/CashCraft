@@ -4,17 +4,19 @@
 //! Example of configuration for an MCP client:
 //! { "mcpServers": { "cashcraft": { "command": "cashcraft-cli", "args": ["mcp", "--automation-read-root", "…", "--automation-write-root", "…"] } } }
 
+use crate::cli::Guard;
 use anyhow::Result;
 use cashcraft_engine::db::Db;
 use cashcraft_engine::i18n::{Lang, with_lang};
 use cashcraft_engine::ops;
-use cashcraft_engine::store::{self, Shared};
+use cashcraft_engine::store;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 
 const PROTOCOL: &str = "2025-06-18";
 
-pub fn serve(db: &Db, shared: Option<&Shared>, roots: &ops::Roots) -> Result<()> {
+pub fn serve(db: &Db, guard: &Guard, roots: &ops::Roots) -> Result<()> {
+    let mut session = Session::new(guard);
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -32,8 +34,8 @@ pub fn serve(db: &Db, shared: Option<&Shared>, roots: &ops::Roots) -> Result<()>
             }
         };
         let replies: Vec<Value> = match msg {
-            Value::Array(batch) => batch.iter().filter_map(|m| answer(db, shared, m, roots)).collect(),
-            m => answer(db, shared, &m, roots).into_iter().collect(),
+            Value::Array(batch) => batch.iter().filter_map(|m| session.answer(db, m, roots)).collect(),
+            m => session.answer(db, &m, roots).into_iter().collect(),
         };
         for r in replies {
             writeln!(out, "{r}")?;
@@ -43,13 +45,72 @@ pub fn serve(db: &Db, shared: Option<&Shared>, roots: &ops::Roots) -> Result<()>
     Ok(())
 }
 
-/// [`handle`] on a shared file: what others wrote comes in before a call, what it changed goes out after. What the user
-/// should know is in `data_file`, and in the text.
-pub fn answer(db: &Db, shared: Option<&Shared>, msg: &Value, roots: &ops::Roots) -> Option<Value> {
-    let is_call = msg.get("method").and_then(Value::as_str) == Some("tools/call");
-    let Some(shared) = shared.filter(|_| is_call) else { return handle(db, msg, roots) };
-    with_lang(Lang::En, || match store::around(shared, || handle(db, msg, roots)) {
-        Ok((reply, notices)) => {
+fn failed(msg: &Value, error: &str) -> Option<Value> {
+    let id = msg.get("id").cloned()?;
+    let content = json!([{"type": "text", "text": format!("Error: {error}")}]);
+    Some(json!({"jsonrpc": "2.0", "id": id, "result": {"content": content, "isError": true}}))
+}
+
+/// What the agent knows of the data file.
+pub struct Session<'a> {
+    guard: &'a Guard,
+    /// The revision it last read.
+    read: Option<String>,
+    /// The file had been moved before.
+    moved: bool,
+}
+
+impl<'a> Session<'a> {
+    pub fn new(guard: &'a Guard) -> Self {
+        let mut session = Session { guard, read: None, moved: false };
+        session.moved = session.moved_to().is_some();
+        session
+    }
+
+    fn moved_to(&self) -> Option<std::path::PathBuf> {
+        match self.guard {
+            Guard::Open(home, path) => home.moved(path),
+            Guard::Once(s, ..) | Guard::Served(s) => s.home().moved(s.path()),
+        }
+    }
+
+    /// [`handle`], and on a shared file what others wrote comes in before a call, what it changed goes out after. What
+    /// the user should know is in `data_file`, and in the text.
+    pub fn answer(&mut self, db: &Db, msg: &Value, roots: &ops::Roots) -> Option<Value> {
+        if msg.get("method").and_then(Value::as_str) != Some("tools/call") {
+            return handle(db, msg, roots);
+        }
+        with_lang(Lang::En, || {
+            if !self.moved
+                && let Some(now) = self.moved_to()
+            {
+                return failed(msg, &format!("the data file was moved to {}: start the server again", now.display()));
+            }
+            let Guard::Served(shared) = self.guard else { return handle(db, msg, roots) };
+            let params = msg.get("params");
+            let tool = params.and_then(|p| p.get("name")).and_then(Value::as_str).unwrap_or_default();
+            let args = params.and_then(|p| p.get("arguments")).unwrap_or(&Value::Null);
+            let (reads, ids) = (ops::is_read(tool), ops::uses_ids(args));
+            let before = self.read.clone();
+            let done = store::around(shared, |turn| {
+                turn.check(reads, ids, self.read.as_deref())?;
+                if reads && !ids {
+                    self.read = Some(turn.revision.clone());
+                }
+                anyhow::Ok(handle(db, msg, roots))
+            });
+            let (reply, mut notices) = match done {
+                Ok((Ok(reply), notices)) => (reply, notices),
+                Ok((Err(e), notices)) => {
+                    let text: Vec<String> = std::iter::once(format!("{e:#}")).chain(notices).collect();
+                    return failed(msg, &text.join("\n"));
+                }
+                Err(e) => return failed(msg, &format!("{e:#}")),
+            };
+            if before.is_some() && before != self.read {
+                notices
+                    .push("The data was changed on another computer: ids read before may be of other things.".into());
+            }
             let mut reply = reply?;
             let result = reply.get_mut("result").and_then(Value::as_object_mut);
             if let Some(result) = result.filter(|_| !notices.is_empty()) {
@@ -61,13 +122,8 @@ pub fn answer(db: &Db, shared: Option<&Shared>, msg: &Value, roots: &ops::Roots)
                 }
             }
             Some(reply)
-        }
-        Err(e) => {
-            let id = msg.get("id").cloned()?;
-            let content = json!([{"type": "text", "text": format!("Error: {e:#}")}]);
-            Some(json!({"jsonrpc": "2.0", "id": id, "result": {"content": content, "isError": true}}))
-        }
-    })
+        })
+    }
 }
 
 /// Handles a message; notifications (without an id) get no reply.

@@ -1023,6 +1023,50 @@ impl Roots {
     }
 }
 
+/// Whether an operation changes nothing in the data file.
+pub fn is_read(tool: &str) -> bool {
+    ["list_", "get_", "preview_"].iter().any(|p| tool.starts_with(p))
+        || [
+            "transfer_candidates",
+            "propose_card_payments",
+            "spending_by_category",
+            "monthly_summary",
+            "net_worth",
+            "budget_status",
+            "test_rule",
+            "export_csv",
+            "trial_balance",
+            "verify_ledger",
+        ]
+        .contains(&tool)
+}
+
+/// Parameters that are ids, or may hold some.
+const IDS: [&str; 7] = ["id", "match", "join", "run", "token", "skip_rows", "from_transaction"];
+
+/// Whether the parameters name something by its id, which is of one revision of the data only.
+pub fn uses_ids(a: &Value) -> bool {
+    let number = |s: &str| {
+        let s = s.trim();
+        s.strip_prefix("ledger:").is_some() || (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let named = |v: &Value| match v {
+        Value::Number(_) => true,
+        Value::String(s) => number(s),
+        _ => false,
+    };
+    let Value::Object(o) = a else { return false };
+    o.iter().any(|(k, v)| match k.as_str() {
+        _ if v.is_null() => false,
+        k if IDS.contains(&k) || k.ends_with("_id") => true,
+        "postings" => v.as_array().is_some_and(|l| l.iter().any(uses_ids)),
+        "account" | "category" | "parent" | "ledger_account" | "to_account" | "from_account" | "from" | "to" => {
+            named(v)
+        }
+        _ => false,
+    })
+}
+
 /// Esegue un'operazione. `roots` limita l'accesso ai file (obbligatorio per MCP);
 /// `None` è per la CLI, dove decide chi la usa.
 pub fn call(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Value> {
@@ -1693,6 +1737,102 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.add_account("A", AccountKind::Bank, "EUR", 0, "").unwrap();
         db
+    }
+
+    /// What may hold an id is known as such: a new parameter that is not fails here.
+    #[test]
+    fn parameters_that_hold_ids_are_known() {
+        let plain = [
+            "name",
+            "kind",
+            "opening_balance",
+            "currency",
+            "iban",
+            "include_archived",
+            "search",
+            "uncategorized",
+            "limit",
+            "date",
+            "amount",
+            "payee",
+            "memo",
+            "cleared",
+            "tags",
+            "tag",
+            "keep_other",
+            "path",
+            "statement",
+            "invert",
+            "date_column",
+            "amount_column",
+            "credit_column",
+            "debit_column",
+            "description_column",
+            "payee_column",
+            "decimal_separator",
+            "date_format",
+            "use_saved",
+            "dry_run",
+            "allow_mismatch",
+            "any_account",
+            "add_rows",
+            "all",
+            "is_income",
+            "months",
+            "monthly_amount",
+            "month",
+            "keywords",
+            "regex",
+            "min_amount",
+            "max_amount",
+            "rename",
+            "add_tags",
+            "first",
+            "position",
+            "scope",
+            "overwrite",
+            "next_date",
+            "every",
+            "unit",
+            "until",
+            "class",
+            "code",
+            "offset",
+            "sign",
+            "income",
+            "separator",
+            "enabled",
+            "new_name",
+            "rename_payee",
+            "set_payee",
+            "payee_keywords",
+            "memo_keywords",
+        ];
+        let mut unknown = std::collections::BTreeSet::new();
+        for t in tools() {
+            for (key, schema) in t.schema["properties"].as_object().unwrap() {
+                let held = uses_ids(&json!({key: if key == "postings" { json!([{"account": 1}]) } else { json!(1) }}));
+                // An account may be a date's neighbour: `from` and `to` are dates elsewhere.
+                let says = schema["description"].as_str().unwrap_or_default().to_lowercase();
+                let names_one =
+                    says.contains(" id ") || says.starts_with("id") || says.contains(" id.") || says.contains("id or");
+                if !held && (names_one || !plain.contains(&key.as_str())) {
+                    unknown.insert(format!("{}: {key}: {says}", t.name));
+                }
+            }
+        }
+        assert!(unknown.is_empty(), "{unknown:#?}");
+        for (a, held) in [
+            (json!({"account": "Bank", "from": "2026-01-01"}), false),
+            (json!({"account": "3"}), true),
+            (json!({"account": "ledger:3"}), true),
+            (json!({"postings": [{"account": "ledger:3"}]}), true),
+            (json!({"postings": [{"account": "Bank"}]}), false),
+            (json!({"id": null}), false),
+            (json!(null), false),
+        ] {
+            assert_eq!(uses_ids(&a), held, "{a}");
+        }
     }
 
     #[test]

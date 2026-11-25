@@ -9,7 +9,7 @@ use cashcraft_engine::i18n::{Lang, tr, trf, trn, with_lang};
 use cashcraft_engine::ledger::Class;
 use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount_with, parse_date};
 use cashcraft_engine::ops;
-use cashcraft_engine::store::Shared;
+use cashcraft_engine::store::{Home, Shared, Turn};
 use clap::{Args, Subcommand};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
@@ -655,14 +655,55 @@ fn v<T: serde::Serialize>(x: T) -> Option<Value> {
     Some(json!(x))
 }
 
-/// `shared` is for the MCP server, which carries the changes at each call.
-pub fn run(db: &Db, shared: Option<&Shared>, cmd: Cmd, as_json: bool) -> Result<()> {
+/// How the data file is open.
+pub enum Guard {
+    /// Where it is.
+    Open(Home, PathBuf),
+    /// Shared, for one command, with the revision the user expects.
+    Once(Shared, Turn, Option<String>),
+    /// Shared, for the MCP server, which carries the changes at each call.
+    Served(Shared),
+}
+
+impl Guard {
+    /// Whether an operation may run on the data as it is now. A command that reads is what later ones are about.
+    fn check(&self, tool: &str, a: &Value) -> Result<()> {
+        let Guard::Once(shared, turn, expect) = self else { return Ok(()) };
+        let (reads, ids) = (ops::is_read(tool), ops::uses_ids(a));
+        let last = shared.last_read();
+        match expect {
+            Some(e) => {
+                if *e != turn.revision && (ids || !reads) {
+                    turn.check(reads, true, Some(e))?;
+                }
+            }
+            None => turn.check(reads, ids, Some(&last))?,
+        }
+        if reads && !ids {
+            if last != turn.revision {
+                if !last.is_empty() {
+                    eprintln!(
+                        "! {}",
+                        tr(
+                            "The data was changed on another computer since it was last read here: ids may be of other things."
+                        )
+                    );
+                }
+                shared.set_last_read(&turn.revision)?;
+            }
+            eprintln!("# {}", trf("revision {revision}", &[("revision", &turn.revision)]));
+        }
+        Ok(())
+    }
+}
+
+pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
     let (tool, a): (&str, Value) = match cmd {
         Cmd::Mcp { automation_read_root, automation_write_root } => {
             // Agents get English, whatever the language of the interface.
             return with_lang(Lang::En, || {
                 let roots = ops::Roots::new(&automation_read_root, &automation_write_root)?;
-                crate::mcp::serve(db, shared, &roots)
+                crate::mcp::serve(db, guard, &roots)
             });
         }
         // Answered before the data file is opened.
@@ -679,6 +720,7 @@ pub fn run(db: &Db, shared: Option<&Shared>, cmd: Cmd, as_json: bool) -> Result<
                     .map_err(|e| anyhow!(trf("the JSON arguments are not valid: {error}", &[("error", &e)])))?,
                 None => json!({}),
             };
+            guard.check(&tool, &a)?;
             let r = ops::call(db, &tool, &a, None)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             return Ok(());
@@ -906,6 +948,7 @@ pub fn run(db: &Db, shared: Option<&Shared>, cmd: Cmd, as_json: bool) -> Result<
             ("export_csv", args(&[("path", v(file)), ("account", o(&account)), ("from", o(&from)), ("to", o(&to))]))
         }
     };
+    guard.check(tool, &a)?;
     // A remembered sign is told before anything is written.
     if tool == "import_csv" && !as_json && a.get("dry_run") == Some(&json!(false)) {
         let seen = ops::call(db, "preview_csv", &a, None)?;

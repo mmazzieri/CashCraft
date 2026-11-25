@@ -48,6 +48,7 @@ mod tests {
             let out = self.run(computer, &all);
             let (text, notices) = (String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap());
             assert!(out.status.success(), "{args:?} {text} {notices}");
+            let notices = notices.lines().filter(|l| !l.starts_with("# revision ")).collect::<Vec<_>>().join("\n");
             (text, notices)
         }
         fn names(&self) -> BTreeSet<String> {
@@ -238,6 +239,114 @@ mod tests {
         // From the file alone.
         let list = d.ok("two", &["--json", "tx", "list", "--limit", "100"]).0;
         assert!(expected.iter().all(|p| list.contains(&format!("\"{p}\""))), "{list}");
+    }
+
+    #[test]
+    fn ids_of_another_content_are_refused() {
+        let d = Dir::new("ids");
+        let file = d.file();
+        let run = |computer: &str, args: &[&str]| {
+            let out = d.run(computer, &[&["--db", file.to_str().unwrap()], args].concat());
+            (out.status.success(), String::from_utf8(out.stderr).unwrap())
+        };
+        let add = |c: &str, payee: &str| run(c, &["tx", "add", "--account", "Bank", "--amount=-1", "--payee", payee]);
+        d.ok("one", &["accounts", "add", "Bank"]);
+        assert!(add("one", "first").0);
+        // The ids of nobody's list.
+        assert!(!run("two", &["tx", "delete", "1"]).0);
+        assert!(run("two", &["tx", "list"]).0);
+        assert!(run("two", &["tx", "show", "1"]).0);
+        // Taken in this very command: not even what names no id, then yes.
+        assert!(add("one", "second").0);
+        let (done, error) = add("two", "third");
+        assert!(!done && error.contains("nothing was done"), "{error}");
+        assert!(add("two", "third").0);
+        // Taken by a command before: ids are refused until the next list, which says so.
+        let (done, error) = run("two", &["tx", "delete", "1"]);
+        assert!(!done && error.contains("Read it again"), "{error}");
+        assert!(!run("two", &["call", "delete_transaction", "{\"id\":1}"]).0);
+        assert!(!run("two", &["accounts", "delete", "1"]).0);
+        let (done, told) = run("two", &["tx", "list"]);
+        assert!(done && told.contains("since it was last read"), "{told}");
+        let revision = told.lines().find_map(|l| l.strip_prefix("# revision ")).unwrap().to_string();
+        let list = d.ok("two", &["tx", "list"]).0;
+        assert!(list.contains("first") && list.contains("second") && list.contains("third"));
+        // By the revision of a list, whatever was listed since.
+        assert!(!run("two", &["--expect", "other", "tx", "delete", "1"]).0);
+        assert!(run("two", &["--expect", &revision, "tx", "delete", "1"]).0);
+        assert!(run("one", &["tx", "list"]).0);
+        assert!(add("one", "fourth").0);
+        assert!(run("two", &["tx", "list"]).0);
+        assert!(!run("two", &["--expect", &revision, "tx", "delete", "3"]).0);
+        assert!(run("two", &["tx", "delete", "3"]).0);
+    }
+
+    #[test]
+    fn an_agent_reads_again_before_it_changes() {
+        let d = Dir::new("agent");
+        d.ok("one", &["accounts", "add", "Bank"]);
+        d.ok("one", &["tx", "add", "--account", "Bank", "--amount=-1", "--payee", "first"]);
+        let root = d.0.to_str().unwrap().to_string();
+        let args = ["--shared", "mcp", "--automation-read-root", &root, "--automation-write-root", &root];
+        let serve = |file: PathBuf, shared: bool| {
+            let args = if shared { &args[..] } else { &args[1..] };
+            let mut child = d
+                .command("two", &[&["--db", file.to_str().unwrap()], args].concat())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdin = child.stdin.take().unwrap();
+            let mut lines = std::io::BufRead::lines(std::io::BufReader::new(child.stdout.take().unwrap()));
+            move |tool: &str, arguments: serde_json::Value| -> serde_json::Value {
+                let _child = &child;
+                let params = serde_json::json!({"name": tool, "arguments": arguments});
+                let msg = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params});
+                writeln!(stdin, "{msg}").unwrap();
+                serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap()
+            }
+        };
+        let mut call = serve(d.file(), true);
+        let refused =
+            |v: &serde_json::Value| v["result"]["isError"] == true && v.to_string().contains("nothing was done");
+        let delete = || serde_json::json!({"id": 1});
+        assert!(refused(&call("delete_transaction", delete())));
+        call("list_transactions", serde_json::json!({}));
+        d.ok("one", &["tx", "add", "--account", "Bank", "--amount=-1", "--payee", "second"]);
+        assert!(refused(&call("delete_transaction", delete())));
+        // Also the call after the one that took the changes.
+        assert!(refused(&call("delete_transaction", delete())));
+        let told = call("list_transactions", serde_json::json!({}));
+        assert!(told["result"]["structuredContent"]["data_file"].to_string().contains("ids read before"), "{told}");
+        assert_eq!(call("delete_transaction", delete())["result"]["isError"], false);
+        // A file that is moved under a server.
+        let local = d.0.join("local.db");
+        assert!(d.run("two", &["--db", local.to_str().unwrap(), "accounts", "add", "Bank"]).status.success());
+        let mut old = serve(local.clone(), false);
+        assert_eq!(old("list_accounts", serde_json::json!({}))["result"]["isError"], false);
+        let folder = d.folder();
+        let keep = ["--db", local.to_str().unwrap(), "data", "keep", folder.to_str().unwrap()];
+        assert!(d.run("two", &keep).status.success());
+        let late = old("create_account", serde_json::json!({"name": "Late"}));
+        assert!(late.to_string().contains("was moved to"), "{late}");
+    }
+
+    #[test]
+    fn a_log_waits_for_the_user() {
+        let d = Dir::new("log");
+        d.ok("one", &["accounts", "add", "Bank"]);
+        d.ok("one", &["tx", "add", "--account", "Bank", "--amount=-1", "--payee", "first"]);
+        let before = std::fs::read(d.file()).unwrap();
+        std::fs::write(d.folder().join("books.db-wal"), "").unwrap();
+        let (_, notice) = d.ok("one", &["tx", "add", "--account", "Bank", "--amount=-1", "--payee", "second"]);
+        assert!(notice.contains("data recover") && std::fs::read(d.file()).unwrap() == before, "{notice}");
+        d.ok("one", &["data", "recover"]);
+        assert_eq!(d.names(), ["books.db".to_string()].into());
+        d.ok("one", &["tx", "list"]);
+        assert!(d.ok("two", &["tx", "list"]).0.contains("second"));
+        // A folder that is known for synced no more, as when a variable is gone.
+        let said = d.run("three", &["--db", d.file().to_str().unwrap(), "tx", "list"]);
+        assert!(String::from_utf8_lossy(&said.stderr).contains("private copy, as it is in OneDrive"));
     }
 
     /// Programs that are really killed, at any moment.

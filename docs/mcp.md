@@ -80,7 +80,7 @@ The server refuses to start without both folders:
 
 The data file itself is chosen by whoever starts the server (`--db` or `CASHCRAFT_DB`, else the one chosen last). For one in a synced folder ([data-file.md](data-file.md)) each call first takes what
 other computers wrote and then writes what it changed; when something must be known, such as a conflict or changes that wait,
-the result has it in `data_file` and as text. After a conflict ids may mean other things: list again. `cashcraft-cli data status` says more.
+the result has it in `data_file` and as text. When another computer changed the data, calls that change something or use ids are refused until a call without ids reads it again. `cashcraft-cli data status` says more.
 
 ## Client configuration
 

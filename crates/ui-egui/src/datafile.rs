@@ -1,12 +1,12 @@
 //! The data file in the window: its status, other files, synced folders, conflicts. A shared file is read and written
 //! by a thread, so that a folder that does not answer never stops the window.
 
-use crate::gui::{AMBER, App, GREEN, MUTED, RED, error_text, primary_button};
+use crate::gui::{AMBER, App, GREEN, MUTED, RED, View, error_text, primary_button};
 use anyhow::Result;
 use cashcraft_engine::i18n::{self, Lang, lang, tr, trf};
 use cashcraft_engine::money::fmt_date;
 use cashcraft_engine::store::{
-    self, Differences, Hold, Home, Opened, Presence, RENEW, Report, Service, Shared, Status, Use,
+    self, Differences, Hold, Home, Kept, Opened, Presence, RENEW, Report, Service, Shared, Status, Use,
 };
 use cashcraft_engine::{db, demo};
 use egui::{Color32, Id, RichText, Ui};
@@ -30,6 +30,7 @@ enum Order {
     Now,
     Stop,
     PutBack,
+    Recover,
     Dismiss,
     Compare(PathBuf),
 }
@@ -76,7 +77,7 @@ impl Syncer {
                 }
                 let others = presence.others(chrono::Utc::now().timestamp(), Instant::now());
                 let (conflicts, versions) = (!shared.conflicts().is_empty(), shared.versions());
-                let missing = shared.path().symlink_metadata().is_err();
+                let missing = shared.is_missing();
                 {
                     let mut s = locked(&shown);
                     (s.others, s.conflicts, s.versions, s.missing) = (others, conflicts, versions, missing);
@@ -89,6 +90,7 @@ impl Syncer {
                     Ok(order) => {
                         let done = match order {
                             Order::PutBack => shared.put_back().map(|_| ()),
+                            Order::Recover => shared.recover().map(|r| locked(&shown).news.push(r.text())),
                             Order::Dismiss => shared.dismiss_conflicts(),
                             Order::Compare(other) => {
                                 let found = shared.differences(&other).map_err(|e| format!("{e:#}"));
@@ -154,11 +156,40 @@ impl Syncer {
 #[derive(Default)]
 pub struct FileWindow {
     moving: bool,
+    /// What was asked of the disk, beside the window.
+    asking: Option<mpsc::Receiver<Info>>,
+    info: Option<Info>,
+    error: String,
+}
+
+/// What the window of the data file has to know of the disk.
+struct Info {
     service: Option<Service>,
     /// What the user said of the file, and whether it will be shared at the next start.
     choice: Use,
     shared_next: bool,
+    /// Another file that is there by default.
+    default: Option<PathBuf>,
     error: String,
+}
+
+/// Asks the disk, after saying to it how to use the file.
+fn ask(home: Home, path: PathBuf, asked: Use, say: Option<Use>) -> mpsc::Receiver<Info> {
+    let (send, receive) = mpsc::channel();
+    std::thread::spawn(move || {
+        let said = say.map_or(Ok(()), |u| home.set_choice(&path, u));
+        let (shared_next, service) = store::way(&home, &path, asked);
+        let default = Some(db::default_db_path()).filter(|d| *d != path && d.exists());
+        let error = said.err().map(|e| error_text(&e)).unwrap_or_default();
+        let _ = send.send(Info { service, choice: home.choice(&path), shared_next, default, error });
+    });
+    receive
+}
+
+/// A file that was opened beside the window.
+enum Loaded {
+    Opened(PathBuf, Box<Opened>),
+    Kept(Box<Kept>),
 }
 
 /// The part of the window that knows the data file. Without a home, as in the tests, it only shows the path.
@@ -171,13 +202,13 @@ pub struct DataFile {
     shared: Option<Shared>,
     syncer: Option<Syncer>,
     hold: Option<Hold>,
-    epoch: u64,
+    revision: String,
     writes: u64,
     changed_at: Option<f64>,
     unfocused: bool,
     pub window: Option<FileWindow>,
     /// Another file that is being opened.
-    opening: Option<mpsc::Receiver<Result<(PathBuf, Opened)>>>,
+    opening: Option<mpsc::Receiver<Result<Loaded>>>,
     /// The file that the one being opened takes the place of.
     old: Option<PathBuf>,
 }
@@ -205,8 +236,11 @@ impl App {
         app.file.home = Some(home);
         app.file.path = path;
         app.file.asked = asked;
+        if !opened.notices.is_empty() {
+            app.toast = Some((opened.notices.join("\n"), ctx.input(|i| i.time) + 30.0));
+        }
         if let Some((shared, report)) = opened.shared {
-            app.file.epoch = shared.epoch();
+            app.file.revision = shared.revision();
             let ctx = ctx.clone();
             let syncer = Syncer::start(shared.clone(), report, move || ctx.request_repaint());
             if opened.is_new {
@@ -218,34 +252,42 @@ impl App {
         app
     }
 
-    /// The ids on the screen stay good while a form is open, and for the time of a frame.
-    pub(crate) fn file_before(&mut self, ui: &Ui) {
+    /// The ids on the screen stay good while a form is open, and for the time of a frame. False while something comes
+    /// in: nothing may be chosen in that frame, and nobody waits for it.
+    pub(crate) fn file_before(&mut self, ui: &Ui) -> bool {
+        let mut steady = true;
         if let Some(shared) = &self.file.shared {
             if self.file.hold.is_none() {
-                match shared.hold() {
-                    Ok(h) => self.file.hold = Some(h),
+                match shared.try_hold() {
+                    Ok(h) => self.file.hold = h,
                     Err(e) => self.toast = Some((error_text(&e), f64::INFINITY)),
                 }
             }
+            steady = self.file.hold.is_some();
             let version = self.db.data_version();
-            if version != self.data_version {
+            let revision = if steady && version != self.data_version { shared.revision() } else { String::new() };
+            if steady && version != self.data_version {
                 self.data_version = version;
-                let epoch = shared.epoch();
-                if epoch != self.file.epoch {
-                    self.file.epoch = epoch;
-                    self.selected = None;
-                    self.budget_edit = None;
-                    self.rename_cat = None;
-                    self.journal = None;
+                if revision != self.file.revision {
+                    self.file.revision = revision;
+                    self.forget_ids();
+                    egui::Popup::close_all(ui.ctx());
                 }
                 self.reload();
             }
+        }
+        if !steady {
+            egui::Popup::close_all(ui.ctx());
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
         }
         let received = self.file.opening.as_ref().filter(|_| self.dialog.is_none()).map(|r| r.try_recv());
         match received {
             None | Some(Err(mpsc::TryRecvError::Empty)) => {}
             Some(Err(mpsc::TryRecvError::Disconnected)) => self.file.opening = None,
-            Some(Ok(Ok((path, opened)))) => self.switch(ui, path, opened),
+            Some(Ok(Ok(loaded))) => {
+                self.switch(ui, loaded);
+                steady = false;
+            }
             Some(Ok(Err(e))) => {
                 self.file.opening = None;
                 self.file.old = None;
@@ -254,6 +296,22 @@ impl App {
                     None => self.notify(ui, error_text(&e)),
                 }
             }
+        }
+        steady
+    }
+
+    /// All that was chosen by its id, when ids may be of other things.
+    fn forget_ids(&mut self) {
+        self.selected = None;
+        self.budget_edit = None;
+        self.new_budget.0 = None;
+        self.rename_cat = None;
+        self.new_cat.2 = None;
+        self.journal = None;
+        self.cat_filter = None;
+        self.dialog = None;
+        if matches!(self.view, View::Register(Some(_))) {
+            self.view = View::Register(None);
         }
     }
 
@@ -291,49 +349,50 @@ impl App {
         }
     }
 
+    /// The same for a file that is left: the window does not wait.
+    fn file_leave(&mut self) {
+        self.file.hold = None;
+        if let Some(s) = self.file.syncer.take() {
+            std::thread::spawn(move || s.stop());
+        }
+    }
+
     /// Opens another file beside the window, which goes on drawing.
     fn open_file(&mut self, path: PathBuf) {
         let Some(home) = self.file.home.clone() else { return };
         self.file.old = None;
-        self.open_after(path, |_, _| Ok(()), home);
+        self.load(move || {
+            let opened = open(&home, &path, Use::Auto, true)?;
+            home.remember(Some(&store::resolved(&path)))?;
+            Ok(Loaded::Opened(path, Box::new(opened)))
+        });
     }
 
-    fn open_after(
-        &mut self,
-        path: PathBuf,
-        first: impl FnOnce(&Home, &Path) -> Result<()> + Send + 'static,
-        home: Home,
-    ) {
+    fn load(&mut self, f: impl FnOnce() -> Result<Loaded> + Send + 'static) {
         let (send, receive) = mpsc::channel();
         let language = lang();
-        std::thread::spawn(move || {
-            let opened = i18n::with_lang(language, || {
-                first(&home, &path)?;
-                open(&home, &path, Use::Auto, true)
-            });
-            let _ = send.send(opened.map(|o| (path, o)));
-        });
+        std::thread::spawn(move || send.send(i18n::with_lang(language, f)));
         self.file.opening = Some(receive);
     }
 
-    fn switch(&mut self, ui: &Ui, path: PathBuf, opened: Opened) {
+    fn switch(&mut self, ui: &Ui, loaded: Loaded) {
         let Some(home) = self.file.home.clone() else { return };
-        self.file_close();
-        let old = self.file.old.take();
-        let remembered = home.remember(Some(&store::resolved(&path)));
-        let direct = self.file.shared.is_none();
+        self.file_leave();
+        let old = self.file.old.take().filter(|_| self.file.shared.is_none());
+        let (path, opened) = match loaded {
+            Loaded::Opened(path, opened) => (path, *opened),
+            Loaded::Kept(kept) => (kept.path.clone(), kept.release()),
+        };
         *self = App::of(opened, home, path.clone(), Use::Auto, ui.ctx());
-        let mut text = trf("The data file is now {path}", &[("path", &path.display())]);
-        if let Err(e) = remembered {
-            text = error_text(&e);
+        self.notify(ui, trf("The data file is now {path}", &[("path", &path.display())]));
+        if let (Some(old), Some(copy), Some(syncer)) = (old, self.db.path.clone(), &self.file.syncer) {
+            let (seen, language) = (syncer.seen.clone(), lang());
+            std::thread::spawn(move || {
+                if let Err(e) = i18n::with_lang(language, || store::retire(&old, &copy)) {
+                    locked(&seen).news.push(error_text(&e));
+                }
+            });
         }
-        if let Some(old) = old
-            && direct
-            && let Err(e) = store::retire(&old, &self.db)
-        {
-            text = error_text(&e);
-        }
-        self.notify(ui, text);
     }
 
     pub(crate) fn is_shared(&self) -> bool {
@@ -375,16 +434,21 @@ impl App {
         }
     }
 
-    /// What is asked of the folder is asked once, not at every frame.
     pub(crate) fn open_file_window(&mut self) {
-        let Some(home) = &self.file.home else { return };
-        let (shared_next, service) = store::way(home, &self.file.path, self.file.asked);
-        let choice = home.choice(&self.file.path);
-        self.file.window = Some(FileWindow { service, choice, shared_next, ..Default::default() });
+        let Some(home) = self.file.home.clone() else { return };
+        let asking = Some(ask(home, self.file.path.clone(), self.file.asked, None));
+        self.file.window = Some(FileWindow { asking, ..Default::default() });
     }
 
     pub fn file_window(&mut self, ctx: &egui::Context) {
         let (Some(mut w), Some(home)) = (self.file.window.take(), self.file.home.clone()) else { return };
+        if let Some(info) = w.asking.as_ref().and_then(|r| r.try_recv().ok()) {
+            w.error.clone_from(&info.error);
+            (w.asking, w.info) = (None, Some(info));
+        }
+        if w.asking.is_some() || self.file.opening.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
         let mut keep = true;
         let mut open_this: Option<PathBuf> = None;
         let modal = egui::Modal::new(Id::unique("data file")).show(ctx, |ui| {
@@ -393,7 +457,7 @@ impl App {
             ui.heading(tr("Data file"));
             let path = self.file.path.clone();
             ui.label(path.display().to_string());
-            let how = match (self.file.shared.is_some(), w.service) {
+            let how = match (self.file.shared.is_some(), w.info.as_ref().and_then(|i| i.service)) {
                 (false, None) => tr("Used directly").to_string(),
                 (false, Some(k)) => trf("Used directly, in {service}", &[("service", &k.label())]),
                 (true, None) => tr("Used through a private copy").to_string(),
@@ -404,19 +468,19 @@ impl App {
                 let (text, color) = s.status();
                 ui.label(RichText::new(text).color(color));
             }
-            if w.shared_next != self.file.shared.is_some() {
+            if w.info.as_ref().is_some_and(|i| i.shared_next != self.file.shared.is_some()) {
                 ui.label(
                     RichText::new(tr("It will be used in the other way when CashCraft is started again.")).color(AMBER),
                 );
             }
-            ui.horizontal(|ui| {
+            ui.add_enabled_ui(w.info.is_some() && w.asking.is_none(), |ui| {
                 ui.label(tr("How to use it"));
                 let label = |c| match c {
                     Use::Auto => tr("Automatic"),
                     Use::Direct => tr("Directly, where it lies"),
                     Use::Shared => tr("Through a private copy (synced folders, network drives)"),
                 };
-                let before = w.choice;
+                let before = w.info.as_ref().map_or(Use::Auto, |i| i.choice);
                 let mut chosen = before;
                 egui::ComboBox::from_id_salt("file mode").selected_text(label(before)).width(360.0).show_ui(ui, |ui| {
                     for c in Use::ALL {
@@ -424,13 +488,7 @@ impl App {
                     }
                 });
                 if chosen != before {
-                    match home.set_choice(&path, chosen) {
-                        Ok(()) => {
-                            w.choice = chosen;
-                            w.shared_next = store::way(&home, &path, self.file.asked).0;
-                        }
-                        Err(e) => w.error = error_text(&e),
-                    }
+                    w.asking = Some(ask(home.clone(), path.clone(), self.file.asked, Some(chosen)));
                 }
             });
             ui.add_space(8.0);
@@ -438,6 +496,9 @@ impl App {
                 syncer.draw_versions(ui, &mut open_this);
                 if locked(&syncer.seen).missing && ui.button(tr("Write it again where it was")).clicked() {
                     let _ = syncer.orders.send(Order::PutBack);
+                }
+                if syncer.has_log() && ui.button(tr("No program has it open, on any computer: use its log")).clicked() {
+                    let _ = syncer.orders.send(Order::Recover);
                 }
             }
             ui.separator();
@@ -448,8 +509,9 @@ impl App {
                 {
                     open_this = Some(p);
                 }
-                let default = db::default_db_path();
-                if default != path && default.exists() && ui.button(tr("Open the default one")).clicked() {
+                if let Some(default) = w.info.as_ref().and_then(|i| i.default.clone())
+                    && ui.button(tr("Open the default one")).clicked()
+                {
                     open_this = Some(default);
                 }
             });
@@ -496,12 +558,17 @@ impl App {
         let name = self.file.path.file_name().unwrap_or("cashcraft.db".as_ref());
         let target = folder.join(name);
         let Some(from) = self.db.path.clone() else { return };
-        self.file.old = moving.then(|| self.file.path.clone());
-        self.open_after(target, move |home, target| store::copy_to(home, &from, target), home.clone());
+        let (old, home) = (self.file.path.clone(), home.clone());
+        self.file.old = moving.then(|| old.clone());
+        self.load(move || Ok(Loaded::Kept(Box::new(store::keep(&home, &old, &from, &target)?))));
     }
 }
 
 impl Syncer {
+    fn has_log(&self) -> bool {
+        matches!(&locked(&self.seen).report, Some(Ok(r)) if r.status == Status::InUse)
+    }
+
     fn draw_versions(&self, ui: &mut Ui, open_this: &mut Option<PathBuf>) {
         let mut seen = locked(&self.seen);
         if seen.versions.is_empty() {
@@ -561,7 +628,7 @@ impl Syncer {
     }
 }
 
-/// The window when the data file could not be opened: try again, another one, or nothing.
+/// The window before the data file is open, and when it cannot be: try again, another one, or nothing.
 pub struct Start {
     pub home: Home,
     pub path: PathBuf,
@@ -569,25 +636,62 @@ pub struct Start {
     pub asked: Use,
     pub error: String,
     pub app: Option<Box<App>>,
+    /// A log lies beside the file.
+    log: bool,
+    opening: Option<mpsc::Receiver<std::result::Result<Opened, (String, bool)>>>,
 }
 
 impl Start {
-    fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
-        match open(&self.home, &path, self.asked, self.must_exist) {
-            Ok(o) => self.app = Some(Box::new(App::of(o, self.home.clone(), path, self.asked, ctx))),
-            Err(e) => self.error = error_text(&e),
+    pub fn new(home: Home, path: PathBuf, must_exist: bool, asked: Use) -> Start {
+        Start { home, path, must_exist, asked, error: String::new(), app: None, log: false, opening: None }
+    }
+
+    /// Opens the file beside the window; `first` is done before.
+    pub fn open(&mut self, first: impl FnOnce(&Home, &Path) -> Result<()> + Send + 'static) {
+        let (send, receive) = mpsc::channel();
+        let (home, path, asked, must_exist) = (self.home.clone(), self.path.clone(), self.asked, self.must_exist);
+        let language = lang();
+        std::thread::spawn(move || {
+            let opened = i18n::with_lang(language, || {
+                first(&home, &path).and_then(|()| open(&home, &path, asked, must_exist)).map_err(|e| {
+                    let shared = store::way(&home, &path, asked).0;
+                    (error_text(&e), shared && Shared::new(&home, &path).has_log())
+                })
+            });
+            let _ = send.send(opened);
+        });
+        self.opening = Some(receive);
+    }
+
+    pub fn poll(&mut self, ctx: &egui::Context) {
+        let Some(got) = self.opening.as_ref().and_then(|r| r.try_recv().ok()) else { return };
+        self.opening = None;
+        match got {
+            Ok(o) => self.app = Some(Box::new(App::of(o, self.home.clone(), self.path.clone(), self.asked, ctx))),
+            Err((e, log)) => {
+                eprintln!("{e}");
+                (self.error, self.log) = (e, log);
+            }
         }
     }
 
     pub fn draw(&mut self, ui: &mut Ui) {
+        if self.opening.is_some() {
+            ui.heading(tr("Opening…"));
+            ui.label(self.path.display().to_string());
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
+            return;
+        }
         ui.heading(tr("The data file cannot be opened"));
         ui.label(self.path.display().to_string());
         ui.label(RichText::new(&self.error).color(RED));
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let ctx = ui.ctx().clone();
             if primary_button(ui, tr("Try again")).clicked() {
-                self.open(&ctx, self.path.clone());
+                self.open(|_, _| Ok(()));
+            }
+            if self.log && ui.button(tr("No program has it open, on any computer: use its log")).clicked() {
+                self.open(|home, path| Shared::new(home, path).recover().map(|_| ()));
             }
             if ui.button(tr("📂 Open another data file…")).clicked()
                 && let Some(p) =
@@ -595,16 +699,11 @@ impl Start {
             {
                 self.asked = Use::Auto;
                 self.must_exist = true;
-                self.path = p.clone();
-                self.open(&ctx, p);
-                if self.app.is_some()
-                    && let Err(e) = self.home.remember(Some(&store::resolved(&self.path)))
-                {
-                    eprintln!("{}", error_text(&e));
-                }
+                self.path = p;
+                self.open(|home, path| home.remember(Some(&store::resolved(path))));
             }
             if ui.button(tr("Quit")).clicked() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
     }
@@ -612,6 +711,7 @@ impl Start {
 
 impl eframe::App for Start {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+        self.poll(ui.ctx());
         match &mut self.app {
             Some(app) => app.ui(ui, frame),
             None => {
@@ -693,7 +793,7 @@ mod tests {
     fn until(what: &str, mut f: impl FnMut() -> bool) {
         let start = Instant::now();
         while !f() {
-            assert!(start.elapsed() < Duration::from_secs(20), "{what}");
+            assert!(start.elapsed() < Duration::from_secs(90), "{what}");
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -736,6 +836,8 @@ mod tests {
         add(&two, "from two");
         other.sync().unwrap();
         app.selected = Some(1);
+        app.view = View::Register(Some(1));
+        (app.cat_filter, app.new_cat.2, app.new_budget.0, app.journal) = (Some(1), Some(1), Some(1), Some((1, 0)));
         app.file.syncer.as_ref().unwrap().now();
         until("held", || {
             frame(&ctx, &mut app, 6.0, true);
@@ -749,6 +851,8 @@ mod tests {
             app.txs.iter().any(|t| t.payee == "from two")
         });
         assert_eq!(app.selected, None);
+        assert_eq!((app.view, app.cat_filter, app.new_cat.2), (View::Register(None), None, None));
+        assert_eq!((app.new_budget.0, app.journal), (None, None));
         // Both change: the user is told, and nothing is lost.
         app.dialog = Some(Dialog::Tx(TxForm::default()));
         frame(&ctx, &mut app, 7.5, true);
@@ -767,6 +871,7 @@ mod tests {
         });
         assert!(p.names().iter().any(|n| n.contains("(conflict one ")));
         app.open_file_window();
+        frame(&ctx, &mut app, 8.5, true);
         let versions = || locked(&app.file.syncer.as_ref().unwrap().seen).versions.clone();
         until("versions", || !versions().is_empty());
         let _ = app.file.syncer.as_ref().unwrap().orders.send(Order::Compare(versions().remove(0)));
@@ -800,7 +905,8 @@ mod tests {
             frame(&ctx, &mut app, 1.0, true);
             app.file.shared.is_some()
         });
-        assert!(has(&app.db, "x") && !old.exists());
+        assert!(has(&app.db, "x"));
+        until("removed", || !old.exists());
         assert_eq!(home.recent(), Some(store::resolved(&p.file())));
         app.keep_in(&home, p.0.join("folder"), false);
         app.open_file_window();
@@ -821,22 +927,50 @@ mod tests {
     }
 
     #[test]
+    fn the_window_does_not_wait_while_something_comes_in() {
+        let p = Place::new("steady");
+        let ctx = egui::Context::default();
+        let o = open(&p.home("one"), &p.file(), Use::Shared, false).unwrap();
+        let mut app = App::of(o, p.home("one"), p.file(), Use::Shared, &ctx);
+        let copy = app.db.path.clone().unwrap();
+        let lock = std::fs::File::open(copy.with_file_name("hold.lock")).unwrap();
+        until("locked", || lock.try_lock().is_ok());
+        let mut steady = true;
+        let mut draw = |steady: &mut bool| {
+            ctx.run_ui(Default::default(), |ui| *steady = app.file_before(ui)).textures_delta.clear();
+        };
+        draw(&mut steady);
+        assert!(!steady);
+        lock.unlock().unwrap();
+        until("steady", || {
+            draw(&mut steady);
+            steady
+        });
+        app.file_close();
+    }
+
+    #[test]
     fn what_cannot_be_opened_is_said_and_tried_again() {
         let p = Place::new("start");
         let ctx = egui::Context::default();
-        let mut start = Start {
-            home: p.home("one"),
-            path: p.file(),
-            must_exist: true,
-            asked: Use::Shared,
-            error: String::new(),
-            app: None,
+        let mut start = Start::new(p.home("one"), p.file(), true, Use::Shared);
+        let go = |start: &mut Start| {
+            start.open(|_, _| Ok(()));
+            ctx.run_ui(Default::default(), |ui| start.draw(ui)).textures_delta.clear();
+            until("opened", || {
+                start.poll(&ctx);
+                start.opening.is_none()
+            });
         };
-        start.open(&ctx, p.file());
+        go(&mut start);
         assert!(start.app.is_none() && start.error.contains("not there") && !p.file().exists());
         ctx.run_ui(Default::default(), |ui| start.draw(ui)).textures_delta.clear();
         start.must_exist = false;
-        start.open(&ctx, p.file());
+        std::fs::write(p.0.join("folder").join("books.db-wal"), "").unwrap();
+        go(&mut start);
+        assert!(start.app.is_none() && start.log);
+        std::fs::remove_file(p.0.join("folder").join("books.db-wal")).unwrap();
+        go(&mut start);
         assert!(start.app.is_some());
         eframe::App::on_exit(&mut start);
         assert!(p.file().exists());

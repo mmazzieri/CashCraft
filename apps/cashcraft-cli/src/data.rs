@@ -32,6 +32,9 @@ pub enum DataCmd {
     Use { file: Option<PathBuf> },
     /// Write a shared data file again where it was removed
     PutBack,
+    /// Deal with a log that a program left beside a shared data file. Only when no program has the file open, on any
+    /// computer
+    Recover,
     /// Speak no more of the conflict files; they stay where they are
     Dismiss,
 }
@@ -68,6 +71,7 @@ pub fn run(home: &Home, path: &Path, asked: Use, cmd: DataCmd, as_json: bool) ->
                     "conflict": report.as_ref().and_then(|r| r.conflict.clone()),
                     "conflicts": s.as_ref().map(|s| names(s.conflicts())),
                     "versions": s.as_ref().map(|s| names(s.versions())),
+                    "revision": s.as_ref().map(Shared::revision),
                     "open_on": others,
                     "unsaved": unsaved,
                 });
@@ -86,6 +90,7 @@ pub fn run(home: &Home, path: &Path, asked: Use, cmd: DataCmd, as_json: bool) ->
             if let (Some(s), Some(r)) = (&s, &report) {
                 println!("{}", trf("Private copy: {path}", &[("path", &s.copy().display())]));
                 println!("{}", r.status.text());
+                println!("{}", trf("revision {revision}", &[("revision", &r.revision)]));
                 for n in r.notices() {
                     println!("! {n}");
                 }
@@ -150,19 +155,21 @@ pub fn run(home: &Home, path: &Path, asked: Use, cmd: DataCmd, as_json: bool) ->
             }
             let target = folder.join(name);
             let from = opened.db.path.clone().unwrap_or_else(|| path.to_path_buf());
-            store::copy_to(home, &from, &target)?;
-            let target = store::resolved(&target);
-            let new = store::open(home, &target, Use::Auto, lang(), true)?;
-            home.remember(Some(&target))?;
-            println!("{}", trf("The data file is now {path}", &[("path", &target.display())]));
             let direct = opened.shared.is_none();
+            let kept = store::keep(home, path, &from, &target)?;
+            println!("{}", trf("The data file is now {path}", &[("path", &kept.path.display())]));
+            let new = kept.release();
             drop(opened);
-            if moving && direct {
-                store::retire(path, &new.db)?;
+            if moving
+                && direct
+                && let Some(copy) = &new.db.path
+            {
+                store::retire(path, copy)?;
             } else {
                 println!("{}", trf("The old one stays: {path}", &[("path", &path.display())]));
             }
         }
+        DataCmd::Recover => println!("{}", only_shared()?.recover()?.text()),
         DataCmd::Use { file } => {
             if let Some(f) = &file
                 && !f.exists()

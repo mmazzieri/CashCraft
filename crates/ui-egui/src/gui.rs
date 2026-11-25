@@ -604,23 +604,18 @@ pub struct App {
 pub fn run(home: Home, (path, must_exist): (PathBuf, bool), asked: Use, screenshot: Option<PathBuf>) -> Result<()> {
     // The language of a new file and of the errors while opening; then the one the file asks for.
     i18n::set_lang(Lang::at_start(None));
-    let opened = if screenshot.is_some() && !path.exists() {
-        // For a screenshot: sample data in memory, no file created.
+    // A picture is taken of what is there at once; a window opens first, and the file beside it.
+    let opened = if screenshot.is_none() {
+        None
+    } else if !path.exists() {
+        // Sample data in memory, no file created.
         let d = Db::open_in_memory()?;
         demo::seed(&d)?;
-        Ok(Opened { db: d, is_new: false, shared: None })
+        Some(Opened { db: d, is_new: false, shared: None, notices: Vec::new() })
     } else {
-        datafile::open(&home, &path, asked, must_exist)
+        Some(datafile::open(&home, &path, asked, must_exist)?)
     };
-    let opened = match opened {
-        Err(e) if screenshot.is_some() => return Err(e),
-        Err(e) => {
-            eprintln!("{}", error_text(&e));
-            Err(e)
-        }
-        Ok(o) => Ok(o),
-    };
-    if let Ok(o) = &opened {
+    if let Some(o) = &opened {
         i18n::set_lang(Lang::at_start(o.db.meta(i18n::META_KEY).as_deref()));
     }
     let shooting = screenshot.is_some();
@@ -645,10 +640,10 @@ pub fn run(home: Home, (path, must_exist): (PathBuf, bool), asked: Use, screensh
         options,
         Box::new(move |cc| {
             setup_style(&cc.egui_ctx);
-            let mut start = Start { home, path, must_exist, asked, error: String::new(), app: None };
+            let mut start = Start::new(home, path, must_exist, asked);
             match opened {
-                Err(e) => start.error = error_text(&e),
-                Ok(o) => {
+                None => start.open(|_, _| Ok(())),
+                Some(o) => {
                     let (home, path) = (start.home.clone(), start.path.clone());
                     let mut app = App::of(o, home, path, asked, &cc.egui_ctx);
                     app.screenshot = screenshot;
@@ -1033,7 +1028,10 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
-        self.file_before(ui);
+        let steady = self.file_before(ui);
+        if !steady {
+            ui.disable();
+        }
 
         // Foto di controllo (--screenshot): ~120 fotogrammi, poi salva ed esce.
         if let Some(path) = self.screenshot.clone() {
@@ -1073,12 +1071,12 @@ impl eframe::App for App {
         let dropped: Vec<PathBuf> = ui.input(|i| {
             i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect()
         });
-        if let Some(p) = dropped.into_iter().next().filter(|_| self.file.window.is_none()) {
+        if let Some(p) = dropped.into_iter().next().filter(|_| steady && self.file.window.is_none()) {
             self.open_import(Some(p));
         }
 
         // Scorciatoie.
-        if self.dialog.is_none() && self.file.window.is_none() {
+        if steady && self.dialog.is_none() && self.file.window.is_none() {
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
                 self.open_new_tx();
             }

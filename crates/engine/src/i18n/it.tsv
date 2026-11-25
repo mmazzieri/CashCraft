@@ -219,11 +219,13 @@ Next	Prossima
 No budget set.	Nessun budget impostato.
 No budgets: add one below.	Nessun budget: aggiungine uno qui sotto.
 No expenses this month.	Nessuna spesa questo mese.
+No program has it open, on any computer: use its log	Nessun programma lo ha aperto, su nessun computer: usa il suo registro
 No scheduled transactions.	Nessun movimento pianificato.
 No transactions in this period.	Nessun movimento in questo periodo.
 None	Nessuna
 Notes	Note
 Nothing has been recorded yet.	Non è ancora stato registrato nulla.
+nothing was done: the data was changed on another computer, and ids may be of other things. Read it again (revision {revision})	non è stato fatto nulla: i dati sono cambiati su un altro computer e gli id possono essere di altre cose. Leggili di nuovo (revisione {revision})
 November	novembre
 October	ottobre
 Older	Meno recenti
@@ -262,6 +264,7 @@ Repeat every	Ripeti ogni
 Repetition	Ripetizione
 Reports	Report
 Restaurants and bars	Ristoranti e bar
+revision {revision}	revisione {revision}
 Rule added	Regola aggiunta
 Rule deleted	Regola eliminata
 Salary	Stipendio
@@ -298,25 +301,34 @@ the changes of this computer cannot be put beside the data file	le modifiche di 
 the data file can only be read	l'archivio è di sola lettura
 The data file cannot be opened	L'archivio non si può aprire
 the data file has not been downloaded yet	l'archivio non è ancora stato scaricato
+The data file has other names (hard links): they will keep what it has now.	L'archivio ha altri nomi (hard link): conserveranno quello che contiene ora.
 the data file is busy: try again	l'archivio è occupato: riprova
 the data file is changing	l'archivio sta cambiando
 the data file is damaged	l'archivio è danneggiato
 the data file is damaged, or has not been downloaded whole	l'archivio è danneggiato o non è stato scaricato per intero
+The data file is from now on used through a private copy, as it is in {service}. See `cashcraft-cli data status`.	D'ora in poi l'archivio si usa tramite una copia privata, perché è in {service}. Vedi `cashcraft-cli data status`.
+the data file is not complete without its log: {error}. Nothing was changed; copies are in {path}	l'archivio non è completo senza il suo registro: {error}. Non è cambiato nulla; le copie sono in {path}
 the data file is not there	l'archivio non c'è
 The data file is now {path}	L'archivio ora è {path}
+the data file is open in a program of this computer, or cannot be locked	l'archivio è aperto in un programma di questo computer, o non si può bloccare
 the data file is used directly	l'archivio è usato direttamente
 The data file was changed on another computer too. Nothing was lost: the changes of this computer are in "{name}", beside it, and the data file now shows those of the other.	L'archivio è stato modificato anche su un altro computer. Non si è perso nulla: le modifiche di questo computer sono in "{name}", accanto all'archivio, che ora mostra quelle dell'altro.
+the data file was moved to {path}	l'archivio è stato spostato in {path}
+The data was changed on another computer since it was last read here: ids may be of other things.	I dati sono cambiati su un altro computer dall'ultima lettura qui: gli id possono essere di altre cose.
 The entries are the same; something else is different, such as names, budgets or rules.	Le registrazioni sono le stesse; è diverso qualcos'altro, come nomi, budget o regole.
 the folder {path} is not there	la cartella {path} non c'è
-the log beside the data file does not belong to it; move {path} elsewhere	il registro accanto all'archivio non è il suo; sposta altrove {path}
+the log beside the data file was dealt with	il registro accanto all'archivio è stato sistemato
+the log may be of another version of the data file, which was left as it is; what the log would give is in "{name}", beside it	il registro può essere di un'altra versione dell'archivio, che è rimasto com'era; quello che il registro darebbe è in "{name}", accanto
 the old data file was changed or is open in another program: it was left where it is	il vecchio archivio è cambiato o è aperto in un altro programma: è rimasto dov'è
 The old one stays: {path}	Quello vecchio resta: {path}
 The other side of its transfers stays in the other account, against the opening balances: no other balance changes.	L'altro lato dei suoi giroconti resta nell'altro conto, contro i saldi iniziali: nessun altro saldo cambia.
 the path has characters that cannot be remembered	il percorso ha caratteri che non si possono ricordare
 The picture cannot be saved: {error}	Errore nel salvare l'immagine: {error}
+the private folder {path} is in {service}: name one on this computer in CASHCRAFT_PRIVATE	la cartella privata {path} è in {service}: indicane una di questo computer in CASHCRAFT_PRIVATE
 The two files hold the same.	I due file contengono le stesse cose.
 the working copy {path} cannot be read	la copia di lavoro {path} non si può leggere
 then remove the old file	poi elimina il vecchio file
+there is no log beside the data file	non c'è un registro accanto all'archivio
 They categorize imported transactions	Assegnano la categoria ai movimenti importati
 This month	Questo mese
 This year	Quest'anno
@@ -352,7 +364,7 @@ Used through a private copy	Usato tramite una copia privata
 Used through a private copy, in {service}	Usato tramite una copia privata, in {service}
 Video streaming	Streaming Video
 waiting for the folder: {reason}	in attesa della cartella: {reason}
-waiting: another program has the data file open	in attesa: un altro programma ha aperto l'archivio
+waiting: a program has the data file open, or left its log beside it (see `cashcraft-cli data recover`)	in attesa: un programma ha aperto l'archivio, o ha lasciato accanto il suo registro (vedi `cashcraft-cli data recover`)
 Wallet	Portafoglio
 Weekly shopping	Spesa settimanale
 Where your money goes	Dove vanno i tuoi soldi

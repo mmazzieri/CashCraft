@@ -147,3 +147,46 @@ pub fn settle(conn: Connection, path: &Path) -> Result<()> {
     std::fs::OpenOptions::new().write(true).open(path)?.sync_all()?;
     Ok(())
 }
+
+/// Whether every row of `old` is in `new`. Totals that triggers keep are not compared.
+pub fn contains(new: &Connection, old: &Connection) -> Result<bool> {
+    let names = |c: &Connection| -> Result<Vec<String>> {
+        let sql = "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+                   AND name<>'ledger_turnover' ORDER BY name";
+        Ok(c.prepare(sql)?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)
+    };
+    let tables = names(old)?;
+    if format(new)? != format(old)? || names(new)? != tables {
+        return Ok(false);
+    }
+    for table in tables {
+        let mut counts = std::collections::HashMap::<String, i64>::new();
+        for (conn, by) in [(new, 1), (old, -1)] {
+            let mut st = conn.prepare(&format!("SELECT * FROM \"{}\"", table.replace('"', "\"\"")))?;
+            let columns = st.column_count();
+            let mut rows = st.query([])?;
+            while let Some(row) = rows.next()? {
+                let mut key = String::new();
+                for i in 0..columns {
+                    key.push_str(&format!("{:?};", row.get_ref(i)?));
+                }
+                *counts.entry(key).or_insert(0) += by;
+            }
+        }
+        if counts.values().any(|n| *n < 0) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Fails if any other program of this computer has the file open, and changes nothing of it: a log that lies beside it
+/// is not brought in.
+pub fn prove_alone(path: &Path) -> Result<()> {
+    let conn = open(path)?;
+    conn.busy_timeout(Duration::from_millis(500))?;
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
+    let _: String = conn.query_row("PRAGMA locking_mode = EXCLUSIVE", [], |r| r.get(0))?;
+    conn.execute_batch("BEGIN EXCLUSIVE; ROLLBACK;")?;
+    Ok(())
+}
