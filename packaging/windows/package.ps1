@@ -8,15 +8,17 @@
     cashcraft-<version>-windows-x64-portable.zip   cashcraft.exe, cashcraft-cli.exe and the licence files
 
   The binary links the C runtime statically, so no Visual C++ redistributable is needed. The
-  files are not signed: CashCraft has no Windows code-signing certificate yet.
+  script does not sign: the release workflow signs the programs between -BuildOnly and
+  -SkipBuild, and then the installer, when the signing secrets are set.
 
   Needs: Rust (MSVC toolchain) and WiX v5: dotnet tool install --global wix --version 5.0.2
   Adapted from storytold/craft-launcher (packaging/windows/package.ps1, MIT OR Apache-2.0).
 
 .EXAMPLE
   pwsh packaging/windows/package.ps1
+  pwsh packaging/windows/package.ps1 -BuildOnly   # build and check the programs, package nothing
 #>
-param([switch] $SkipBuild)
+param([switch] $SkipBuild, [switch] $BuildOnly)
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Pkg = 'cashcraft'
@@ -63,6 +65,8 @@ foreach ($check in @(@($Exe, 2), @($Cli, 3))) {
   if ($machine -ne 0x8664) { throw "$($check[0]) is for machine 0x$('{0:X}' -f $machine), expected x64" }
   if ($subsystem -ne $check[1]) { throw "$($check[0]) has PE subsystem $subsystem, expected $($check[1])" }
 }
+
+if ($BuildOnly) { Get-Item $Exe, $Cli | Format-Table Name, Length; return }
 
 $Stage = Join-Path $TargetDir 'windows-package\stage'
 Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
