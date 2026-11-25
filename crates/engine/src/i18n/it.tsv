@@ -545,7 +545,6 @@ the columns and the sign of a card statement cannot be changed	le colonne e il s
 the bank's line is now the transfer that pays the card statement	il movimento della banca è ora il giroconto che paga l'estratto conto della carta
 card payment unlinked	pagamento della carta scollegato
 Import a statement	Importa un estratto conto
-It works with CSV and Excel 97 files exported from online banking and with the PDF statement of a credit card. Transactions already imported are skipped.	Funziona con i file CSV ed Excel 97 esportati dall'home banking e con l'estratto conto PDF di una carta di credito. I movimenti già importati vengono saltati.
 Card {digits}	Carta {digits}
 ⚠ This account is not a credit card.	⚠ Questo conto non è una carta di credito.
 choose a file	scegli un file
@@ -584,3 +583,88 @@ It is this one: {line}	È questo: {line}
 The payment has another amount	Il pagamento ha un altro importo
 The bank's line becomes an uncategorized expense.	Il movimento della banca diventa una spesa senza categoria.
 The date of the statement or the number of the card was not read: it cannot be imported.	La data dell'estratto conto o il numero della carta non sono stati letti: non si può importare.
+"{currency}" is not a currency code	"{currency}" non è un codice di valuta
+"{date}" is not a date	"{date}" non è una data
+"{date}" is not a valid OFX date	"{date}" non è una data OFX valida
+"{end}" is missing	manca "{end}"
+"{key}" is not one of the statements of the file: {list}	"{key}" non è uno degli estratti conto del file: {list}
+"{text}" is not a decimal separator: use , . or auto	"{text}" non è un separatore decimale: usa , . oppure auto
+"{text}" is not an order of dates: use dmy, mdy, ymd or auto	"{text}" non è un ordine delle date: usa dmy, mdy, ymd oppure auto
+All others: import	Sono tutti diversi: importa
+All the same: skip	Sono tutti gli stessi: salta
+Are these there already? Say it for each one	Questi ci sono già? Indicalo per ciascuno
+Balance on {date}: {stated} on the statement, {books} in the books	Saldo al {date}: {stated} sull'estratto conto, {books} nei registri
+Bank account	Conto bancario
+Columns remembered from the last import of this layout	Colonne ricordate dall'ultima importazione di questo formato
+Dates	Date
+Decimals	Decimali
+Forget them	Dimenticale
+It may be there already (--skip-rows or --add-rows): {line}	Potrebbe esserci già (--skip-rows o --add-rows): {line}
+It works with CSV, Excel 97 and OFX files exported from online banking and with the PDF statement of a credit card. Transactions already imported are skipped.	Funziona con i file CSV, Excel 97 e OFX esportati dalla banca online e con l'estratto conto in PDF di una carta di credito. I movimenti già importati vengono saltati.
+The file has several statements: choose one	Il file contiene più estratti conto: scegline uno
+The file has several statements: choose one with --statement	Il file contiene più estratti conto: scegline uno con --statement
+a statement is inside another one	un estratto conto è dentro un altro
+a transaction is outside the list of transactions, or inside another one	un movimento è fuori dall'elenco dei movimenti, o dentro un altro
+another: import	è un altro: importa
+automatic	automatico
+day, month, year	giorno, mese, anno
+declarations are not accepted in an OFX file	in un file OFX non sono ammesse dichiarazioni
+give the id of the saved columns, or all	indica l'id delle colonne salvate, oppure all
+line {line}: {error}	riga {line}: {error}
+month, day, year	mese, giorno, anno
+nothing was imported: these rows may be there already, say for each whether to skip or add it: {rows}	nessuna importazione: queste righe potrebbero esserci già, indica per ciascuna se saltarla o aggiungerla: {rows}
+only an OFX file has statements to choose	solo un file OFX ha estratti conto da scegliere
+row {n} is not among those that may be there already	la riga {n} non è tra quelle che potrebbero esserci già
+same amount, almost the same date	stesso importo, quasi la stessa data
+same bank id, another date or amount	stesso identificativo della banca, altra data o altro importo
+the OFX file has no statement of a bank account or of a credit card	il file OFX non contiene estratti conto bancari o di carta di credito
+the elements of the file are nested too deep	gli elementi del file sono annidati troppo in profondità
+the file has several statements, choose one: {list}	il file contiene più estratti conto, scegline uno: {list}
+the file has too many statements	il file contiene troppi estratti conto
+the file has too many transactions	il file contiene troppi movimenti
+the file is not a complete OFX file	il file non è un file OFX completo
+the quotation mark that opens a value is never closed	le virgolette che aprono un valore non vengono mai chiuse
+the same rows cannot be both skipped and added	le stesse righe non possono essere sia saltate sia aggiunte
+the same: skip	è lo stesso: salta
+the saved columns were forgotten	le colonne salvate sono state dimenticate
+the saved columns {id} cannot be read: forget them	le colonne salvate {id} non si leggono: dimenticale
+the statement is in {statement} and the account is in {account}: nothing was imported	l'estratto conto è in {statement} e il conto è in {account}: nessuna importazione
+the table is too large	la tabella è troppo grande
+the transaction is in {currency}, the statement is not	il movimento è in {currency}, l'estratto conto no
+there are no saved columns {id}	non ci sono colonne salvate {id}
+there is something after the end of the OFX file	c'è qualcosa dopo la fine del file OFX
+twice in the file	due volte nel file
+year, month, day	anno, mese, giorno
+{n} line could not be read	{n} riga non è stata letta
+{n} lines could not be read	{n} righe non sono state lette
+{tag} ends here, and {inner} of line {opened} has not ended	{tag} finisce qui, ma {inner} della riga {opened} non è finito
+{tag} ends without a start	{tag} finisce senza essere iniziato
+{tag} is missing	manca {tag}
+{tag} is there twice	{tag} c'è due volte
+{tag} never ends: the file is not complete	{tag} non finisce mai: il file non è completo
+"{amount}" may be read in two ways: three digits after the separator	"{amount}" si può leggere in due modi: tre cifre dopo il separatore
+The columns remembered for this layout cannot be read	Le colonne ricordate per questo formato non si leggono
+The import would be refused: {error}	L'importazione verrebbe rifiutata: {error}
+The same date, amount and payee	Stessa data, importo e beneficiario
+The signs of the amounts contradict the types of the transactions: which are right?	I segni degli importi contraddicono i tipi dei movimenti: quali sono giusti?
+To look at one by one	Da guardare uno per uno
+an OFX statement has no columns to change	un estratto conto OFX non ha colonne da cambiare
+as in the file	come nel file
+inverted	invertito
+it cannot be read: forget it	non si legge: dimenticala
+nothing was imported: rows {a} and {b} cannot both be transaction {id}	nessuna importazione: le righe {a} e {b} non possono essere entrambe il movimento {id}
+nothing was imported: say which transaction row {n} is, or add it	nessuna importazione: indica quale movimento è la riga {n}, oppure aggiungila
+rows that may be there are skipped one by one, or with "same" when they are surely the same	le righe che potrebbero esserci si saltano una per una, o con "same" quando sono di certo le stesse
+skip, it is this: {line}	salta, è questo: {line}
+the bank deletes a transaction, do it by hand if it is right: {line}	la banca elimina un movimento, se è giusto eliminalo a mano: {line}
+the bank replaces a transaction with this one: if you import it, delete the old one by hand	la banca sostituisce un movimento con questo: se lo importi, elimina a mano quello vecchio
+the chosen columns seem to have "{separator}" before the decimals, and are read with the other one: say which it is	le colonne scelte sembrano avere "{separator}" prima dei decimali e vengono lette con l'altro separatore: indica quale vale
+the parameter "{name}" must have row numbers	il parametro "{name}" deve contenere numeri di riga
+the same date, amount and payee	stessa data, importo e beneficiario
+the sign of the amounts is inverted, as in the last import of this layout into "{account}"	il segno degli importi è invertito, come nell'ultima importazione di questo formato in "{account}"
+the signs of the amounts contradict the types of the transactions	i segni degli importi contraddicono i tipi dei movimenti
+the signs of the amounts contradict the types of the transactions: say whether to invert them; nothing was imported	i segni degli importi contraddicono i tipi dei movimenti: indica se invertirli; nessuna importazione
+transaction {id} is not one that row {n} may be	il movimento {id} non è tra quelli che la riga {n} può essere
+{columns}; sign {sign}, dates {dates}, decimals {decimals}	{columns}; segno {sign}, date {dates}, decimali {decimals}
+{n} are left	{n} da decidere
+{n} is left	{n} da decidere

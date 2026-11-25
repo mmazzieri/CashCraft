@@ -17,7 +17,7 @@ CREATE TABLE card_statements (
     debit_date TEXT NOT NULL,
     amount INTEGER NOT NULL,
     import_key TEXT NOT NULL,
-    payment_id INTEGER REFERENCES postings(id) ON DELETE SET NULL,
+    payment_id INTEGER REFERENCES ledger_postings(id) ON DELETE SET NULL,
     UNIQUE (account_id, import_key)
 );
 CREATE INDEX card_statement_payment ON card_statements(payment_id);
@@ -78,11 +78,11 @@ impl Db {
             "SELECT s.id, s.account_id, a.name, s.closing_date, s.debit_date, s.amount, x.id, x.amount
              FROM card_statements s JOIN accounts a ON a.id=s.account_id
              LEFT JOIN (SELECT p.id, p.amount, ol.money_account_id AS card
-                        FROM postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
-                        JOIN postings o ON o.entry_id=p.entry_id AND o.id<>p.id
+                        FROM ledger_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                        JOIN ledger_postings o ON o.entry_id=p.entry_id AND o.id<>p.id
                         JOIN ledger_accounts ol ON ol.id=o.ledger_account_id
                         WHERE l.money_account_id IS NOT NULL AND l.id<>ol.id
-                          AND (SELECT COUNT(*) FROM postings n WHERE n.entry_id=p.entry_id)=2
+                          AND (SELECT COUNT(*) FROM ledger_postings n WHERE n.entry_id=p.entry_id)=2
                        ) x ON x.id=s.payment_id AND x.card=s.account_id
              WHERE a.kind='credit_card' ORDER BY s.closing_date DESC, s.id DESC",
         )?;

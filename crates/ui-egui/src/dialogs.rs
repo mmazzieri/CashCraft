@@ -8,11 +8,15 @@ use crate::gui::{
 use anyhow::Result;
 use cashcraft_engine::cards::{CardStatement, PaymentProposal};
 use cashcraft_engine::db::{Account, AccountKind, NewScheduled, NewTx, Transaction, TxEdit};
+use cashcraft_engine::duplicates::{Choice, Decision, LikelyDuplicate};
 use cashcraft_engine::i18n::{tr, trf, trn};
 use cashcraft_engine::importer::{self, ImportResult, Statement};
-use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount, parse_date, total};
+use cashcraft_engine::layouts;
+use cashcraft_engine::money::{DateOrder, fmt_date, fmt_eur, fmt_plain, parse_amount, parse_date, total};
+use cashcraft_engine::ofx::Kind;
 use cashcraft_engine::transfers::OtherSide;
 use egui::{self, Color32, CornerRadius, Frame, Id, Margin, RichText, Ui};
+use std::collections::BTreeMap;
 
 impl App {
     pub fn dialogs(&mut self, ctx: &egui::Context) {
@@ -624,6 +628,7 @@ impl App {
                     category_id: f.category,
                     cleared: f.cleared,
                     import_hash: None,
+                    import_marks: None,
                     card_row: false,
                 })?;
                 Ok(tr("Transaction recorded").into())
@@ -643,8 +648,8 @@ impl App {
         ui.heading(tr("Import a statement"));
         ui.label(
             RichText::new(tr(
-                "It works with CSV and Excel 97 files exported from online banking and with the PDF statement of a credit \
-                 card. Transactions already imported are skipped.",
+                "It works with CSV, Excel 97 and OFX files exported from online banking and with the PDF statement of a \
+                 credit card. Transactions already imported are skipped.",
             ))
             .color(MUTED),
         );
@@ -652,7 +657,10 @@ impl App {
         ui.horizontal(|ui| {
             if ui.button(tr("📂 Choose file…")).clicked()
                 && let Some(p) = rfd::FileDialog::new()
-                    .add_filter("CSV, Excel, PDF", &["csv", "CSV", "txt", "xls", "XLS", "pdf", "PDF"])
+                    .add_filter(
+                        "CSV, Excel, OFX, PDF",
+                        &["csv", "CSV", "txt", "xls", "XLS", "ofx", "OFX", "pdf", "PDF"],
+                    )
                     .pick_file()
             {
                 st.path_text = p.display().to_string();
@@ -688,7 +696,7 @@ impl App {
             card(ui, |ui| {
                 ui.label(RichText::new(tr("✔ Import completed")).size(16.0).strong().color(GREEN));
                 ui.label(trn(res.added, "{n} transaction imported", "{n} transactions imported"));
-                ui.label(trf("{n} already present (skipped)", &[("n", &res.duplicates)]));
+                ui.label(trf("{n} already present (skipped)", &[("n", &(res.duplicates + res.same))]));
                 ui.label(trf("{n} categorized automatically by the rules", &[("n", &res.categorized)]));
                 if res.skipped > 0 {
                     ui.label(
@@ -704,6 +712,7 @@ impl App {
                     let line = format!("{} · {} · {}", fmt_date(a.date), cut(&a.payee, 44), fmt_eur(a.amount));
                     ui.label(trf("Side of a transfer that was there: {line}", &[("line", &line)]));
                 }
+                balance_check(ui, st);
             });
             self.card_payments(ui, &mut st.cards);
             self.maybe_transfers(ui, st);
@@ -728,11 +737,17 @@ impl App {
         if st.table.is_none() && st.loading.is_none() {
             self.card_payments(ui, &mut st.cards);
         }
+        if let Err(e) = st.load_saved(&self.db) {
+            st.error = format!("{e:#}");
+        }
         let statement = st.table.as_ref().and_then(|t| t.statement.clone());
         if let Some(s) = &statement {
             statement_summary(ui, s, &mut st.allow_mismatch);
+        } else if st.table.as_ref().is_some_and(|t| t.ofx.is_some()) {
+            ofx_statements(ui, st);
         } else if let Some(t) = &st.table {
             ui.add_space(8.0);
+            let comma = st.settings().comma(t);
             ui.label(
                 RichText::new(trf(
                     "Encoding {encoding} · separator «{separator}» · decimals with «{decimal}» · header {header}",
@@ -742,7 +757,7 @@ impl App {
                             "separator",
                             &if t.delimiter == b'\t' { "tab".to_string() } else { (t.delimiter as char).to_string() },
                         ),
-                        ("decimal", &if t.decimal_comma { "," } else { "." }),
+                        ("decimal", &if comma { "," } else { "." }),
                         (
                             "header",
                             &t.header_row
@@ -775,9 +790,56 @@ impl App {
                 ui.label(tr("Details"));
                 changed |= column_combo(ui, "m_extra", &headers, &mut st.mapping.extra);
                 ui.label("");
-                changed |= ui.checkbox(&mut st.invert, tr("Invert the sign (credit cards)")).changed();
+                let sign = ui.checkbox(&mut st.invert, tr("Invert the sign (credit cards)")).changed();
+                st.sign_by_hand |= sign;
+                changed |= sign;
+                ui.end_row();
+                ui.label(tr("Dates"));
+                egui::ComboBox::from_id_salt("m_dates").selected_text(st.dates.label()).width(190.0).show_ui(
+                    ui,
+                    |ui| {
+                        for o in DateOrder::ALL {
+                            changed |= ui.selectable_value(&mut st.dates, o, o.label()).changed();
+                        }
+                    },
+                );
+                ui.label(tr("Decimals"));
+                let label = |d| match d {
+                    None => tr("automatic"),
+                    Some(true) => ",",
+                    Some(false) => ".",
+                };
+                let now = label(st.decimal_comma);
+                egui::ComboBox::from_id_salt("m_decimals").selected_text(now).width(190.0).show_ui(ui, |ui| {
+                    for d in [None, Some(true), Some(false)] {
+                        changed |= ui.selectable_value(&mut st.decimal_comma, d, label(d)).changed();
+                    }
+                });
                 ui.end_row();
             });
+            let detected = importer::Settings::detected(t);
+            if st.broken.is_some() {
+                ui.label(RichText::new(tr("The columns remembered for this layout cannot be read")).color(RED));
+            }
+            if let Some(id) = st.saved.or(st.broken) {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(tr("Columns remembered from the last import of this layout"))
+                            .color(MUTED)
+                            .size(12.5),
+                    );
+                    if ui.button(tr("Forget them")).clicked() {
+                        match self.db.forget_layout(id) {
+                            Ok(()) => {
+                                st.use_settings(detected, None);
+                                st.loaded_for = None;
+                                changed = true;
+                            }
+                            Err(e) => st.error = format!("{e:#}"),
+                        }
+                    }
+                });
+            }
             if changed {
                 st.reparse();
             }
@@ -798,6 +860,8 @@ impl App {
                     .push_str(&trf("from {from} to {to}", &[("from", &fmt_date(a.date)), ("to", &fmt_date(b.date))]));
             }
             ui.label(RichText::new(summary).strong());
+            problems(ui, st);
+            notices(ui, st, accounts);
             Frame::new().fill(ZEBRA).corner_radius(CornerRadius::same(6)).inner_margin(Margin::same(8)).show(
                 ui,
                 |ui| {
@@ -806,10 +870,11 @@ impl App {
                         .max_height(200.0)
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
-                            egui::Grid::new("preview").striped(true).num_columns(4).spacing([14.0, 4.0]).show(
+                            egui::Grid::new("preview").striped(true).num_columns(5).spacing([14.0, 4.0]).show(
                                 ui,
                                 |ui| {
-                                    for r in st.rows.iter().rev().take(50) {
+                                    for (i, r) in st.rows.iter().enumerate().rev().take(50) {
+                                        ui.label(RichText::new((i + 1).to_string()).color(MUTED).size(12.0));
                                         ui.label(RichText::new(fmt_date(r.date)).color(MUTED));
                                         ui.label(cut(&r.payee, 38));
                                         ui.label(RichText::new(cut(&r.memo, 40)).color(MUTED).size(12.0));
@@ -835,6 +900,14 @@ impl App {
             {
                 ui.label(RichText::new(tr("⚠ This account is not a credit card.")).color(AMBER));
             }
+            if let Err(e) = st.compare(&self.db) {
+                st.error = format!("{e:#}");
+            }
+            if let Some(a) = target.filter(|_| st.new_account.trim().is_empty()) {
+                ofx_account(ui, st, a);
+            }
+            balance_check(ui, st);
+            likely_duplicates(ui, st);
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
@@ -848,13 +921,28 @@ impl App {
             if ui.add_enabled(can, btn).clicked() {
                 let r = self.db.atomically(|| -> Result<(i64, ImportResult)> {
                     let acc = if !st.new_account.trim().is_empty() {
-                        let kind = if statement.is_some() { AccountKind::CreditCard } else { AccountKind::Bank };
-                        self.db.add_account(st.new_account.trim(), kind, "EUR", 0, "")?
+                        let ofx = st.table.as_ref().and_then(|t| t.ofx.as_ref()).and_then(|o| o.statement());
+                        let kind = match ofx.map(|s| s.kind) {
+                            Some(Kind::CreditCard) => AccountKind::CreditCard,
+                            Some(Kind::Savings) => AccountKind::Savings,
+                            Some(Kind::Bank) => AccountKind::Bank,
+                            None if statement.is_some() => AccountKind::CreditCard,
+                            None => AccountKind::Bank,
+                        };
+                        let currency = ofx.map_or("EUR", |s| s.currency.as_str());
+                        self.db.add_account(st.new_account.trim(), kind, currency, 0, "")?
                     } else {
                         st.account.ok_or_else(|| anyhow::anyhow!(tr("choose an account")))?
                     };
                     let table = st.table.as_ref().ok_or_else(|| anyhow::anyhow!(tr("choose a file")))?;
-                    let res = importer::import(&self.db, acc, table, &st.rows, st.skipped, st.allow_mismatch)?;
+                    let settings = st.settings();
+                    let choices = importer::Choices {
+                        allow_mismatch: st.allow_mismatch,
+                        likely: Decision { each: st.decided.clone(), ..Default::default() },
+                        settings: st.convincing.then_some(&settings),
+                        sign_confirmed: st.sign_by_hand,
+                    };
+                    let res = importer::import_with(&self.db, acc, table, &st.rows, st.skipped, &choices)?;
                     Ok((acc, res))
                 });
                 match r {
@@ -863,9 +951,16 @@ impl App {
                         st.cards.reload(&self.db);
                         st.result = Some(res);
                         st.new_account.clear();
+                        if let Err(e) = st.read_balance(&self.db) {
+                            st.error = format!("{e:#}");
+                        }
                         self.reload();
                     }
-                    Err(e) => st.error = format!("{e:#}"),
+                    Err(e) => {
+                        st.error = format!("{e:#}");
+                        // The books may have changed meanwhile.
+                        st.compared = None;
+                    }
                 }
             }
             if ui.button(tr("Cancel")).clicked() {
@@ -1016,6 +1111,184 @@ fn statement_text(s: &CardStatement) -> String {
             ("debit", &fmt_date(s.debit_date)),
         ],
     )
+}
+
+/// The statements of an OFX file, for the user to choose when there are several.
+fn ofx_statements(ui: &mut Ui, st: &mut ImportState) {
+    let Some(o) = st.table.as_mut().and_then(|t| t.ofx.as_mut()) else { return };
+    ui.add_space(8.0);
+    if o.statements.len() > 1 {
+        ui.label(RichText::new(tr("The file has several statements: choose one")).strong());
+    }
+    let before = o.chosen;
+    egui::ScrollArea::vertical().id_salt("ofx_statements").max_height(110.0).show(ui, |ui| {
+        for (i, s) in o.statements.iter().enumerate() {
+            let kind = match s.kind {
+                Kind::Bank => tr("Bank account"),
+                Kind::Savings => tr("Savings account"),
+                Kind::CreditCard => tr("Credit card"),
+            };
+            let range = match (s.first_date(), s.last_date()) {
+                (Some(a), Some(b)) => trf("from {from} to {to}", &[("from", &fmt_date(a)), ("to", &fmt_date(b))]),
+                _ => String::new(),
+            };
+            let count = trn(s.rows.len(), "{n} transaction", "{n} transactions");
+            let text = format!("{kind} {} · {} · {count} {range}", s.account_label(), s.currency);
+            ui.radio_value(&mut o.chosen, Some(i), text);
+        }
+    });
+    if o.chosen != before {
+        st.sign_by_hand = false;
+        st.invert = false;
+        st.reparse();
+    }
+    if !st.signs_contradict() {
+        if ui.checkbox(&mut st.invert, tr("Invert the sign (credit cards)")).changed() {
+            st.sign_by_hand = true;
+            st.reparse();
+        }
+        return;
+    }
+    let text = tr("The signs of the amounts contradict the types of the transactions: which are right?");
+    ui.label(RichText::new(text).color(RED));
+    let mut sign = st.sign_by_hand.then_some(st.invert);
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut sign, Some(false), tr("as in the file"));
+        ui.radio_value(&mut sign, Some(true), tr("inverted"));
+    });
+    if sign != st.sign_by_hand.then_some(st.invert) {
+        st.sign_by_hand = true;
+        st.invert = sign == Some(true);
+        st.reparse();
+    }
+}
+
+/// Whether an OFX statement can go into an account.
+fn ofx_account(ui: &mut Ui, st: &ImportState, account: &Account) {
+    let Some(s) = st.table.as_ref().and_then(|t| t.ofx.as_ref()).and_then(|o| o.statement()) else { return };
+    if s.currency != account.currency {
+        let text = trf(
+            "the statement is in {statement} and the account is in {account}: nothing was imported",
+            &[("statement", &s.currency), ("account", &account.currency)],
+        );
+        ui.label(RichText::new(text).color(RED));
+    }
+    if s.kind == Kind::CreditCard && account.kind != AccountKind::CreditCard {
+        ui.label(RichText::new(tr("⚠ This account is not a credit card.")).color(AMBER));
+    }
+}
+
+/// The balance that the bank states, against the books. Only a check.
+fn balance_check(ui: &mut Ui, st: &ImportState) {
+    let statement = st.table.as_ref().and_then(|t| t.ofx.as_ref()).and_then(|o| o.statement());
+    let Some((stated, on)) = statement.and_then(|s| s.balance) else { return };
+    let books = st.books.map_or_else(|| "—".to_string(), fmt_plain);
+    let date = on.map_or_else(|| "—".to_string(), fmt_date);
+    let text = trf(
+        "Balance on {date}: {stated} on the statement, {books} in the books",
+        &[("date", &date), ("stated", &fmt_plain(stated)), ("books", &books)],
+    );
+    let mark =
+        if st.books == Some(stated) { RichText::new("✔").color(GREEN) } else { RichText::new("·").color(MUTED) };
+    ui.horizontal(|ui| {
+        ui.label(mark);
+        ui.label(RichText::new(text).color(MUTED));
+    });
+}
+
+/// The lines that look like transactions and could not be read.
+fn problems(ui: &mut Ui, st: &ImportState) {
+    if st.problems.is_empty() {
+        return;
+    }
+    let title = trn(st.problems.len(), "{n} line could not be read", "{n} lines could not be read");
+    egui::CollapsingHeader::new(RichText::new(title).color(AMBER)).id_salt("problems").show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("problem_list").max_height(90.0).show(ui, |ui| {
+            for p in &st.problems {
+                ui.label(trf("line {line}: {error}", &[("line", &p.line), ("error", &p.error)]));
+            }
+        });
+    });
+}
+
+/// What the file is read with and may not be expected, and what the bank takes back.
+fn notices(ui: &mut Ui, st: &ImportState, accounts: &[Account]) {
+    let Some(t) = &st.table else { return };
+    let account = accounts.iter().find(|a| Some(a.id) == st.target());
+    let remembered = account.filter(|_| st.saved.is_some() && !st.sign_by_hand).map(|a| a.name.as_str());
+    for n in layouts::notices(t, &st.settings(), remembered) {
+        ui.label(RichText::new(format!("⚠ {n}")).color(AMBER));
+    }
+    for d in &st.deletions {
+        let e = &d.existing;
+        let line = format!("{} · {} · {}", fmt_date(e.date), cut(&e.payee, 40), fmt_plain(e.amount));
+        let text = trf("the bank deletes a transaction, do it by hand if it is right: {line}", &[("line", &line)]);
+        ui.label(RichText::new(format!("⚠ {text}")).color(AMBER));
+    }
+}
+
+/// The rows that may be in the books already: the user says what each is. Only those that are surely the same
+/// can be skipped together.
+fn likely_duplicates(ui: &mut Ui, st: &mut ImportState) {
+    if st.likely.is_empty() {
+        return;
+    }
+    ui.add_space(8.0);
+    card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let left = st.likely.iter().filter(|l| !st.decided.contains_key(&l.index)).count();
+        ui.label(RichText::new(tr("Are these there already? Say it for each one")).strong());
+        ui.label(RichText::new(trn(left, "{n} is left", "{n} are left")).color(MUTED).size(12.0));
+        egui::ScrollArea::vertical().id_salt("likely").max_height(220.0).show(ui, |ui| {
+            for certain in [true, false] {
+                let group: Vec<&LikelyDuplicate> = st.likely.iter().filter(|l| l.certain == certain).collect();
+                if group.is_empty() {
+                    continue;
+                }
+                ui.horizontal(|ui| {
+                    let (title, button, choice): (_, _, fn(&LikelyDuplicate) -> Choice) = if certain {
+                        (tr("The same date, amount and payee"), tr("All the same: skip"), |l| Choice::Skip(l.proposed))
+                    } else {
+                        (tr("To look at one by one"), tr("All others: import"), |_| Choice::Add)
+                    };
+                    ui.label(RichText::new(title).strong());
+                    if ui.button(button).clicked() {
+                        st.decided.extend(group.iter().map(|l| (l.index, choice(l))));
+                    }
+                });
+                for l in group {
+                    likely_row(ui, l, &mut st.decided);
+                }
+            }
+        });
+    });
+}
+
+fn likely_row(ui: &mut Ui, l: &LikelyDuplicate, decided: &mut BTreeMap<usize, Choice>) {
+    let mut said = decided.get(&l.index).copied();
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("{}.", l.index + 1)).color(MUTED));
+        ui.label(format!("{} · {}", fmt_date(l.date), cut(&l.payee, 34)));
+        ui.label(money(l.amount));
+        ui.radio_value(&mut said, Some(Choice::Add), tr("another: import"));
+        if l.existing.is_empty() {
+            ui.radio_value(&mut said, Some(Choice::Skip(None)), tr("the same: skip"));
+        }
+    });
+    ui.indent(("likely", l.index), |ui| {
+        if !l.certain {
+            ui.label(RichText::new(l.reason.label()).color(MUTED).size(12.0));
+        }
+        for t in &l.existing {
+            let line = format!("{} · {} · {}", fmt_date(t.date), cut(&t.payee, 44), fmt_plain(t.amount));
+            let text = trf("skip, it is this: {line}", &[("line", &line)]);
+            let text = if l.proposed == Some(t.id) { RichText::new(text).strong() } else { RichText::new(text) };
+            ui.radio_value(&mut said, Some(Choice::Skip(Some(t.id))), text);
+        }
+    });
+    if let Some(s) = said {
+        decided.insert(l.index, s);
+    }
 }
 
 /// What a card statement says of itself, against what was read.

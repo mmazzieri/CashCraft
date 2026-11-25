@@ -4,6 +4,7 @@
 
 use anyhow::{Result, anyhow};
 use cashcraft_engine::db::Db;
+use cashcraft_engine::duplicates::Reason;
 use cashcraft_engine::i18n::{Lang, tr, trf, trn, with_lang};
 use cashcraft_engine::ledger::Class;
 use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount_with, parse_date};
@@ -44,7 +45,7 @@ pub enum Cmd {
         #[arg(long)]
         memo: Option<String>,
     },
-    /// Import a statement (CSV, .xls or the PDF of a credit card) into an account
+    /// Import a statement (CSV, .xls, OFX or the PDF of a credit card) into an account
     #[command(visible_alias = "importa")]
     Import {
         file: PathBuf,
@@ -57,21 +58,34 @@ pub enum Cmd {
         /// Import a card statement even if its rows do not add up to its totals
         #[arg(long)]
         allow_mismatch: bool,
-        /// Import a card statement into an account that is not a credit card
+        /// Import the statement of a card into an account that is not a credit card
         #[arg(long)]
         any_account: bool,
+        /// Rows that are in the books already, among those that may be: numbers, with =id for another transaction
+        /// than the proposed one ("2,5=31"), and "same" for those that are surely the same
+        #[arg(long)]
+        skip_rows: Option<String>,
+        /// Rows that are other transactions, among those that may be there: numbers, or "all" that are left
+        #[arg(long)]
+        add_rows: Option<String>,
         #[command(flatten)]
         cols: ColumnArgs,
     },
-    /// Analyze a statement (CSV, .xls or the PDF of a credit card) without importing it
+    /// Analyze a statement (CSV, .xls, OFX or the PDF of a credit card) without importing it
     #[command(visible_alias = "anteprima")]
     Preview {
         file: PathBuf,
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        /// Account to look for likely duplicates in (name or id)
+        #[arg(long, short)]
+        account: Option<String>,
         #[command(flatten)]
         cols: ColumnArgs,
     },
+    /// Columns remembered for each layout of CSV and Excel files
+    #[command(subcommand, visible_alias = "colonne")]
+    Columns(ColumnsCmd),
     /// Credit card statements and the bank's lines that pay them
     #[command(subcommand, visible_alias = "carte")]
     Cards(CardsCmd),
@@ -115,6 +129,21 @@ pub struct ColumnArgs {
     /// Invert the sign of the amounts (e.g. card statements with positive expenses)
     #[arg(long)]
     invert: bool,
+    /// Do not invert the sign, whatever is remembered for this layout
+    #[arg(long, conflicts_with = "invert")]
+    no_invert: bool,
+    /// Which statement of an OFX file with several: number from 1, or account number
+    #[arg(long)]
+    statement: Option<String>,
+    /// Decimal separator: ",", "." or "auto"
+    #[arg(long)]
+    decimals: Option<String>,
+    /// Order of the dates: dmy, mdy, ymd or auto
+    #[arg(long)]
+    dates: Option<String>,
+    /// Start from the detected columns, and remember nothing
+    #[arg(long)]
+    no_saved: bool,
     /// Date column (name, or number from 1)
     #[arg(long)]
     date_col: Option<String>,
@@ -137,7 +166,10 @@ pub struct ColumnArgs {
 
 impl ColumnArgs {
     fn put(&self, m: &mut Map<String, Value>) {
-        m.insert("invert".into(), json!(self.invert));
+        if self.invert || self.no_invert {
+            m.insert("invert".into(), json!(self.invert));
+        }
+        m.insert("use_saved".into(), json!(!self.no_saved));
         for (k, v) in [
             ("date_column", &self.date_col),
             ("amount_column", &self.amount_col),
@@ -145,6 +177,9 @@ impl ColumnArgs {
             ("debit_column", &self.debit_col),
             ("description_column", &self.desc_col),
             ("payee_column", &self.payee_col),
+            ("statement", &self.statement),
+            ("decimal_separator", &self.decimals),
+            ("date_format", &self.dates),
         ] {
             if let Some(v) = v {
                 m.insert(k.into(), json!(v));
@@ -274,6 +309,19 @@ pub enum CardsCmd {
     },
     /// Undo `link`
     Unlink { statement: i64 },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ColumnsCmd {
+    /// List them
+    List,
+    /// Forget those of a layout, or of all
+    Forget {
+        #[arg(required_unless_present = "all")]
+        id: Option<i64>,
+        #[arg(long, conflicts_with = "id")]
+        all: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -568,22 +616,30 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
             "add_transfer",
             args(&[("from", v(from)), ("to", v(to)), ("amount", v(amount)), ("date", o(&date)), ("memo", o(&memo))]),
         ),
-        Cmd::Import { file, account, dry_run, allow_mismatch, any_account, cols } => {
+        Cmd::Import { file, account, dry_run, allow_mismatch, any_account, skip_rows, add_rows, cols } => {
             let mut m = Map::new();
             m.insert("path".into(), json!(file));
             m.insert("account".into(), json!(account));
             m.insert("dry_run".into(), json!(dry_run));
             m.insert("allow_mismatch".into(), json!(allow_mismatch));
             m.insert("any_account".into(), json!(any_account));
+            for (k, v) in [("skip_rows", skip_rows), ("add_rows", add_rows)] {
+                m.extend(v.map(|v| (k.to_string(), json!(v))));
+            }
             cols.put(&mut m);
             ("import_csv", Value::Object(m))
         }
-        Cmd::Preview { file, limit, cols } => {
+        Cmd::Preview { file, limit, account, cols } => {
             let mut m = Map::new();
             m.insert("path".into(), json!(file));
             m.insert("limit".into(), json!(limit));
+            m.extend(account.map(|a| ("account".to_string(), json!(a))));
             cols.put(&mut m);
             ("preview_csv", Value::Object(m))
+        }
+        Cmd::Columns(ColumnsCmd::List) => ("list_saved_columns", json!({})),
+        Cmd::Columns(ColumnsCmd::Forget { id, all }) => {
+            ("forget_saved_columns", args(&[("id", id.map(|i| json!(i))), ("all", v(all))]))
         }
         Cmd::Cards(c) => match c {
             CardsCmd::Statements => ("list_card_statements", json!({})),
@@ -690,6 +746,13 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
             ("export_csv", args(&[("path", v(file)), ("account", o(&account)), ("from", o(&from)), ("to", o(&to))]))
         }
     };
+    // A remembered sign is told before anything is written.
+    if tool == "import_csv" && !as_json && a.get("dry_run") == Some(&json!(false)) {
+        let seen = ops::call(db, "preview_csv", &a, None)?;
+        for n in field(&seen, "notices").as_array().into_iter().flatten() {
+            println!("! {}", st(n));
+        }
+    }
     let r = ops::call(db, tool, &a, None)?;
     if as_json {
         println!("{}", serde_json::to_string_pretty(&r)?);
@@ -774,6 +837,84 @@ fn print_statement(s: &Value) {
     let unread = count(field(s, "unread_rows"));
     if unread > 0 {
         println!("  ✖ {}", trn(unread, "{n} row could not be read", "{n} rows could not be read"));
+    }
+}
+
+/// The statements of an OFX file, and the balance of the chosen one against the books.
+fn print_ofx(ofx: &Value, balance: &Value) {
+    for s in field(ofx, "statements").as_array().into_iter().flatten() {
+        let mark = if field(s, "n") == field(ofx, "chosen") { "→" } else { " " };
+        println!(
+            "{mark} {:>2}  {:<8} {:<3}  {:>5}  {} – {}",
+            st(field(s, "n")),
+            st(field(s, "account")),
+            st(field(s, "currency")),
+            st(field(s, "transactions")),
+            date(field(s, "first_date")),
+            date(field(s, "last_date"))
+        );
+    }
+    if !ofx.is_null() && field(ofx, "chosen").is_null() {
+        println!("{}", tr("The file has several statements: choose one with --statement"));
+    }
+    if balance.is_null() {
+        return;
+    }
+    let money = |k: &str| match field(balance, k) {
+        Value::Null => "—".to_string(),
+        v => st(v),
+    };
+    println!(
+        "{}",
+        trf(
+            "Balance on {date}: {stated} on the statement, {books} in the books",
+            &[("date", &date(field(balance, "date"))), ("stated", &money("stated")), ("books", &money("books"))]
+        )
+    );
+}
+
+/// Rows that may be in the books already.
+fn print_likely(rows: &[Value]) {
+    for l in rows {
+        let reason = Reason::from_code(&st(field(l, "reason"))).map_or("", Reason::label);
+        let reason = if field(l, "certain") == &json!(true) { tr("the same date, amount and payee") } else { reason };
+        let line = format!(
+            "{}  {}  {}  {} ({})",
+            st(field(l, "row")),
+            date(field(l, "date")),
+            st(field(l, "payee")),
+            eur(field(l, "amount")),
+            reason
+        );
+        println!("{}", trf("It may be there already (--skip-rows or --add-rows): {line}", &[("line", &line)]));
+        for t in field(l, "existing").as_array().into_iter().flatten() {
+            let mark = if field(t, "id") == field(l, "proposed") { "→" } else { " " };
+            println!(
+                " {mark}{:>5}  {}  {:<40} {:>13}",
+                st(field(t, "id")),
+                date(field(t, "date")),
+                cut(&st(field(t, "payee")), 40),
+                eur(field(t, "amount"))
+            );
+        }
+    }
+}
+
+/// What the bank takes back.
+fn print_deletions(list: &Value) {
+    for d in list.as_array().into_iter().flatten() {
+        let t = field(d, "existing");
+        let line = format!(
+            "{} {} {} {}",
+            st(field(t, "id")),
+            date(field(t, "date")),
+            st(field(t, "payee")),
+            eur(field(t, "amount"))
+        );
+        println!(
+            "! {}",
+            trf("the bank deletes a transaction, do it by hand if it is right: {line}", &[("line", &line)])
+        );
     }
 }
 
@@ -1045,6 +1186,33 @@ fn print_human(tool: &str, r: &Value) {
                 println!("{}  {paid}", statement_line(&s));
             }
         }
+        "list_saved_columns" => {
+            for l in arr("saved_columns") {
+                println!(
+                    "{:>4}  {}  {}",
+                    st(field(&l, "id")),
+                    st(field(&l, "account")),
+                    cut(&st(field(&l, "layout")), 70)
+                );
+                if field(&l, "readable") == &json!(false) {
+                    println!("      {}", tr("it cannot be read: forget it"));
+                    continue;
+                }
+                let columns = field(&l, "columns").as_object().into_iter().flatten();
+                let columns: Vec<String> = columns.map(|(k, c)| format!("{k}={}", st(c))).collect();
+                let sign = if field(&l, "invert") == &json!(true) { tr("inverted") } else { tr("as in the file") };
+                let text = trf(
+                    "{columns}; sign {sign}, dates {dates}, decimals {decimals}",
+                    &[
+                        ("columns", &columns.join(", ")),
+                        ("sign", &sign),
+                        ("dates", &st(field(&l, "date_format"))),
+                        ("decimals", &st(field(&l, "decimal_separator"))),
+                    ],
+                );
+                println!("      {text}");
+            }
+        }
         "propose_card_payments" => print_payments(&arr("card_payments")),
         "preview_csv" | "import_csv" => {
             let f = field(r, "format");
@@ -1052,7 +1220,9 @@ fn print_human(tool: &str, r: &Value) {
             if !statement.is_null() {
                 print_statement(statement);
             }
-            if statement.is_null() {
+            let ofx = field(r, "ofx");
+            print_ofx(ofx, field(r, "ledger_balance"));
+            if statement.is_null() && ofx.is_null() {
                 println!(
                     "{}",
                     trf(
@@ -1080,6 +1250,20 @@ fn print_human(tool: &str, r: &Value) {
                     println!("  {:<13} ← \"{}\"", label, st(&m[k]));
                 }
             }
+            if !field(f, "saved_columns").is_null() {
+                println!("{}", tr("Columns remembered from the last import of this layout"));
+            }
+            for p in arr("problems") {
+                let (line, error) = (st(field(&p, "line")), st(field(&p, "error")));
+                println!("  ! {}", trf("line {line}: {error}", &[("line", &line), ("error", &error)]));
+            }
+            // Those of an import were told before it.
+            for n in arr("notices").iter().filter(|_| r.get("message").is_none()) {
+                println!("! {}", st(n));
+            }
+            print_likely(&arr("likely_duplicates"));
+            print_deletions(field(r, "deletions"));
+            print_deletions(field(field(r, "result"), "deletions"));
             if let Some(msg) = r.get("message") {
                 println!("{}", st(msg));
                 print_payments(&arr("card_payments"));
@@ -1098,9 +1282,14 @@ fn print_human(tool: &str, r: &Value) {
                         ]
                     )
                 );
-                for p in arr("preview") {
+                if !field(r, "refused").is_null() {
+                    let error = st(field(r, "refused"));
+                    println!("! {}", trf("The import would be refused: {error}", &[("error", &error)]));
+                }
+                for (i, p) in arr("preview").into_iter().enumerate() {
                     println!(
-                        "  {}  {:<40} {:>12}",
+                        "{:>4}  {}  {:<40} {:>12}",
+                        i + 1,
                         date(field(&p, "date")),
                         cut(&st(field(&p, "payee")), 40),
                         eur(field(&p, "amount"))

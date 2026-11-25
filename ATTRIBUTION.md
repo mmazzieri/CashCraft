@@ -2,7 +2,7 @@
 
 ## Provenance of the design
 
-CashCraft was written by a coding agent from its author's description of the features expected from a personal finance manager. Nothing inside another product (its code, files, pictures or text) was read, run or decompiled. Bank CSV support is based on the column names commonly found in exported statements, not on any bank's software. The reader of card statements is based on the layout of one statement (positions and headings, with its contents hidden).
+CashCraft was written by a coding agent from its author's description of the features expected from a personal finance manager. Nothing inside another product (its code, files, pictures or text) was read, run or decompiled. Bank CSV support is based on the column names commonly found in exported statements, not on any bank's software. The OFX reader was written from the public OFX specification alone. The reader of card statements is based on the layout of one statement (positions and headings, with its contents hidden).
 
 | File | Source | License |
 |---|---|---|

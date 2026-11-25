@@ -4,6 +4,7 @@ use crate::db::Cents;
 use crate::i18n::{Lang, lang, tr, trf};
 use anyhow::{Result, anyhow};
 use chrono::{Datelike, NaiveDate};
+use serde::{Deserialize, Serialize};
 
 /// Largest amount of a single transaction: keeps the sums far from the limit of `i64`.
 pub const MAX_AMOUNT: Cents = 100_000_000_000_000;
@@ -215,6 +216,71 @@ pub fn parse_date(s: &str) -> Option<NaiveDate> {
     worded_date(s)
 }
 
+/// The order of day, month and year in the dates of a file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DateOrder {
+    /// [`parse_date`]: the day comes first unless the year does.
+    #[default]
+    Auto,
+    Dmy,
+    Mdy,
+    Ymd,
+}
+
+impl DateOrder {
+    pub const ALL: [DateOrder; 4] = [DateOrder::Auto, DateOrder::Dmy, DateOrder::Mdy, DateOrder::Ymd];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            DateOrder::Auto => "auto",
+            DateOrder::Dmy => "dmy",
+            DateOrder::Mdy => "mdy",
+            DateOrder::Ymd => "ymd",
+        }
+    }
+
+    pub fn from_code(s: &str) -> Option<Self> {
+        let s = s.trim().to_lowercase();
+        Self::ALL.into_iter().find(|o| o.code() == s)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DateOrder::Auto => tr("automatic"),
+            DateOrder::Dmy => tr("day, month, year"),
+            DateOrder::Mdy => tr("month, day, year"),
+            DateOrder::Ymd => tr("year, month, day"),
+        }
+    }
+}
+
+/// [`parse_date`] with the order of the numbers given; a year of four digits is known wherever it is.
+pub fn parse_date_as(s: &str, order: DateOrder) -> Option<NaiveDate> {
+    let t = s.trim().trim_matches('"');
+    let first = t.split([' ', 'T']).next().unwrap_or(t);
+    let parts: Vec<&str> = first.split(['/', '-', '.']).collect();
+    let (a, b, c) = match parts.as_slice() {
+        [a, b, c] if order != DateOrder::Auto => (*a, *b, *c),
+        // In words, or without separators.
+        _ => return parse_date(s),
+    };
+    let (year, month, day) = match order {
+        _ if a.len() == 4 => (a, b, c),
+        DateOrder::Ymd if c.len() != 4 => (a, b, c),
+        DateOrder::Mdy => (c, a, b),
+        _ => (c, b, a),
+    };
+    let number = |t: &str| (!t.is_empty() && t.bytes().all(|b| b.is_ascii_digit())).then(|| t.parse::<u32>().ok())?;
+    let year = match (year.len(), number(year)?) {
+        (4, y) => y,
+        (2, y) => y + if y < 69 { 2000 } else { 1900 },
+        _ => return None,
+    };
+    let date = NaiveDate::from_ymd_opt(i32::try_from(year).ok()?, number(month)?, number(day)?)?;
+    (1970..=2100).contains(&date.year()).then_some(date)
+}
+
 /// "24 novembre 2026", "24 nov 2026", "24 November 2026": statements write it in their own language,
 /// whatever the language in use.
 fn worded_date(s: &str) -> Option<NaiveDate> {
@@ -290,6 +356,28 @@ mod tests {
     use crate::i18n::with_lang;
 
     const LANGS: [Lang; 2] = [Lang::It, Lang::En];
+
+    #[test]
+    fn dates_in_a_given_order() {
+        use DateOrder::{Auto, Dmy, Mdy, Ymd};
+        for (text, order, date) in [
+            ("03/04/2026", Auto, Some("2026-04-03")),
+            ("03/04/2026", Dmy, Some("2026-04-03")),
+            ("03/04/2026", Mdy, Some("2026-03-04")),
+            ("3-4-26 10:00", Mdy, Some("2026-03-04")),
+            ("26.04.03", Ymd, Some("2026-04-03")),
+            ("2026-04-03T10:00", Mdy, Some("2026-04-03")),
+            ("13/04/2026", Mdy, None),
+            ("3 aprile 2026", Mdy, Some("2026-04-03")),
+            ("20260403", Dmy, Some("2026-04-03")),
+            ("//", Dmy, None),
+            ("+1/+2/2026", Dmy, None),
+            ("1/2/99999999999", Dmy, None),
+            ("", Ymd, None),
+        ] {
+            assert_eq!(parse_date_as(text, order).map(|d| d.to_string()).as_deref(), date, "{text} {order:?}");
+        }
+    }
 
     #[test]
     fn amounts() {

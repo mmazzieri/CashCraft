@@ -59,7 +59,7 @@ fn reply(db: &Db, msg: &Value, roots: &ops::Roots) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "cashcraft", "title": "CashCraft", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "CashCraft manages personal finances: accounts, transactions, categories, budgets, rules and import of Italian bank files and of credit card statements in PDF. Amounts are in euros; negative = money out. Accounts and categories are given by name or id."
+                "instructions": "CashCraft manages personal finances: accounts, transactions, categories, budgets, rules and import of Italian bank files, of OFX statements and of credit card statements in PDF. Amounts are in euros; negative = money out. Accounts and categories are given by name or id."
             }))
         }
         "ping" => Ok(json!({})),

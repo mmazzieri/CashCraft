@@ -239,7 +239,7 @@ fn an_added_side_is_confirmed_by_the_line_of_its_statement() {
     assert_eq!(db.transaction(t.id).unwrap().date, t.date);
     assert_eq!(balances(&db), [("Bank".into(), 49_880), ("Savings".into(), 50_300)]);
     assert_eq!((import(&db, bank, BANK), import(&db, savings, SAVINGS)), (0, 0));
-    assert!(db.adopt(done.other_id, t.date, "x", "", "h").is_err(), "once");
+    assert!(db.adopt(&db.transaction(done.other_id).unwrap(), t.date, "x", "", "h", "m").is_err(), "once");
     assert_sound(&db, "adopted");
 }
 

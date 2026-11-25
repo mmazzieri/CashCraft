@@ -4,6 +4,7 @@
 
 use crate::cards::CARD_SCHEMA;
 use crate::i18n::{Lang, lang, tr, trf, trn, with_lang};
+use crate::layouts::LAYOUT_SCHEMA;
 use crate::ledger::{self, COUNTED, Draft, LEDGER_SCHEMA, Line, PROFIT_AND_LOSS, UNCATEGORIZED};
 use crate::money::checked_total;
 use anyhow::{Context, Result, anyhow, bail};
@@ -158,6 +159,8 @@ pub struct NewTx {
     pub category_id: Option<i64>,
     pub cleared: bool,
     pub import_hash: Option<String>,
+    /// What else the import knows it by, separated by spaces.
+    pub import_marks: Option<String>,
     /// A row of a card statement.
     pub card_row: bool,
 }
@@ -300,8 +303,10 @@ pub struct Db {
 
 /// Version of the data file format, kept in `PRAGMA user_version` (0 is CashCraft 0.1, 1 is 0.2.0 with
 /// the same tables, 2 the double-entry ledger, 3 adds dates of single postings, 4 was never
-/// released, 5 tells the added sides of transfers, 6 the card statements: see `docs/ledger.md`).
-pub const SCHEMA_VERSION: i64 = 6;
+/// released, 5 tells the added sides of transfers, 6 the card statements, 7 the saved columns of CSV
+/// files and the other import keys of a posting, in a table
+/// with another name so that an older program fails to write: see `docs/ledger.md`).
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// Tables of formats 0 and 1 with their name in 2. A window of an older program that has the file open
 /// fails at once when it writes to one, instead of doing half of what it was asked.
@@ -434,6 +439,7 @@ impl Db {
                 self.conn.execute_batch(SCHEMA)?;
                 self.conn.execute_batch(LEDGER_SCHEMA)?;
                 self.conn.execute_batch(CARD_SCHEMA)?;
+                self.conn.execute_batch(LAYOUT_SCHEMA)?;
             }
             self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             Ok(())
@@ -526,10 +532,10 @@ impl Db {
     pub fn accounts(&self, include_archived: bool) -> Result<Vec<Account>> {
         let mut st = self.conn.prepare(
             "SELECT a.id, a.name, a.kind, a.currency,
-                    COALESCE((SELECT SUM(p.amount) FROM postings p JOIN entries e ON e.id=p.entry_id
+                    COALESCE((SELECT SUM(p.amount) FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
                               WHERE p.ledger_account_id=l.id AND e.opening_account_id=a.id),0),
                     a.iban, a.archived,
-                    COALESCE((SELECT SUM(p.amount) FROM postings p WHERE p.ledger_account_id=l.id),0)
+                    COALESCE((SELECT SUM(p.amount) FROM ledger_postings p WHERE p.ledger_account_id=l.id),0)
              FROM accounts a LEFT JOIN ledger_accounts l ON l.money_account_id=a.id
              ORDER BY a.name COLLATE NOCASE",
         )?;
@@ -742,13 +748,13 @@ impl Db {
         let mut uncategorized: HashSet<i64> = HashSet::new();
         if f.uncategorized {
             let spare = self.system_ledger(UNCATEGORIZED)?;
-            let mut st = self.conn.prepare("SELECT entry_id FROM postings WHERE ledger_account_id=?1")?;
+            let mut st = self.conn.prepare("SELECT entry_id FROM ledger_postings WHERE ledger_account_id=?1")?;
             uncategorized = st.query_map([spare], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
         }
         let mut entry_categories: HashMap<i64, Vec<i64>> = HashMap::new();
         if f.category_id.is_some() {
             let mut st = self.conn.prepare(
-                "SELECT p.entry_id, l.category_id FROM postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                "SELECT p.entry_id, l.category_id FROM ledger_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
                  WHERE l.category_id IS NOT NULL",
             )?;
             for row in st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))? {
@@ -763,14 +769,15 @@ impl Db {
         let mut sql = String::from(
             "SELECT p.id, a.id, a.name, COALESCE(p.date, e.date), p.amount, COALESCE(p.payee, e.payee), COALESCE(p.memo, e.memo),
                     ol.category_id, p.cleared, o.id, e.id, oa.id, oa.name, ol.system, ol.name, p.origin
-             FROM postings p JOIN entries e ON e.id=p.entry_id
+             FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
              JOIN ledger_accounts l ON l.id=p.ledger_account_id JOIN accounts a ON a.id=l.money_account_id
-             LEFT JOIN postings o ON o.entry_id=p.entry_id AND o.id<>p.id
-                  AND (SELECT COUNT(*) FROM postings x WHERE x.entry_id=p.entry_id)=2
+             LEFT JOIN ledger_postings o ON o.entry_id=p.entry_id AND o.id<>p.id
+                  AND (SELECT COUNT(*) FROM ledger_postings x WHERE x.entry_id=p.entry_id)=2
              LEFT JOIN ledger_accounts ol ON ol.id=o.ledger_account_id
              LEFT JOIN accounts oa ON oa.id=ol.money_account_id
-             WHERE e.opening_account_id IS NULL",
+             WHERE +e.opening_account_id IS NULL",
         );
+        // The plus keeps away from the index of the opening balances, which has every other entry.
         let mut args: Vec<rusqlite::types::Value> = Vec::new();
         if let Some(a) = f.account_id {
             sql.push_str(" AND a.id=?");
@@ -879,7 +886,7 @@ impl Db {
         let acc: Option<i64> = self
             .conn
             .query_row(
-                "SELECT l.money_account_id FROM postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                "SELECT l.money_account_id FROM ledger_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
                  WHERE p.id=?1 AND l.money_account_id IS NOT NULL",
                 [id],
                 |r| r.get(0),
@@ -910,7 +917,7 @@ impl Db {
             let (account, currency) = self.money_ledger(tx.account_id)?;
             if let Some(hash) = &tx.import_hash {
                 let known: i64 = self.conn.query_row(
-                    "SELECT COUNT(*) FROM postings WHERE ledger_account_id=?1 AND import_hash=?2",
+                    "SELECT COUNT(*) FROM ledger_postings WHERE ledger_account_id=?1 AND import_hash=?2",
                     params![account, hash],
                     |r| r.get(0),
                 )?;
@@ -931,6 +938,7 @@ impl Db {
                         currency: currency.clone(),
                         cleared: tx.cleared,
                         import_hash: tx.import_hash.clone(),
+                        other_hashes: tx.import_marks.clone(),
                         origin: tx.card_row.then(|| ledger::CARD_ROW.into()),
                         ..Default::default()
                     },
@@ -1239,7 +1247,7 @@ impl Db {
             Ok(())
         };
         let mut st = self.conn.prepare(&format!(
-            "SELECT l.class='income', l.category_id, p.amount FROM postings p
+            "SELECT l.class='income', l.category_id, p.amount FROM ledger_postings p
              JOIN ledger_accounts l ON l.id=p.ledger_account_id WHERE p.entry_id=?1 AND {PROFIT_AND_LOSS}"
         ))?;
         let mut seen = HashSet::new();
@@ -1266,7 +1274,7 @@ impl Db {
     /// Assets minus debts: every account of the chart of those classes, up to a date.
     pub fn net_worth(&self, until: Option<NaiveDate>) -> Result<Cents> {
         Ok(self.conn.query_row(
-            "SELECT COALESCE(SUM(p.amount),0) FROM postings p JOIN entries e ON e.id=p.entry_id
+            "SELECT COALESCE(SUM(p.amount),0) FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
              JOIN ledger_accounts l ON l.id=p.ledger_account_id
              WHERE l.class IN ('asset','liability') AND (?1 IS NULL OR e.date<=?1)",
             [until.map(d2s)],
@@ -1410,6 +1418,7 @@ impl Db {
                         category_id: s.category_id,
                         cleared: false,
                         import_hash: None,
+                        import_marks: None,
                         card_row: false,
                     })?;
                 }

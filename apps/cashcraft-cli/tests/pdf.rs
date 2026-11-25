@@ -92,3 +92,22 @@ fn the_command_line_reports_a_file_that_ends_the_other_process() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Damaged statements, the same at every run: the other process answers or is ended, in time.
+#[test]
+fn damaged_statements_end_in_time() {
+    use cashcraft_engine::testing::{Seeded, mutate};
+    let good = statement_file();
+    let mut r = Seeded(0x5EED);
+    let limits = Limits { time: Duration::from_secs(4), ..Default::default() };
+    let start = Instant::now();
+    let mut n = 0;
+    while n < 10 || (n < 150 && start.elapsed() < Duration::from_secs(10)) {
+        n += 1;
+        let bad =
+            mutate(&mut r, &good, &["<<", ">>", "endobj", "stream", "[", "1 0 R", "-", "99999999999", "BT", "ET"]);
+        let one = Instant::now();
+        let _ = statement_with(Path::new(PROGRAM), &bad, limits);
+        assert!(one.elapsed() < limits.time + Duration::from_secs(4), "{n}");
+    }
+}

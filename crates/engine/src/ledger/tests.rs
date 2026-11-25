@@ -354,8 +354,8 @@ fn verification_finds_what_is_wrong() {
         db.conn.execute_batch("ROLLBACK; PRAGMA foreign_keys=ON;").unwrap();
         assert!(n > 0, "{sql}");
     };
-    tamper("UPDATE postings SET amount=amount+1 WHERE id=1");
-    tamper("DELETE FROM postings WHERE id=1");
+    tamper("UPDATE ledger_postings SET amount=amount+1 WHERE id=1");
+    tamper("DELETE FROM ledger_postings WHERE id=1");
     tamper("DELETE FROM entries");
     tamper("DELETE FROM ledger_accounts WHERE money_account_id=1");
     tamper("DELETE FROM ledger_accounts WHERE category_id=1");
@@ -363,7 +363,9 @@ fn verification_finds_what_is_wrong() {
     tamper("DELETE FROM accounts WHERE id=1");
     tamper("UPDATE ledger_accounts SET class='asset' WHERE category_id=1");
     tamper("UPDATE ledger_accounts SET currency='USD' WHERE money_account_id=1");
-    tamper("UPDATE postings SET ledger_account_id=(SELECT id FROM ledger_accounts WHERE system='uncategorized')");
+    tamper(
+        "UPDATE ledger_postings SET ledger_account_id=(SELECT id FROM ledger_accounts WHERE system='uncategorized')",
+    );
     assert_sound(&db, "untouched");
 }
 
@@ -729,7 +731,7 @@ fn only_save_entry_writes_postings() {
                 let text = std::fs::read_to_string(&p).unwrap().to_lowercase();
                 for verb in ["insert into", "insert or ignore into", "insert or replace into", "update", "delete from"]
                 {
-                    for table in ["postings", "entries"] {
+                    for table in ["ledger_postings", "entries"] {
                         for _ in text.matches(&format!("{verb} {table}")) {
                             out.push(format!("{name}: {verb} {table}"));
                         }
@@ -749,11 +751,11 @@ fn only_save_entry_writes_postings() {
         "db.rs: delete from entries",
         // `remove_entry`.
         "ledger.rs: delete from entries",
-        "ledger.rs: delete from postings",
+        "ledger.rs: delete from ledger_postings",
         "ledger.rs: insert into entries",
-        "ledger.rs: insert into postings",
+        "ledger.rs: insert into ledger_postings",
         "ledger.rs: update entries",
-        "ledger.rs: update postings",
+        "ledger.rs: update ledger_postings",
     ];
     assert_eq!(found, expected);
 }
