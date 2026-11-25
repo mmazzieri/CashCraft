@@ -87,19 +87,23 @@ fn backup(path: &Path, from: i64) -> Result<PathBuf> {
             1 => beside(path, &format!(".v{from}-backup.db")),
             n => beside(path, &format!(".v{from}-backup-{n}.db")),
         };
-        // A link never replaces a file.
-        match std::fs::hard_link(&part.0, &target) {
-            Ok(()) => return Ok(target),
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
-            // A file system without links.
-            Err(_) if std::fs::symlink_metadata(&target).is_err() => {
-                std::fs::rename(&part.0, &target)?;
-                return Ok(target);
-            }
-            Err(_) => {}
+        if publish(&part.0, &target)? {
+            return Ok(target);
         }
     }
     bail!(tr("there are too many backup copies"))
+}
+
+/// Gives a complete file its name. False: the name is taken, and what has it is left alone.
+pub(crate) fn publish(part: &Path, target: &Path) -> std::io::Result<bool> {
+    // A link never replaces a file.
+    match std::fs::hard_link(part, target) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(false),
+        // A file system without links.
+        Err(_) if std::fs::symlink_metadata(target).is_err() => std::fs::rename(part, target).map(|()| true),
+        Err(_) => Ok(false),
+    }
 }
 
 /// How many rows each table has.
@@ -538,4 +542,4 @@ impl Db {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// The tables of formats 0 and 1, as CashCraft 0.2.0 created them. Never change this text.
-const V1_SCHEMA: &str = r#"
+pub(crate) const V1_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY,

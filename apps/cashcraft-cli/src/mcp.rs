@@ -8,12 +8,13 @@ use anyhow::Result;
 use cashcraft_engine::db::Db;
 use cashcraft_engine::i18n::{Lang, with_lang};
 use cashcraft_engine::ops;
+use cashcraft_engine::store::{self, Shared};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 
 const PROTOCOL: &str = "2025-06-18";
 
-pub fn serve(db: &Db, roots: &ops::Roots) -> Result<()> {
+pub fn serve(db: &Db, shared: Option<&Shared>, roots: &ops::Roots) -> Result<()> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -31,8 +32,8 @@ pub fn serve(db: &Db, roots: &ops::Roots) -> Result<()> {
             }
         };
         let replies: Vec<Value> = match msg {
-            Value::Array(batch) => batch.iter().filter_map(|m| handle(db, m, roots)).collect(),
-            m => handle(db, &m, roots).into_iter().collect(),
+            Value::Array(batch) => batch.iter().filter_map(|m| answer(db, shared, m, roots)).collect(),
+            m => answer(db, shared, &m, roots).into_iter().collect(),
         };
         for r in replies {
             writeln!(out, "{r}")?;
@@ -40,6 +41,33 @@ pub fn serve(db: &Db, roots: &ops::Roots) -> Result<()> {
         out.flush()?;
     }
     Ok(())
+}
+
+/// [`handle`] on a shared file: what others wrote comes in before a call, what it changed goes out after. What the user
+/// should know is in `data_file`, and in the text.
+pub fn answer(db: &Db, shared: Option<&Shared>, msg: &Value, roots: &ops::Roots) -> Option<Value> {
+    let is_call = msg.get("method").and_then(Value::as_str) == Some("tools/call");
+    let Some(shared) = shared.filter(|_| is_call) else { return handle(db, msg, roots) };
+    with_lang(Lang::En, || match store::around(shared, || handle(db, msg, roots)) {
+        Ok((reply, notices)) => {
+            let mut reply = reply?;
+            let result = reply.get_mut("result").and_then(Value::as_object_mut);
+            if let Some(result) = result.filter(|_| !notices.is_empty()) {
+                if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
+                    content.extend(notices.iter().map(|n| json!({"type": "text", "text": n})));
+                }
+                if let Some(o) = result.get_mut("structuredContent").and_then(Value::as_object_mut) {
+                    o.insert("data_file".into(), json!(notices));
+                }
+            }
+            Some(reply)
+        }
+        Err(e) => {
+            let id = msg.get("id").cloned()?;
+            let content = json!([{"type": "text", "text": format!("Error: {e:#}")}]);
+            Some(json!({"jsonrpc": "2.0", "id": id, "result": {"content": content, "isError": true}}))
+        }
+    })
 }
 
 /// Handles a message; notifications (without an id) get no reply.

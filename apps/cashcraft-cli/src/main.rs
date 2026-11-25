@@ -2,10 +2,11 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod data;
 mod mcp;
 
-use cashcraft_engine::db;
 use cashcraft_engine::i18n::{Lang, META_KEY, set_lang, trf};
+use cashcraft_engine::store::{self, Choice, Home};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -14,12 +15,18 @@ use std::path::PathBuf;
     name = "cashcraft-cli",
     version,
     about = "CashCraft for the terminal, and MCP server for AI agents",
-    after_help = "Default data file: CashCraft/cashcraft.db in your user data folder (or the variable CASHCRAFT_DB).\nLanguage of what is printed: CASHCRAFT_LANG=en or it, else the one chosen in the app, else the system's.\nMCP server: cashcraft-cli mcp --automation-read-root FOLDER --automation-write-root FOLDER"
+    after_help = "Default data file: CashCraft/cashcraft.db in your user data folder (or the variable CASHCRAFT_DB, or the file chosen last in the app).\nLanguage of what is printed: CASHCRAFT_LANG=en or it, else the one chosen in the app, else the system's.\nMCP server: cashcraft-cli mcp --automation-read-root FOLDER --automation-write-root FOLDER"
 )]
 struct Cli {
     /// Data file to use
     #[arg(long, global = true)]
     db: Option<PathBuf>,
+    /// Use the data file where it lies, even in a synced folder
+    #[arg(long, global = true, conflicts_with = "shared")]
+    direct: bool,
+    /// Use the data file through a private copy, as in a synced folder
+    #[arg(long, global = true)]
+    shared: bool,
     /// Print the results as JSON
     #[arg(long, global = true)]
     json: bool,
@@ -32,16 +39,37 @@ fn main() {
         return;
     }
     let args = Cli::parse();
-    let path = args.db.unwrap_or_else(db::default_db_path);
+    let home = Home::user();
+    let (path, must_exist) = home.pick(args.db);
+    let asked = match (args.direct, args.shared) {
+        (true, _) => Choice::Direct,
+        (_, true) => Choice::Shared,
+        _ => Choice::Auto,
+    };
     let user = Lang::at_start(None);
     // An agent gets English, but a data file it creates is the user's.
-    set_lang(if matches!(args.cmd, cli::Cmd::Mcp { .. }) { Lang::En } else { user });
-    let result = db::Db::open_seeding(&path, user).and_then(|(d, _)| {
-        if !matches!(args.cmd, cli::Cmd::Mcp { .. }) {
-            set_lang(Lang::at_start(d.meta(META_KEY).as_deref()));
-        }
-        cli::run(&d, args.cmd, args.json)
-    });
+    let mcp = matches!(args.cmd, cli::Cmd::Mcp { .. });
+    set_lang(if mcp { Lang::En } else { user });
+    let result = match args.cmd {
+        cli::Cmd::Data(cmd) => data::run(&home, &path, asked, cmd, args.json),
+        cmd => store::open(&home, &path, asked, user, must_exist).and_then(|o| {
+            if !mcp {
+                set_lang(Lang::at_start(o.db.meta(META_KEY).as_deref()));
+            }
+            let Some((shared, report)) = &o.shared else { return cli::run(&o.db, None, cmd, args.json) };
+            for n in report.conflict_notice() {
+                eprintln!("! {n}");
+            }
+            if mcp {
+                return cli::run(&o.db, Some(shared), cmd, args.json);
+            }
+            let (done, notices) = store::around(shared, || cli::run(&o.db, None, cmd, args.json))?;
+            for n in notices {
+                eprintln!("! {n}");
+            }
+            done
+        }),
+    };
     if let Err(e) = result {
         eprintln!("{}", trf("Error: {error}", &[("error", &format_args!("{e:#}"))]));
         std::process::exit(1);
@@ -68,6 +96,7 @@ mod tests {
             ("export", "esporta"),
             ("ledger", "contabilita"),
             ("cards", "carte"),
+            ("data", "archivio"),
         ] {
             let cli = Cli::command();
             let name = |n: &str| cli.find_subcommand(n).map(|c| c.get_name().to_string());

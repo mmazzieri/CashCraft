@@ -9,6 +9,7 @@ use cashcraft_engine::i18n::{Lang, tr, trf, trn, with_lang};
 use cashcraft_engine::ledger::Class;
 use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount_with, parse_date};
 use cashcraft_engine::ops;
+use cashcraft_engine::store::Shared;
 use clap::{Args, Subcommand};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
@@ -118,6 +119,9 @@ pub enum Cmd {
         #[arg(long)]
         to: Option<String>,
     },
+    /// The data file: where it is, synced folders, conflicts
+    #[command(subcommand, visible_alias = "archivio")]
+    Data(crate::data::DataCmd),
     /// List the available operations (the same as in the MCP server)
     Tools,
     /// Run an operation with JSON arguments, e.g.: call list_transactions '{"limit":5}'
@@ -651,15 +655,18 @@ fn v<T: serde::Serialize>(x: T) -> Option<Value> {
     Some(json!(x))
 }
 
-pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
+/// `shared` is for the MCP server, which carries the changes at each call.
+pub fn run(db: &Db, shared: Option<&Shared>, cmd: Cmd, as_json: bool) -> Result<()> {
     let (tool, a): (&str, Value) = match cmd {
         Cmd::Mcp { automation_read_root, automation_write_root } => {
             // Agents get English, whatever the language of the interface.
             return with_lang(Lang::En, || {
                 let roots = ops::Roots::new(&automation_read_root, &automation_write_root)?;
-                crate::mcp::serve(db, &roots)
+                crate::mcp::serve(db, shared, &roots)
             });
         }
+        // Answered before the data file is opened.
+        Cmd::Data(_) => return Ok(()),
         Cmd::Tools => {
             for t in ops::tools() {
                 println!("{:<22} {}", t.name, t.description);

@@ -18,3 +18,11 @@ pub fn data_dir() -> PathBuf {
     };
     dir.unwrap_or_else(|| PathBuf::from("."))
 }
+
+/// Like [`data_dir`], but never a folder that follows the user to other computers: `%LOCALAPPDATA%` on Windows.
+pub fn local_dir() -> PathBuf {
+    match var("LOCALAPPDATA") {
+        Some(dir) if cfg!(windows) => dir,
+        _ => data_dir(),
+    }
+}
