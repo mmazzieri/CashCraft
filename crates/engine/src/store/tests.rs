@@ -1033,6 +1033,8 @@ fn a_private_folder_that_is_synced_is_refused() {
     assert!(o.shared.is_none() && o.notices.iter().any(|n| n.contains("CASHCRAFT_PRIVATE")), "{:?}", o.notices);
     // Nor is the file of a private folder shared, whatever the path looks like.
     assert!(!way(&home, &own, Use::Auto).0);
+    let beside = p.0.join("Dropbox").join("other.db");
+    assert!(!way(&home, &beside, Use::Auto).0 && way(&p.home("two"), &beside, Use::Auto).0);
 }
 
 #[test]

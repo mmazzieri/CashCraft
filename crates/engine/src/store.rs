@@ -306,7 +306,7 @@ pub fn way(home: &Home, path: &Path, asked: Use) -> (bool, Option<Service>) {
         // Once shared, whatever the environment says next time.
         Use::Auto if Shared::new(home, path).copy().exists() => true,
         // There is no place for a copy that is not carried too, and the private folder is not shared with anybody.
-        Use::Auto if of(&home.dir.join(COPY)).is_some() || resolved(path).starts_with(resolved(&home.dir)) => false,
+        Use::Auto if of(&home.dir.join(COPY)).is_some() => false,
         Use::Auto if resolved(path) == resolved(&crate::db::private_db_path()) => false,
         Use::Auto => service.is_some(),
         Use::Direct => false,
