@@ -40,7 +40,7 @@ different currencies is refused.
 A transaction is a posting on an account of the user that is not an opening balance, and its id is the
 id of the posting. Its category is the other posting of the entry; `transfer_peer` is the other posting
 when that is on an account of the user too. Each side of a transfer keeps its own payee. Import hashes
-are unique in each account.
+are unique in each account; `postings.other_hashes` has those of other files ([import.md](import.md)).
 
 ## Turning a transaction into a transfer
 
@@ -114,11 +114,12 @@ was opened. It is read and changed as `opening_balance` of the account.
 `trial_balance` (up to a date) lists every balance with equal totals of debits and credits.
 `verify_ledger` checks each entry, posting and account and reports what is wrong; it changes nothing.
 
-## Migration from formats 2 to 5
+## Migration from formats 2 to 6
 
-The columns `postings.date` and `postings.origin` and the table `card_statements` ([cards.md](cards.md)) are
+The columns `postings.date`, `postings.origin` and `postings.other_hashes` and the tables `card_statements`
+([cards.md](cards.md)) and `csv_layouts` ([import.md](import.md)) are
 added where they are missing, and the dates of sides left alone put right, after a copy as
-`cashcraft.v2-backup.db` (or `v3`, `v4`, `v5`) with the rules below. Lines with an import hash on a card with
+`cashcraft.v2-backup.db` (or `v3`, `v4`, `v5`, `v6`) with the rules below. Lines with an import hash on a card with
 statements of format 4 are taken as rows of those statements.
 
 ## Migration from formats 0 and 1

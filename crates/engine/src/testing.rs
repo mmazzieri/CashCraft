@@ -21,6 +21,42 @@ const HELVETICA: [u32; 95] = [
     260, 334, 584,
 ];
 
+/// Pseudo-random numbers that are the same at every run.
+pub struct Seeded(pub u64);
+
+impl Seeded {
+    pub fn next(&mut self, below: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        if below == 0 { 0 } else { usize::try_from(self.0 % below as u64).unwrap_or(0) }
+    }
+}
+
+/// Damages a file in a few places: bytes changed, removed, repeated, or replaced by some of `pieces`.
+pub fn mutate(r: &mut Seeded, bytes: &[u8], pieces: &[&str]) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    for _ in 0..=r.next(6) {
+        let from = r.next(out.len() + 1);
+        let to = (from + r.next(24)).min(out.len());
+        let new: Vec<u8> = match r.next(5) {
+            0 => vec![u8::try_from(r.next(256)).unwrap_or(0)],
+            1 => Vec::new(),
+            2 => out.get(from..to).unwrap_or_default().repeat(1 + r.next(20)),
+            3 => {
+                out.truncate(from);
+                continue;
+            }
+            _ => {
+                let n = r.next(pieces.len());
+                pieces.get(n).map_or(Vec::new(), |p| p.as_bytes().to_vec())
+            }
+        };
+        out.splice(from..to, new);
+    }
+    out
+}
+
 pub fn file(objects: &[Vec<u8>]) -> Vec<u8> {
     let mut out = b"%PDF-1.4\n".to_vec();
     let mut xref = format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);

@@ -174,6 +174,7 @@ fn rows_of_a_card_statement_are_never_the_payment() {
         payee: "RIMBORSO".into(),
         memo: String::new(),
         key: Some("card|2026-12-31|1234|2026-12-13|-116310|rimborso".into()),
+        ..Default::default()
     };
     let import = |b: &Books| crate::importer::import_rows(&b.db, b.card, &[refund()], 0).unwrap();
     let b = Books::new();

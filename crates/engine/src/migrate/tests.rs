@@ -534,11 +534,12 @@ fn a_file_without_transactions_and_an_empty_file_open() {
 }
 
 #[test]
-fn files_of_formats_2_to_5_open() {
+fn files_of_formats_2_to_6_open() {
     ledger_file_opens(2, include_str!("v2.sql"));
     ledger_file_opens(3, include_str!("v3.sql"));
     ledger_file_opens(4, include_str!("v4.sql"));
     ledger_file_opens(5, include_str!("v5.sql"));
+    ledger_file_opens(6, include_str!("v6.sql"));
 }
 
 /// What is new is added, after a copy; everything else stays as it was.
@@ -574,8 +575,14 @@ fn ledger_file_opens(version: i64, schema: &str) {
         )
         .unwrap();
     }
-    if version == 5 {
+    if version >= 5 {
         old.execute_batch("UPDATE postings SET origin='added' WHERE id=4").unwrap();
+    }
+    if version == 6 {
+        old.execute_batch(
+            "INSERT INTO card_statements VALUES (1,2,'2026-01-01','2026-01-05',900,'2026-01-01|1234',3);",
+        )
+        .unwrap();
     }
     let before = dump(&old);
     let (db, _) = Db::open(&dir.file()).unwrap();
@@ -588,6 +595,12 @@ fn ledger_file_opens(version: i64, schema: &str) {
         db.conn.execute("DELETE FROM card_statements", []).unwrap();
         db.delete_transaction(5).unwrap();
     }
+    if version == 6 {
+        let s = &db.card_statements().unwrap()[0];
+        assert_eq!((s.payment_id, s.matches), (Some(3), true));
+        db.conn.execute("DELETE FROM card_statements", []).unwrap();
+    }
+    assert!(db.layouts().unwrap().is_empty());
     let t = db.transaction(1).unwrap();
     let date = if (3..5).contains(&version) { "2026-02-01" } else { "2026-01-05" };
     assert_eq!((d2s(t.date), d2s(db.entry(1).unwrap().date)), (date.into(), date.into()));

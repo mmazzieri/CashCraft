@@ -4,6 +4,7 @@
 use crate::cards::CARD_SCHEMA;
 use crate::db::{Cents, Db, RENAMED, SCHEMA, SCHEMA_VERSION};
 use crate::i18n::{tr, trf};
+use crate::layouts::LAYOUT_SCHEMA;
 use crate::ledger::{ADDED, CARD_ROW, Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
 use anyhow::{Context, Result, bail};
 use rusqlite::backup::Backup;
@@ -123,7 +124,8 @@ impl Db {
         let marked = dated && self.has_posting_column("origin")?;
         let cards = again && self.has_table("card_statements")?;
         // Format 4 had the statements, without the marks.
-        let current = marked && cards && !self.has_column("card_statements", "payment_joined")?;
+        let sound_cards = marked && cards && !self.has_column("card_statements", "payment_joined")?;
+        let current = sound_cards && self.has_posting_column("other_hashes")? && self.has_table("csv_layouts")?;
         if current && !self.has_leftovers()? {
             return self.drop_leftovers();
         }
@@ -131,6 +133,7 @@ impl Db {
         let from = match (again, dated, current) {
             (false, _, _) => 1,
             (_, false, _) => 2,
+            (_, _, false) if sound_cards => 6,
             (_, _, false) if marked => 5,
             (_, _, false) if cards => 4,
             (_, _, false) => 3,
@@ -145,6 +148,9 @@ impl Db {
         let done = (|| -> Result<()> {
             if !again {
                 self.convert()?;
+            }
+            if again && !self.has_posting_column("other_hashes")? {
+                self.conn.execute_batch("ALTER TABLE postings ADD COLUMN other_hashes TEXT")?;
             }
             if again && !dated {
                 self.conn.execute_batch("ALTER TABLE postings ADD COLUMN date TEXT")?;
@@ -162,9 +168,10 @@ impl Db {
             }
             if !cards {
                 self.conn.execute_batch(CARD_SCHEMA)?;
-            } else if !current {
+            } else if !sound_cards {
                 self.update_card_statements()?;
             }
+            self.conn.execute_batch(LAYOUT_SCHEMA)?;
             Ok(())
         })();
         if done.is_err()
@@ -463,6 +470,7 @@ impl Db {
                         memo: Some(p.memo.clone()).filter(|m| *m != r.memo),
                         date: None,
                         origin: None,
+                        other_hashes: None,
                     });
                 }
                 None => {

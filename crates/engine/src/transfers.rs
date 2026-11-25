@@ -198,6 +198,7 @@ impl Db {
                         memo: Some(t.memo.clone()),
                         cleared: false,
                         import_hash: None,
+                        other_hashes: None,
                         date: None,
                         origin: Some(ADDED.into()),
                         ..old

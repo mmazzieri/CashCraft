@@ -3,16 +3,19 @@
 //! operations are English in every language; messages and errors are in the language in use.
 
 use crate::db::{self, AccountKind, CategoryTotal, Cents, Db, NewScheduled, NewTx, TxEdit, TxFilter, TxKind};
+use crate::duplicates::Decision;
 use crate::i18n::{Lang, lang, tr, trf, trn};
-use crate::importer;
+use crate::importer::{self, Settings};
+use crate::layouts;
 use crate::ledger::{
     Class, Entry, EntryFilter, MAX_LINES, NewEntry, NewLine, TrialBalance, find_ledger_account, too_big,
 };
-use crate::money::{checked_total, fmt_date, fmt_eur, fmt_machine, fmt_plain, parse_amount, parse_date};
+use crate::money::{DateOrder, checked_total, fmt_date, fmt_eur, fmt_machine, fmt_plain, parse_amount, parse_date};
 use crate::transfers::OtherSide;
 use anyhow::{Result, anyhow, bail};
 use chrono::{Datelike, Months, NaiveDate};
 use serde_json::{Map, Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 pub struct ToolDef {
@@ -38,6 +41,12 @@ const AMOUNT: &str = "Amount in euros: a number (-12.5), or text in the English 
 const DATE: &str = "Date: YYYY-MM-DD or DD/MM/YYYY (default: today).";
 const ACCOUNT: &str = "Account: numeric id or name.";
 const LEDGER_ACCOUNT: &str = "Account of the chart of accounts: path \"Parent:Child\", name, \"ledger:5\" for ledger_account_id 5, \"code:3010\" for the code, \"system:opening_balances\" or \"system:uncategorized\". A number alone is refused.";
+const STATEMENT: &str =
+    "Which statement of an OFX file that has several: its number from 1, or the number of the account.";
+const DECIMALS: &str = "Decimal separator of the file: \",\", \".\" or \"auto\".";
+const DATES: &str = "Order of the dates of the file: dmy, mdy, ymd or auto.";
+const SAVED: &str =
+    "Start from the columns remembered for this layout (default true); false starts from those detected.";
 const CATEGORY: &str = "Category: id, name or path \"Parent:Child\" (e.g. \"Home:Utilities\").";
 
 pub fn tools() -> Vec<ToolDef> {
@@ -130,26 +139,40 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "preview_csv",
-            description: "Analyzes a statement (CSV, Excel 97 .xls or the PDF of a credit card) without importing it: separator, recognized columns and first rows; for a card statement its dates and whether the rows add up to its totals.",
+            description: "Analyzes a statement (CSV, Excel 97 .xls, OFX or the PDF of a credit card) without importing it: separator, recognized columns, first rows and the lines that could not be read; for a card statement its dates and whether the rows add up to its totals; for OFX its statements and the balance they state, a check only. With an account, also likely_duplicates: rows that may be there already.",
             schema: obj(
-                json!({"path": s("Path of the CSV file."), "invert": b("Invert the sign of the amounts."), "limit": n("Preview rows (default 10)."),
+                json!({"path": s("Path of the file."), "account": s("Account to look for likely duplicates in: numeric id or name (optional)."),
+                "statement": s(STATEMENT), "invert": b("Invert the sign of the amounts."), "limit": n("Preview rows (default 10)."),
                 "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."), "credit_column": s("Money-in column."),
-                "debit_column": s("Money-out column."), "description_column": s("Description column."), "payee_column": s("Payee column.")}),
+                "debit_column": s("Money-out column."), "description_column": s("Description column."), "payee_column": s("Payee column."),
+                "decimal_separator": s(DECIMALS), "date_format": s(DATES), "use_saved": b(SAVED)}),
                 &["path"],
             ),
         },
         ToolDef {
             name: "import_csv",
-            description: "Imports a CSV or Excel 97 .xls file exported by an Italian bank, or the PDF statement of a credit card (into a credit_card account), into an account. Columns, separator, encoding and amount format are detected; transactions already imported are skipped; rules assign the categories.",
+            description: "Imports a CSV or Excel 97 .xls file exported by a bank, an OFX statement in the currency of the account, or the PDF statement of a credit card (into a credit_card account), into an account. Columns, separator, encoding and amount format are detected, or are those of the last import of a file with the same headings; transactions already imported are skipped; rules assign the categories. When rows may be there already from another statement the call is refused and lists them: ask the user, then pass skip_rows and add_rows.",
             schema: obj(
-                json!({"path": s("Path of the CSV file."), "account": s(ACCOUNT), "invert": b("Invert the sign (e.g. credit card statements with positive expenses)."),
+                json!({"path": s("Path of the file."), "account": s(ACCOUNT), "statement": s(STATEMENT), "invert": b("Invert the sign (e.g. credit card statements with positive expenses)."),
                 "dry_run": b("Trial run: saves nothing."), "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."),
                 "credit_column": s("Money-in column."), "debit_column": s("Money-out column."), "description_column": s("Description column."),
-                "payee_column": s("Payee column."),
+                "payee_column": s("Payee column."), "decimal_separator": s(DECIMALS), "date_format": s(DATES), "use_saved": b(SAVED),
+                "skip_rows": s("Rows of likely_duplicates that the user says are in the books already: numbers separated by commas (\"2,5\"), or \"all\"."),
+                "add_rows": s("Rows of likely_duplicates that the user says are other transactions: numbers separated by commas (\"2,5\"), or \"all\"."),
                 "allow_mismatch": b("Import a card statement even if its rows do not add up to its totals; only after the user agreed."),
-                "any_account": b("Import a card statement into an account that is not a credit card; only after the user agreed.")}),
+                "any_account": b("Import the statement of a card into an account that is not a credit card; only after the user agreed.")}),
                 &["path", "account"],
             ),
+        },
+        ToolDef {
+            name: "list_saved_columns",
+            description: "Lists the columns and formats remembered for each layout of CSV and Excel files.",
+            schema: obj(json!({}), &[]),
+        },
+        ToolDef {
+            name: "forget_saved_columns",
+            description: "Forgets the columns remembered for a layout, so that they are detected again.",
+            schema: obj(json!({"id": n("Id of the saved columns."), "all": b("Forget those of every layout.")}), &[]),
         },
         ToolDef {
             name: "list_card_statements",
@@ -559,8 +582,8 @@ fn to_eur(v: Value) -> Value {
     }
 }
 
-fn mapping_overrides(t: &importer::Table, a: &Value) -> Result<importer::Mapping> {
-    let mut m = t.mapping.clone();
+fn mapping_overrides(t: &importer::Table, saved: &importer::Mapping, a: &Value) -> Result<importer::Mapping> {
+    let mut m = saved.clone();
     let set = |k: &str, slot: &mut Option<usize>| -> Result<()> {
         if let Some(v) = opt_str(a, k) {
             if v.trim().is_empty() || v.trim() == "-" {
@@ -588,6 +611,107 @@ fn mapping_overrides(t: &importer::Table, a: &Value) -> Result<importer::Mapping
         m.amount = None;
     }
     Ok(m)
+}
+
+/// How to read a file: the settings remembered or detected, with what the call changes.
+fn file_settings(db: &Db, t: &importer::Table, a: &Value) -> Result<(Settings, Option<i64>)> {
+    let (mut s, saved) = match given_bool(a, "use_saved")? {
+        Some(false) => (Settings::detected(t), None),
+        _ => Settings::of(db, t)?,
+    };
+    s.mapping = mapping_overrides(t, &s.mapping, a)?;
+    if let Some(i) = given_bool(a, "invert")? {
+        s.invert = i;
+    }
+    match opt_str(a, "decimal_separator").as_deref().map(str::trim) {
+        None | Some("") => {}
+        Some(",") => s.decimal_comma = Some(true),
+        Some(".") => s.decimal_comma = Some(false),
+        Some("auto") => s.decimal_comma = None,
+        Some(x) => bail!(trf("\"{text}\" is not a decimal separator: use , . or auto", &[("text", &x)])),
+    }
+    if let Some(d) = opt_str(a, "date_format").filter(|d| !d.trim().is_empty()) {
+        s.dates = DateOrder::from_code(&d).ok_or_else(|| {
+            anyhow!(trf("\"{text}\" is not an order of dates: use dmy, mdy, ymd or auto", &[("text", &d)]))
+        })?;
+    }
+    if t.ofx.is_some() && s != Settings::detected(t) {
+        bail!(tr("the columns and the sign of an OFX statement cannot be changed"));
+    }
+    if t.statement.is_some() && s != Settings::detected(t) {
+        bail!(tr("the columns and the sign of a card statement cannot be changed"));
+    }
+    if s.mapping.date.is_none() && t.has_columns() {
+        bail!(tr("the date column was not found: give it with date_column"));
+    }
+    let m = &s.mapping;
+    if m.amount.is_none() && m.credit.is_none() && m.debit.is_none() && t.has_columns() {
+        bail!(tr("the amount column was not found: give it with amount_column or credit_column/debit_column"));
+    }
+    Ok((s, saved))
+}
+
+/// Some rows by their number, or all.
+enum Rows {
+    All,
+    These(BTreeSet<usize>),
+}
+
+fn rows_arg(a: &Value, k: &str) -> Result<Rows> {
+    let wrong = || anyhow!(trf("the parameter \"{name}\" must have row numbers, or \"all\"", &[("name", &k)]));
+    let index =
+        |n: Option<u64>| n.and_then(|n| usize::try_from(n).ok()).and_then(|n| n.checked_sub(1)).ok_or_else(wrong);
+    let set: Result<BTreeSet<usize>> = match a.get(k) {
+        None | Some(Value::Null) => Ok(BTreeSet::new()),
+        Some(Value::String(t)) if t.trim().eq_ignore_ascii_case("all") => return Ok(Rows::All),
+        Some(Value::String(t)) => {
+            t.split([',', ' ']).filter(|p| !p.is_empty()).map(|p| index(p.parse().ok())).collect()
+        }
+        Some(Value::Array(l)) => l.iter().map(|v| index(v.as_u64())).collect(),
+        Some(v) => index(v.as_u64()).map(|i| BTreeSet::from([i])),
+    };
+    Ok(Rows::These(set?))
+}
+
+/// What the call says of the rows that may be there already.
+fn decision(db: &Db, account: i64, rows: &[importer::ParsedRow], a: &Value) -> Result<Decision> {
+    Ok(match (rows_arg(a, "skip_rows")?, rows_arg(a, "add_rows")?) {
+        (Rows::All, Rows::All) => bail!(tr("the same rows cannot be both skipped and added")),
+        (Rows::These(s), Rows::These(d)) if s.is_empty() && d.is_empty() => Decision::Ask,
+        (Rows::These(s), Rows::These(d)) => {
+            if !s.is_disjoint(&d) {
+                bail!(tr("the same rows cannot be both skipped and added"));
+            }
+            Decision::Each(s.into_iter().map(|i| (i, true)).chain(d.into_iter().map(|i| (i, false))).collect())
+        }
+        (Rows::All, Rows::These(d)) if d.is_empty() => Decision::SkipAll,
+        (Rows::These(s), Rows::All) if s.is_empty() => Decision::AddAll,
+        (one, other) => {
+            let mut each = BTreeMap::new();
+            for l in db.likely_duplicates(Some(account), rows)? {
+                each.insert(l.index, matches!(one, Rows::All));
+            }
+            for (set, skip) in [(one, true), (other, false)] {
+                if let Rows::These(s) = set {
+                    each.extend(s.into_iter().map(|i| (i, skip)));
+                }
+            }
+            Decision::Each(each)
+        }
+    })
+}
+
+/// The balance that an OFX statement states, against the books.
+fn ledger_balance(db: &Db, account: Option<i64>, t: &importer::Table) -> Result<Value> {
+    let Some((stated, on)) = t.ofx.as_ref().and_then(|o| o.statement()).and_then(|s| s.balance) else {
+        return Ok(Value::Null);
+    };
+    let books = match (account, on) {
+        (Some(a), Some(d)) => Some(db.balance_on(a, d)?),
+        _ => None,
+    };
+    Ok(json!({"stated": fmt_machine(stated), "date": on, "books": books.map(fmt_machine),
+              "agrees": books.map(|b| b == stated)}))
 }
 
 // ----------------------------------------------------------- esecuzione
@@ -799,41 +923,97 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 Some(r) => r.read_path(&raw)?,
                 None => PathBuf::from(raw),
             };
-            let t = importer::load(&path)?;
-            let m = mapping_overrides(&t, a)?;
-            if t.statement.is_some() && (m != t.mapping || opt_bool(a, "invert")?) {
-                bail!(tr("the columns and the sign of a card statement cannot be changed"));
+            let mut t = importer::load(&path)?;
+            if let Some(key) = opt_str(a, "statement").filter(|k| !k.trim().is_empty()) {
+                match &mut t.ofx {
+                    Some(o) => o.choose(&key)?,
+                    None => bail!(tr("only an OFX file has statements to choose")),
+                }
             }
-            if m.date.is_none() && t.statement.is_none() {
-                bail!(tr("the date column was not found: give it with date_column"));
+            let (settings, saved) = file_settings(db, &t, a)?;
+            let read = importer::read_rows(&t, &settings);
+            let rows = &read.rows;
+            let mut info = importer::describe(&t, &settings.mapping);
+            if let (Some(i), true) = (info.as_object_mut(), t.has_columns()) {
+                i.insert("decimal_separator".into(), json!(if settings.comma(&t) { "," } else { "." }));
+                i.insert("date_format".into(), json!(settings.dates.code()));
+                i.insert("invert".into(), json!(settings.invert));
+                i.insert("saved_columns".into(), json!(saved));
             }
-            if m.amount.is_none() && m.credit.is_none() && m.debit.is_none() && t.statement.is_none() {
-                bail!(tr("the amount column was not found: give it with amount_column or credit_column/debit_column"));
-            }
-            let (rows, skipped) = importer::parse_rows(&t, &m, opt_bool(a, "invert")?);
-            let info = importer::describe(&t, &m);
+            let ofx = t.ofx.as_ref().map(crate::ofx::Ofx::json);
+            let statement = t.statement.as_ref().map(importer::Statement::json);
             if name == "preview_csv" || opt_bool(a, "dry_run")? {
                 let limit = opt_i64(a, "limit").unwrap_or(10).max(1) as usize;
                 let total = checked_total(rows.iter().map(|r| r.amount)).ok_or_else(too_big)?;
-                json!({"format": info, "rows_found": rows.len(), "rows_skipped": skipped, "sum": total,
+                let account = match opt_str(a, "account") {
+                    Some(k) if !k.trim().is_empty() => Some(db.find_account(&k)?.id),
+                    _ => None,
+                };
+                let likely: Vec<Value> = db
+                    .likely_duplicates(account, rows)?
+                    .iter()
+                    .map(|l| {
+                        json!({"row": l.index + 1, "reason": l.reason, "date": l.date, "payee": l.payee,
+                               "amount": l.amount, "existing": l.existing})
+                    })
+                    .collect();
+                json!({"format": info, "rows_found": rows.len(), "rows_skipped": read.skipped, "sum": total,
                        "first_date": rows.first().map(|r| r.date), "last_date": rows.last().map(|r| r.date),
-                       "preview": rows.iter().take(limit).collect::<Vec<_>>(),
-                       "statement": t.statement.as_ref().map(importer::Statement::json)})
+                       "preview": rows.iter().take(limit).collect::<Vec<_>>(), "problems": read.problems,
+                       "likely_duplicates": likely, "statement": statement, "ofx": ofx,
+                       "ledger_balance": ledger_balance(db, account, &t)?})
             } else {
                 let acc = db.find_account(&req_str(a, "account")?)?;
-                if t.statement.is_some() && acc.kind != AccountKind::CreditCard && !opt_bool(a, "any_account")? {
+                if let Some(o) = t.ofx.as_ref().filter(|o| o.chosen.is_none()) {
+                    return Err(importer::choose_statement(o));
+                }
+                let of_card = t.statement.is_some()
+                    || t.ofx
+                        .as_ref()
+                        .and_then(|o| o.statement())
+                        .is_some_and(|s| s.kind == crate::ofx::Kind::CreditCard);
+                if of_card && acc.kind != AccountKind::CreditCard && !opt_bool(a, "any_account")? {
                     bail!(trf(
                         "\"{name}\" is not a credit card: nothing was imported (any_account to import all the same)",
                         &[("name", &acc.name)]
                     ));
                 }
-                let res = importer::import(db, acc.id, &t, &rows, skipped, opt_bool(a, "allow_mismatch")?)?;
+                let allow_mismatch = opt_bool(a, "allow_mismatch")?;
+                let (res, balance) = db.atomically(|| {
+                    let likely = decision(db, acc.id, rows, a)?;
+                    let choices = importer::Choices { allow_mismatch, likely, settings: Some(&settings) };
+                    let res = importer::import_with(db, acc.id, &t, rows, read.skipped, &choices)?;
+                    Ok((res, ledger_balance(db, Some(acc.id), &t)?))
+                })?;
                 let proposals: Vec<_> =
                     db.propose_card_payments()?.into_iter().filter(|p| !p.candidates.is_empty()).collect();
+                let present = res.duplicates + res.same;
                 json!({"account": acc.name, "format": info, "result": res, "card_payments": proposals,
-                       "statement": t.statement.as_ref().map(importer::Statement::json),
-                       "message": trf("{added} imported, {present} already present, {categorized} categorized automatically", &[("added", &res.added), ("present", &res.duplicates), ("categorized", &res.categorized)])})
+                       "statement": statement, "ofx": ofx, "problems": read.problems, "ledger_balance": balance,
+                       "message": trf("{added} imported, {present} already present, {categorized} categorized automatically", &[("added", &res.added), ("present", &present), ("categorized", &res.categorized)])})
             }
+        }
+        "list_saved_columns" => {
+            let all: Vec<Value> = db
+                .layouts()?
+                .iter()
+                .map(|l| {
+                    json!({"id": l.id, "layout": l.signature, "settings": l.settings,
+                           "description": layouts::describe(&l.settings)})
+                })
+                .collect();
+            json!({"saved_columns": all})
+        }
+        "forget_saved_columns" => {
+            let n = match (opt_bool(a, "all")?, opt_i64_strict(a, "id")?) {
+                (true, None) => db.forget_layouts()?,
+                (false, Some(id)) => {
+                    db.forget_layout(id)?;
+                    1
+                }
+                _ => bail!(tr("give the id of the saved columns, or all")),
+            };
+            json!({"forgotten": n, "message": tr("the saved columns were forgotten")})
         }
         "list_card_statements" => json!({"statements": db.card_statements()?}),
         "propose_card_payments" => json!({"card_payments": db.propose_card_payments()?}),
@@ -1230,6 +1410,94 @@ mod tests {
     }
 
     #[test]
+    fn statements_are_imported_as_the_user_decides() {
+        with_lang(Lang::En, || {
+            let dir = std::env::temp_dir().join(format!("cashcraft-ops-ofx-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let roots = Roots::new(&dir, &dir).unwrap();
+            std::fs::write(dir.join("one.ofx"), crate::ofx::tests::sgml()).unwrap();
+            std::fs::write(dir.join("two.ofx"), crate::ofx::tests::xml()).unwrap();
+            let csv = "Data;Nome;Importo;Netto\n04/01/2026;Bar;1;12.50\n20/02/2026;?;1;-\n";
+            std::fs::write(dir.join("a.csv"), csv).unwrap();
+            let db = one_account();
+            let run = |name: &str, a: Value| call(&db, name, &a, Some(&roots));
+            let v = run("preview_csv", json!({"path": "a.csv", "amount_column": "Netto", "invert": true})).unwrap();
+            assert_eq!((&v["format"]["decimal_separator"], &v["problems"][0]["line"]), (&json!("."), &json!(3)));
+            let how = json!({"path": "a.csv", "account": "A", "amount_column": "Netto", "invert": true, "date_format": "dmy"});
+            assert_eq!(run("import_csv", how).unwrap()["result"]["added"], 1);
+            // Remembered: no columns are given this time.
+            let v = run("preview_csv", json!({"path": "a.csv"})).unwrap();
+            assert_eq!(
+                (&v["format"]["mapping"]["amount"], &v["preview"][0]["amount"]),
+                (&json!("Netto"), &json!(-12.5))
+            );
+            assert_eq!(v["format"]["saved_columns"], 1);
+            let v = run("preview_csv", json!({"path": "a.csv", "use_saved": false})).unwrap();
+            assert_eq!((&v["format"]["mapping"]["amount"], &v["format"]["invert"]), (&json!("Importo"), &json!(false)));
+            assert_eq!(run("list_saved_columns", json!({})).unwrap()["saved_columns"][0]["settings"]["dates"], "dmy");
+            assert!(run("forget_saved_columns", json!({})).is_err());
+            assert!(run("forget_saved_columns", json!({"id": 99})).is_err());
+            run("forget_saved_columns", json!({"id": 1})).unwrap();
+            for bad in [json!({"date_format": "x"}), json!({"decimal_separator": ";"}), json!({"statement": 1})] {
+                let mut a = bad;
+                a["path"] = json!("a.csv");
+                assert!(run("preview_csv", a).is_err());
+            }
+            let v = run("preview_csv", json!({"path": "one.ofx", "account": "A"})).unwrap();
+            assert_eq!((&v["rows_found"], &v["likely_duplicates"][0]["row"]), (&json!(2), &json!(1)));
+            assert_eq!(v["likely_duplicates"][0]["existing"][0]["payee"], "Bar");
+            assert_eq!(
+                v["ledger_balance"],
+                json!({"stated": "1487.50", "date": "2026-01-31", "books": "-12.50", "agrees": false})
+            );
+            let import = |extra: Value| {
+                let mut a = json!({"path": "one.ofx", "account": "A"});
+                for (k, v) in extra.as_object().unwrap() {
+                    a[k] = v.clone();
+                }
+                run("import_csv", a)
+            };
+            let refused = import(json!({})).unwrap_err().to_string();
+            assert!(refused.contains("1: 2026-01-05, BAR & CAFFE, -12.50"), "{refused}");
+            for bad in [
+                json!({"skip_rows": [2]}),
+                json!({"skip_rows": [1], "add_rows": "1"}),
+                json!({"skip_rows": "all", "add_rows": "all"}),
+                json!({"skip_rows": [0]}),
+                json!({"skip_rows": {}}),
+                json!({"skip_rows": "x"}),
+                json!({"invert": true, "skip_rows": "all"}),
+                json!({"statement": "7", "skip_rows": "all"}),
+            ] {
+                assert!(import(bad.clone()).is_err(), "{bad}");
+            }
+            let v = import(json!({"skip_rows": "1"})).unwrap();
+            assert_eq!(
+                (&v["result"]["added"], &v["result"]["same"], &v["ledger_balance"]["agrees"]),
+                (&json!(1), &json!(1), &json!(true))
+            );
+            assert_eq!(import(json!({})).unwrap()["result"]["duplicates"], 2);
+            // Several statements: none is taken without a choice, nor in another currency or kind of account.
+            let v = run("preview_csv", json!({"path": "two.ofx"})).unwrap();
+            assert_eq!((&v["rows_found"], &v["ofx"]["chosen"]), (&json!(0), &Value::Null));
+            assert_eq!(v["ofx"]["statements"][1]["account"], "…3333");
+            let two = |a: Value| run("import_csv", a);
+            assert!(two(json!({"path": "two.ofx", "account": "A"})).unwrap_err().to_string().contains("choose one"));
+            run("create_account", json!({"name": "Card", "kind": "credit_card"})).unwrap();
+            run("create_account", json!({"name": "Dollars", "kind": "credit_card", "currency": "USD"})).unwrap();
+            for account in ["A", "Card"] {
+                assert!(two(json!({"path": "two.ofx", "account": account, "statement": 2})).is_err());
+            }
+            let v = two(json!({"path": "two.ofx", "account": "Dollars", "statement": "0000111122223333"})).unwrap();
+            assert_eq!(v["result"]["added"], 1);
+            let v = two(json!({"path": "two.ofx", "account": "A", "statement": 1, "skip_rows": "all"})).unwrap();
+            assert_eq!(v["result"]["added"], 1);
+            crate::ledger::tests::assert_sound(&db, "ops");
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    #[test]
     fn hostile_params_never_panic() {
         let dir = std::env::temp_dir().join(format!("cashcraft-hostile-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1253,6 +1521,9 @@ mod tests {
             json!([]),
             json!({"a": [1]}),
         ];
+        std::fs::write(dir.join("in.csv"), "Data;Descrizione;Importo\n01/01/2026;Bar;-1,20\nx;y;2,00\n").unwrap();
+        std::fs::write(dir.join("in.ofx"), crate::ofx::tests::sgml()).unwrap();
+        std::fs::write(dir.join("two.ofx"), crate::ofx::tests::xml()).unwrap();
         for tool in tools() {
             let db = with_lang(Lang::It, || {
                 let db = Db::open_in_memory().unwrap();
@@ -1281,6 +1552,13 @@ mod tests {
                         "path": "out.csv", "pattern": "x", "unit": "month"});
                     a[hostile.as_str()] = v.clone();
                     let _ = call(&db, tool.name, &a, Some(&roots));
+                    // With files that are there.
+                    if names.iter().any(|n| n == "statement") && hostile != "path" {
+                        for file in ["in.csv", "in.ofx", "two.ofx"] {
+                            a["path"] = json!(file);
+                            let _ = call(&db, tool.name, &a, Some(&roots));
+                        }
+                    }
                 }
             }
             let _ = call(&db, tool.name, &json!("not an object"), Some(&roots));

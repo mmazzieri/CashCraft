@@ -37,7 +37,7 @@ pub const MAX_TURNOVER: Cents = 4_000_000_000_000_000_000;
 
 const MAX_DEPTH: usize = 16;
 
-/// The ledger since format 2 (`postings.date` since 3, `origin` since 5). A row linked to an account of the user or to a category has no name of
+/// The ledger since format 2 (`postings.date` since 3, `origin` since 5, `other_hashes` since 7). A row linked to an account of the user or to a category has no name of
 /// its own, so that names are in one place; triggers keep exactly one row for each of them.
 pub(crate) const LEDGER_SCHEMA: &str = r#"
 CREATE TABLE ledger_accounts (
@@ -72,7 +72,8 @@ CREATE TABLE postings (
     payee TEXT,
     memo TEXT,
     date TEXT,
-    origin TEXT
+    origin TEXT,
+    other_hashes TEXT
 );
 CREATE INDEX posting_entry ON postings(entry_id);
 CREATE INDEX posting_account ON postings(ledger_account_id);
@@ -298,6 +299,8 @@ pub(crate) struct Line {
     pub currency: String,
     pub cleared: bool,
     pub import_hash: Option<String>,
+    /// Those of the same transaction in other statements, separated by spaces: the user said it is the same.
+    pub other_hashes: Option<String>,
     /// The text of this side alone (the two sides of a transfer), instead of the entry's.
     pub payee: Option<String>,
     pub memo: Option<String>,
@@ -445,7 +448,7 @@ impl Db {
                             .prepare_cached(
                                 "UPDATE postings SET ledger_account_id=?3, amount=?4, currency=?5, cleared=?6,
                                         import_hash=?7, payee=?8, memo=?9, date=?10,
-                                        origin=?11 WHERE id=?1 AND entry_id=?2",
+                                        origin=?11, other_hashes=?12 WHERE id=?1 AND entry_id=?2",
                             )?
                             .execute(params![
                                 id,
@@ -458,7 +461,8 @@ impl Db {
                                 l.payee,
                                 l.memo,
                                 l.date,
-                                l.origin
+                                l.origin,
+                                l.other_hashes
                             ])?;
                         if n != 1 {
                             return Err(no_entry(entry));
@@ -469,8 +473,8 @@ impl Db {
                         self.conn
                             .prepare_cached(
                                 "INSERT INTO postings(id,entry_id,ledger_account_id,amount,currency,cleared,
-                                                      import_hash,payee,memo,date,origin)
-                                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                                                      import_hash,payee,memo,date,origin,other_hashes)
+                                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                             )?
                             .execute(params![
                                 wanted,
@@ -483,7 +487,8 @@ impl Db {
                                 l.payee,
                                 l.memo,
                                 l.date,
-                                l.origin
+                                l.origin,
+                                l.other_hashes
                             ])?;
                         self.conn.last_insert_rowid()
                     }
@@ -618,7 +623,8 @@ impl Db {
             .optional()?
             .ok_or_else(|| no_entry(id))?;
         let mut st = self.conn.prepare_cached(
-            "SELECT id, ledger_account_id, amount, currency, cleared, import_hash, payee, memo, date, origin
+            "SELECT id, ledger_account_id, amount, currency, cleared, import_hash, payee, memo, date, origin,
+                    other_hashes
              FROM postings WHERE entry_id=?1 ORDER BY id",
         )?;
         let lines = st.query_map([id], |r| {
@@ -633,6 +639,7 @@ impl Db {
                 memo: r.get(7)?,
                 date: r.get(8)?,
                 origin: r.get(9)?,
+                other_hashes: r.get(10)?,
             })
         })?;
         for l in lines {

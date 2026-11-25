@@ -4,6 +4,7 @@
 
 use crate::cards::CARD_SCHEMA;
 use crate::i18n::{Lang, lang, tr, trf, trn, with_lang};
+use crate::layouts::LAYOUT_SCHEMA;
 use crate::ledger::{self, COUNTED, Draft, LEDGER_SCHEMA, Line, PROFIT_AND_LOSS, UNCATEGORIZED};
 use crate::money::checked_total;
 use anyhow::{Context, Result, anyhow, bail};
@@ -300,8 +301,9 @@ pub struct Db {
 
 /// Version of the data file format, kept in `PRAGMA user_version` (0 is CashCraft 0.1, 1 is 0.2.0 with
 /// the same tables, 2 the double-entry ledger, 3 adds dates of single postings, 4 was never
-/// released, 5 tells the added sides of transfers, 6 the card statements: see `docs/ledger.md`).
-pub const SCHEMA_VERSION: i64 = 6;
+/// released, 5 tells the added sides of transfers, 6 the card statements, 7 the saved columns of CSV
+/// files and the other import keys of a posting: see `docs/ledger.md`).
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// Tables of formats 0 and 1 with their name in 2. A window of an older program that has the file open
 /// fails at once when it writes to one, instead of doing half of what it was asked.
@@ -434,6 +436,7 @@ impl Db {
                 self.conn.execute_batch(SCHEMA)?;
                 self.conn.execute_batch(LEDGER_SCHEMA)?;
                 self.conn.execute_batch(CARD_SCHEMA)?;
+                self.conn.execute_batch(LAYOUT_SCHEMA)?;
             }
             self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             Ok(())

@@ -42,7 +42,10 @@
   heading lines to skip and the columns by name (*Data contabile*, *Data valuta*, *Descrizione*,
   *Causale*, *Importo*, *Accrediti/Addebiti*, *Entrate/Uscite*, *Dare/Avere*…); reads Italian
   amounts (`1.234,56`) and dates (`dd/mm/yyyy`); pulls the merchant out of card payment
-  descriptions; never imports the same transaction twice. Columns can be remapped by hand.
+  descriptions; never imports the same transaction twice. Columns, date order, decimals and sign can be
+  changed by hand, and are remembered for the next file with the same headings. Lines that could not be read are listed.
+- **OFX statements**, 1.x and 2.x, of bank accounts and credit cards. A transaction that another file may have
+  brought already is shown, and you say whether it is the same. See [docs/import.md](docs/import.md).
 - **Credit card statements (PDF)** in Nexi's layout: purchases, refunds, instalments and stamp duty, checked
   against the totals of the statement before importing. The bank's monthly debit is proposed as a transfer to
   the card, whichever of the two is imported first, and linked when you confirm. See [docs/cards.md](docs/cards.md).
@@ -85,6 +88,9 @@ On macOS, drag CashCraft to Applications. Until a release is signed with a Devel
     cashcraft-cli import statement.csv --account "Main account" --dry-run
     cashcraft-cli import statement.csv --account "Main account"
     cashcraft-cli import card.pdf --account "Card"
+    cashcraft-cli preview statement.ofx --account "Main account"
+    cashcraft-cli import statement.ofx --account "Main account" --skip-rows 3 --add-rows 5,8
+    cashcraft-cli columns list                      # remembered columns; forget <id> or --all
     cashcraft-cli cards payments                    # then cards link <statement> <transaction>
     cashcraft-cli tx list --account "Main account" --from 2026-01-01
     cashcraft-cli tx add -a "Main account" --amount -12,50 -p "Bar" -c "Restaurants and bars"
@@ -145,6 +151,6 @@ MIT OR Apache-2.0, at your option: [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](
 ## Italiano
 
 CashCraft, in italiano e in inglese, è un programma libero per gestire le finanze personali: conti, movimenti, categorie,
-budget, report, movimenti ricorrenti e importazione dei CSV delle banche italiane. Funziona su
+budget, report, movimenti ricorrenti e importazione dei CSV delle banche italiane e degli estratti conto OFX. Funziona su
 macOS, Windows e Linux, anche da terminale (`cashcraft-cli`) e con gli assistenti AI tramite MCP.
 Scarica il file per il tuo computer dalla [pagina delle release](https://github.com/mmazzieri/CashCraft/releases/latest).

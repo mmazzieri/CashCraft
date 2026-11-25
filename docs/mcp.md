@@ -31,6 +31,16 @@ An account of the chart is named by its path or name, or as `ledger:5` (its `led
 or `system:uncategorized`; a bare number is refused. `post_scheduled` posts what it can: `failed` lists the
 rest, with the reason.
 
+## Statements
+
+`preview_csv` and `import_csv` read CSV, Excel 97, OFX and PDF ([import.md](import.md)). `problems` lists the
+lines that could not be read. Columns, `decimal_separator`, `date_format` and `invert` are remembered by an import for
+files with the same headings (`saved_columns` in `format`); `use_saved: false` starts from those detected,
+`list_saved_columns` and `forget_saved_columns` manage them. With several OFX statements pass `statement`.
+`preview_csv` with an `account` gives `likely_duplicates`; `import_csv` is refused while one is not in `skip_rows` or
+`add_rows` (row numbers, or `"all"`): ask the user. `ledger_balance` is the balance the bank states against the
+books, only a check.
+
 ## Card statements
 
 `preview_csv` and `import_csv` read the PDF statement of a credit card too: `statement` has its dates and

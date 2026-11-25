@@ -328,6 +328,8 @@ fn a_card_statement_is_checked_imported_and_paid() {
                 mapping: Default::default(),
                 decimal_comma: true,
                 statement: Some(statement(found)),
+                lines: vec![],
+                ofx: None,
             };
             let mut st = ImportState { account: Some(bank), table: Some(table(901)), ..Default::default() };
             st.reparse();
@@ -393,4 +395,87 @@ fn a_file_is_read_beside_the_window() {
     }
     assert!(!st.error.is_empty());
     std::fs::remove_file(&file).unwrap();
+}
+
+/// Rows that may be there already wait for the user, the balance is a check, the columns are remembered.
+#[test]
+fn likely_duplicates_wait_for_the_user() {
+    use crate::gui::ImportState;
+    use cashcraft_engine::importer;
+    let dir = std::env::temp_dir().join(format!("cashcraft-ui-ofx-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("a.csv");
+    std::fs::write(&csv, "Data;Descrizione;Importo\n05/01/2026;Bar;-1,20\n06/01/2026;x;y\n").unwrap();
+    let ofx = dir.join("a.ofx");
+    let body = |currency: &str, account: &str| {
+        format!(
+            "<STMTRS><CURDEF>{currency}<BANKACCTFROM><ACCTID>{account}</BANKACCTFROM><BANKTRANLIST>\
+             <STMTTRN><DTPOSTED>20260106<TRNAMT>-1.20<FITID>A<NAME>BAR</STMTTRN></BANKTRANLIST>\
+             <LEDGERBAL><BALAMT>-1.20<DTASOF>20260131</LEDGERBAL></STMTRS>"
+        )
+    };
+    std::fs::write(&ofx, format!("<OFX>{}{}</OFX>", body("EUR", "1"), body("USD", "2"))).unwrap();
+    for l in [Lang::It, Lang::En] {
+        with_lang(l, || {
+            let db = Db::open_in_memory().unwrap();
+            let bank = db.add_account("Bank", AccountKind::Bank, "EUR", 0, "").unwrap();
+            let mut app = App::new(db, None);
+            app.accounts = app.db.accounts(true).unwrap();
+            let ctx = egui::Context::default();
+            let draw = |app: &mut App| {
+                for _ in 0..2 {
+                    ctx.run_ui(Default::default(), |ui| app.dialogs(&ui.ctx().clone())).textures_delta.clear();
+                }
+            };
+            let load = |app: &mut App, path: &std::path::Path| {
+                let mut st =
+                    ImportState { account: Some(bank), path_text: path.display().to_string(), ..Default::default() };
+                st.load();
+                app.dialog = Some(Dialog::Import(Box::new(st)));
+                let start = std::time::Instant::now();
+                loop {
+                    draw(app);
+                    let Some(Dialog::Import(st)) = &app.dialog else { panic!("no dialog") };
+                    if st.loading.is_none() {
+                        break;
+                    }
+                    assert!(start.elapsed().as_secs() < 20);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                let Some(Dialog::Import(st)) = app.dialog.take() else { panic!("no dialog") };
+                st
+            };
+            let st = load(&mut app, &csv);
+            assert!(st.error.is_empty() && st.rows.len() == 1 && st.problems.len() == 1 && st.saved.is_none());
+            let mut settings = st.settings();
+            settings.dates = cashcraft_engine::money::DateOrder::Dmy;
+            let choices = importer::Choices { settings: Some(&settings), ..Default::default() };
+            importer::import_with(&app.db, bank, st.table.as_ref().unwrap(), &st.rows, 0, &choices).unwrap();
+            let st = load(&mut app, &csv);
+            assert!(st.saved.is_some() && st.settings() == settings);
+            app.dialog = Some(Dialog::Import(st));
+            draw(&mut app);
+
+            let mut st = load(&mut app, &ofx);
+            assert!(st.rows.is_empty() && !st.can_import());
+            st.table.as_mut().unwrap().ofx.as_mut().unwrap().chosen = Some(0);
+            st.reparse();
+            app.dialog = Some(Dialog::Import(st));
+            draw(&mut app);
+            let Some(Dialog::Import(st)) = &mut app.dialog else { panic!("no dialog") };
+            assert_eq!((st.likely.len(), st.books, st.can_import()), (1, Some(-120), false));
+            st.decided.insert(0, true);
+            assert!(st.can_import());
+            // Another account is compared again.
+            st.new_account = "New".into();
+            draw(&mut app);
+            let Some(Dialog::Import(st)) = &mut app.dialog else { panic!("no dialog") };
+            assert!(st.likely.is_empty() && st.decided.is_empty() && st.books.is_none() && st.can_import());
+            st.table.as_mut().unwrap().ofx.as_mut().unwrap().chosen = Some(1);
+            st.new_account.clear();
+            st.reparse();
+            draw(&mut app);
+        });
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }
