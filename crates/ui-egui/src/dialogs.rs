@@ -1,9 +1,9 @@
 //! Finestre di dialogo: movimento, giroconto, conto, pianificato, importazione CSV, conferme.
 
 use crate::gui::{
-    ACCENT, AMBER, App, CardPayments, Dialog, GREEN, ImportState, MUTED, PREVIEWED, Period, RED, TurnForm, TxForm,
-    View, ZEBRA, account_combo, card, category_combo, column_combo, cut, error_text, expense_toggle, form_row,
-    kind_icon, money, primary_button, section_title,
+    App, CardPayments, Dialog, ImportState, PREVIEWED, Period, TurnForm, TxForm, View, account_combo, card,
+    category_combo, column_combo, cut, error_text, expense_toggle, form_row, kind_icon, money, pal, primary_button,
+    section_title,
 };
 use anyhow::Result;
 use cashcraft_engine::cards::{CardStatement, PaymentProposal};
@@ -35,7 +35,7 @@ impl App {
                     ui.heading(if f.id.is_some() { tr("Edit transaction") } else { tr("New transaction") });
                     ui.add_space(8.0);
                     if f.is_transfer {
-                        ui.label(RichText::new(tr("Transfer: the amount changes in both accounts.")).color(MUTED));
+                        ui.label(RichText::new(tr("Transfer: the amount changes in both accounts.")).color(pal().muted));
                     } else {
                         expense_toggle(ui, &mut f.expense);
                         ui.add_space(6.0);
@@ -69,7 +69,7 @@ impl App {
                             RichText::new(tr(
                                 "Split over several accounts: amount and category cannot be changed here.",
                             ))
-                            .color(MUTED),
+                            .color(pal().muted),
                         );
                     }
                     if f.has_category {
@@ -92,10 +92,10 @@ impl App {
                         ui.checkbox(&mut f.cleared, tr("Checked against the bank statement"));
                     });
                     if !f.detail.is_empty() {
-                        ui.label(RichText::new(&f.detail).color(MUTED).size(12.5));
+                        ui.label(RichText::new(&f.detail).color(pal().muted).size(12.5));
                     }
                     if !f.error.is_empty() {
-                        ui.label(RichText::new(&f.error).color(RED));
+                        ui.label(RichText::new(&f.error).color(pal().red));
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -132,7 +132,7 @@ impl App {
                     ui.heading(tr("Transfer"));
                     ui.label(
                         RichText::new(tr("Move money between two of your accounts (it does not count as an expense)."))
-                            .color(MUTED),
+                            .color(pal().muted),
                     );
                     ui.add_space(8.0);
                     form_row(ui, tr("From"), |ui| {
@@ -151,7 +151,7 @@ impl App {
                         ui.add(egui::TextEdit::singleline(&mut f.memo).desired_width(280.0));
                     });
                     if !f.error.is_empty() {
-                        ui.label(RichText::new(&f.error).color(RED));
+                        ui.label(RichText::new(&f.error).color(pal().red));
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -189,7 +189,7 @@ impl App {
                 Dialog::SeparateTransfer(t, keep_other) => {
                     ui.heading(tr("Separate the transfer?"));
                     ui.label(format!("{} · {} · {}", fmt_date(t.date), cut(&t.payee, 40), fmt_eur(t.amount)));
-                    ui.label(RichText::new(tr("It becomes an ordinary transaction, without a category.")).color(MUTED));
+                    ui.label(RichText::new(tr("It becomes an ordinary transaction, without a category.")).color(pal().muted));
                     ui.add_space(6.0);
                     ui.radio_value(keep_other, true, tr("Keep the other side as a transaction of its account"));
                     ui.radio_value(
@@ -244,7 +244,7 @@ impl App {
                         });
                     }
                     if !f.error.is_empty() {
-                        ui.label(RichText::new(&f.error).color(RED));
+                        ui.label(RichText::new(&f.error).color(pal().red));
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -330,7 +330,7 @@ impl App {
                         });
                     });
                     if !f.error.is_empty() {
-                        ui.label(RichText::new(&f.error).color(RED));
+                        ui.label(RichText::new(&f.error).color(pal().red));
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -406,10 +406,10 @@ impl App {
                     ui.heading(tr("Delete the category?"));
                     ui.label(trf("The transactions of \"{name}\" stay, uncategorized.", &[("name", name)]));
                     let text = trn(*rules, "{n} rule that gives it goes too.", "{n} rules that give it go too.");
-                    ui.label(RichText::new(text).color(AMBER));
+                    ui.label(RichText::new(text).color(pal().amber));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        let delete = egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(RED);
+                        let delete = egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(pal().red_fill);
                         if ui.add(delete).clicked() {
                             message = Some(self.db.delete_category(*id).map(|_| tr("Category deleted").to_string()));
                             keep = false;
@@ -438,7 +438,7 @@ impl App {
                         ui.add(egui::TextEdit::singleline(name).desired_width(260.0));
                     });
                     if !error.is_empty() {
-                        ui.label(RichText::new(&*error).color(RED));
+                        ui.label(RichText::new(&*error).color(pal().red));
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -462,7 +462,7 @@ impl App {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui
-                            .add(egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(RED))
+                            .add(egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(pal().red_fill))
                             .clicked()
                         {
                             message = Some(self.db.delete_ledger_account(*id).map(|_| tr("Account deleted").into()));
@@ -486,7 +486,7 @@ impl App {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui
-                            .add(egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(RED))
+                            .add(egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(pal().red_fill))
                             .clicked()
                         {
                             message = Some(self.db.delete_entry(*id).map(|_| tr("Entry deleted").into()));
@@ -508,12 +508,12 @@ impl App {
                     ));
                     if *rules > 0 {
                         let text = trn(*rules, "{n} rule for this account goes too.", "{n} rules for this account go too.");
-                        ui.label(RichText::new(text).color(AMBER));
+                        ui.label(RichText::new(text).color(pal().amber));
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui
-                            .add(egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(RED))
+                            .add(egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(pal().red_fill))
                             .clicked()
                         {
                             message = Some(self.db.delete_account(*id).map(|_| tr("Account deleted").to_string()));
@@ -533,7 +533,7 @@ impl App {
                     let gone: usize = accounts.iter().map(of_account).sum();
                     if gone > 0 {
                         let text = trn(gone, "{n} rule for one account goes too.", "{n} rules for one account go too.");
-                        ui.label(RichText::new(text).color(AMBER));
+                        ui.label(RichText::new(text).color(pal().amber));
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -588,7 +588,7 @@ impl App {
         ));
         ui.label(
             RichText::new(tr("Money moved between two of your accounts: it no longer counts as income or an expense."))
-                .color(MUTED),
+                .color(pal().muted),
         );
         ui.add_space(8.0);
         let others: Vec<Account> = accounts.iter().filter(|a| a.id != f.tx.account_id).cloned().collect();
@@ -602,7 +602,7 @@ impl App {
             if f.candidates.is_empty() {
                 ui.label(
                     RichText::new(tr("No matching transaction in that account: the other side will be added."))
-                        .color(MUTED),
+                        .color(pal().muted),
                 );
             } else {
                 ui.label(tr("The other side is already in that account?"));
@@ -623,13 +623,13 @@ impl App {
             }
         }
         if !f.error.is_empty() {
-            ui.label(RichText::new(&f.error).color(RED));
+            ui.label(RichText::new(&f.error).color(pal().red));
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let account = f.account.filter(|_| f.error.is_empty() && f.other != OtherSide::Auto);
             let button = egui::Button::new(RichText::new(tr("Turn into transfer")).color(Color32::WHITE).strong());
-            if ui.add_enabled(account.is_some(), button.fill(ACCENT)).clicked()
+            if ui.add_enabled(account.is_some(), button.fill(pal().accent_fill)).clicked()
                 && let Some(account) = account
             {
                 match self.db.turn_into_transfer(f.tx.id, account, f.other) {
@@ -722,7 +722,7 @@ impl App {
                 "It works with CSV, Excel 97 and OFX files exported from online banking and with the PDF statement of a \
                  credit card. Transactions already imported are skipped.",
             ))
-            .color(MUTED),
+            .color(pal().muted),
         );
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -760,12 +760,12 @@ impl App {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
         if !st.error.is_empty() {
-            ui.label(RichText::new(&st.error).color(RED));
+            ui.label(RichText::new(&st.error).color(pal().red));
         }
         if let Some(res) = &st.result {
             ui.add_space(10.0);
             card(ui, |ui| {
-                ui.label(RichText::new(tr("✔ Import completed")).size(16.0).strong().color(GREEN));
+                ui.label(RichText::new(tr("✔ Import completed")).size(16.0).strong().color(pal().green));
                 ui.label(trn(res.added, "{n} transaction imported", "{n} transactions imported"));
                 ui.label(trf("{n} already present (skipped)", &[("n", &(res.duplicates + res.same))]));
                 ui.label(trf("{n} categorized automatically by the rules", &[("n", &res.categorized)]));
@@ -776,7 +776,7 @@ impl App {
                             "{n} row was not a transaction (balances, totals…)",
                             "{n} rows were not transactions (balances, totals…)",
                         ))
-                        .color(MUTED),
+                        .color(pal().muted),
                     );
                 }
                 for a in &res.adopted {
@@ -836,7 +836,7 @@ impl App {
                         ),
                     ],
                 ))
-                .color(MUTED)
+                .color(pal().muted)
                 .size(12.5),
             );
             ui.add_space(4.0);
@@ -890,13 +890,13 @@ impl App {
             });
             let detected = importer::Settings::detected(t);
             if st.broken.is_some() {
-                ui.label(RichText::new(tr("The columns remembered for this layout cannot be read")).color(RED));
+                ui.label(RichText::new(tr("The columns remembered for this layout cannot be read")).color(pal().red));
             }
             if let Some(id) = st.saved.or(st.broken) {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(tr("Columns remembered from the last import of this layout"))
-                            .color(MUTED)
+                            .color(pal().muted)
                             .size(12.5),
                     );
                     if ui.button(tr("Forget them")).clicked() {
@@ -933,7 +933,7 @@ impl App {
             ui.label(RichText::new(summary).strong());
             problems(ui, st);
             notices(ui, st, accounts);
-            Frame::new().fill(ZEBRA).corner_radius(CornerRadius::same(6)).inner_margin(Margin::same(8)).show(
+            Frame::new().fill(pal().zebra).corner_radius(CornerRadius::same(6)).inner_margin(Margin::same(8)).show(
                 ui,
                 |ui| {
                     egui::ScrollArea::vertical()
@@ -945,13 +945,13 @@ impl App {
                                 ui,
                                 |ui| {
                                     for (i, r) in st.rows.iter().enumerate().rev().take(PREVIEWED) {
-                                        ui.label(RichText::new((i + 1).to_string()).color(MUTED).size(12.0));
-                                        ui.label(RichText::new(fmt_date(r.date)).color(MUTED));
+                                        ui.label(RichText::new((i + 1).to_string()).color(pal().muted).size(12.0));
+                                        ui.label(RichText::new(fmt_date(r.date)).color(pal().muted));
                                         ui.label(cut(&r.payee, 38));
-                                        ui.label(RichText::new(cut(&r.memo, 40)).color(MUTED).size(12.0));
+                                        ui.label(RichText::new(cut(&r.memo, 40)).color(pal().muted).size(12.0));
                                         ui.label(money(r.amount));
                                         if let Some((what, why)) = st.ruled.get(&i) {
-                                            ui.label(RichText::new(cut(what, 34)).color(ACCENT).size(12.0))
+                                            ui.label(RichText::new(cut(what, 34)).color(pal().accent).size(12.0))
                                                 .on_hover_text(why);
                                         }
                                         ui.end_row();
@@ -973,7 +973,7 @@ impl App {
                 && st.new_account.trim().is_empty()
                 && target.is_some_and(|a| a.kind != AccountKind::CreditCard)
             {
-                ui.label(RichText::new(tr("⚠ This account is not a credit card.")).color(AMBER));
+                ui.label(RichText::new(tr("⚠ This account is not a credit card.")).color(pal().amber));
             }
             if let Err(e) = st.compare(&self.db).and_then(|_| st.look_at_rules(&self.db)) {
                 st.error = format!("{e:#}");
@@ -982,7 +982,7 @@ impl App {
                 ofx_account(ui, st, a);
             }
             if !st.broken_rules.is_empty() {
-                ui.label(RichText::new(&st.broken_rules).color(RED));
+                ui.label(RichText::new(&st.broken_rules).color(pal().red));
             }
             balance_check(ui, st);
             likely_duplicates(ui, st);
@@ -995,7 +995,7 @@ impl App {
                     .color(Color32::WHITE)
                     .strong(),
             )
-            .fill(ACCENT);
+            .fill(pal().accent_fill);
             if ui.add_enabled(can, btn).clicked() {
                 let r = self.db.atomically(|| -> Result<(i64, ImportResult)> {
                     let acc = if !st.new_account.trim().is_empty() {
@@ -1101,7 +1101,7 @@ impl App {
                         RichText::new(tr(
                             "Is it one of these bank transactions? It becomes a transfer, not an expense.",
                         ))
-                        .color(MUTED)
+                        .color(pal().muted)
                         .size(12.5),
                     );
                     for c in &p.candidates {
@@ -1133,14 +1133,14 @@ impl App {
                 for s in linked {
                     ui.horizontal(|ui| {
                         if s.matches {
-                            ui.label(RichText::new("✔").color(GREEN));
+                            ui.label(RichText::new("✔").color(pal().green));
                         } else {
-                            ui.label(RichText::new("⚠").color(AMBER))
+                            ui.label(RichText::new("⚠").color(pal().amber))
                                 .on_hover_text(tr("The payment has another amount"));
                         }
                         ui.label(statement_text(s));
                         if !s.matches {
-                            ui.label(RichText::new(tr("The payment has another amount")).color(AMBER));
+                            ui.label(RichText::new(tr("The payment has another amount")).color(pal().amber));
                         }
                         if cards.unlinking != Some(s.id) {
                             if ui.button(tr("Unlink")).clicked() {
@@ -1149,7 +1149,7 @@ impl App {
                             return;
                         }
                         ui.label(tr("The bank's line becomes an uncategorized expense."));
-                        if ui.button(RichText::new(tr("Unlink")).color(RED)).clicked() {
+                        if ui.button(RichText::new(tr("Unlink")).color(pal().red)).clicked() {
                             done = Some(self.db.unlink_card_payment(s.id));
                         }
                         if ui.button(tr("Cancel")).clicked() {
@@ -1159,7 +1159,7 @@ impl App {
                 }
             });
             if !cards.error.is_empty() {
-                ui.label(RichText::new(&cards.error).color(RED));
+                ui.label(RichText::new(&cards.error).color(pal().red));
             }
         });
         if let Some(r) = done {
@@ -1228,7 +1228,7 @@ fn ofx_statements(ui: &mut Ui, st: &mut ImportState) {
         return;
     }
     let text = tr("The signs of the amounts contradict the types of the transactions: which are right?");
-    ui.label(RichText::new(text).color(RED));
+    ui.label(RichText::new(text).color(pal().red));
     let mut sign = st.sign_by_hand.then_some(st.invert);
     ui.horizontal(|ui| {
         ui.radio_value(&mut sign, Some(false), tr("as in the file"));
@@ -1249,10 +1249,10 @@ fn ofx_account(ui: &mut Ui, st: &ImportState, account: &Account) {
             "the statement is in {statement} and the account is in {account}: nothing was imported",
             &[("statement", &s.currency), ("account", &account.currency)],
         );
-        ui.label(RichText::new(text).color(RED));
+        ui.label(RichText::new(text).color(pal().red));
     }
     if s.kind == Kind::CreditCard && account.kind != AccountKind::CreditCard {
-        ui.label(RichText::new(tr("⚠ This account is not a credit card.")).color(AMBER));
+        ui.label(RichText::new(tr("⚠ This account is not a credit card.")).color(pal().amber));
     }
 }
 
@@ -1266,11 +1266,14 @@ fn balance_check(ui: &mut Ui, st: &ImportState) {
         "Balance on {date}: {stated} on the statement, {books} in the books",
         &[("date", &date), ("stated", &fmt_plain(stated)), ("books", &books)],
     );
-    let mark =
-        if st.books == Some(stated) { RichText::new("✔").color(GREEN) } else { RichText::new("·").color(MUTED) };
+    let mark = if st.books == Some(stated) {
+        RichText::new("✔").color(pal().green)
+    } else {
+        RichText::new("·").color(pal().muted)
+    };
     ui.horizontal(|ui| {
         ui.label(mark);
-        ui.label(RichText::new(text).color(MUTED));
+        ui.label(RichText::new(text).color(pal().muted));
     });
 }
 
@@ -1280,7 +1283,7 @@ fn problems(ui: &mut Ui, st: &ImportState) {
         return;
     }
     let title = trn(st.problems.len(), "{n} line could not be read", "{n} lines could not be read");
-    egui::CollapsingHeader::new(RichText::new(title).color(AMBER)).id_salt("problems").show(ui, |ui| {
+    egui::CollapsingHeader::new(RichText::new(title).color(pal().amber)).id_salt("problems").show(ui, |ui| {
         egui::ScrollArea::vertical().id_salt("problem_list").max_height(90.0).show(ui, |ui| {
             for p in &st.problems {
                 ui.label(trf("line {line}: {error}", &[("line", &p.line), ("error", &p.error)]));
@@ -1295,13 +1298,13 @@ fn notices(ui: &mut Ui, st: &ImportState, accounts: &[Account]) {
     let account = accounts.iter().find(|a| Some(a.id) == st.target());
     let remembered = account.filter(|_| st.saved.is_some() && !st.sign_by_hand).map(|a| a.name.as_str());
     for n in layouts::notices(t, &st.settings(), remembered) {
-        ui.label(RichText::new(format!("⚠ {n}")).color(AMBER));
+        ui.label(RichText::new(format!("⚠ {n}")).color(pal().amber));
     }
     for d in &st.deletions {
         let e = &d.existing;
         let line = format!("{} · {} · {}", fmt_date(e.date), cut(&e.payee, 40), fmt_plain(e.amount));
         let text = trf("the bank deletes a transaction, do it by hand if it is right: {line}", &[("line", &line)]);
-        ui.label(RichText::new(format!("⚠ {text}")).color(AMBER));
+        ui.label(RichText::new(format!("⚠ {text}")).color(pal().amber));
     }
 }
 
@@ -1316,7 +1319,7 @@ fn likely_duplicates(ui: &mut Ui, st: &mut ImportState) {
         ui.set_width(ui.available_width());
         let left = st.likely.iter().filter(|l| !st.decided.contains_key(&l.index)).count();
         ui.label(RichText::new(tr("Are these there already? Say it for each one")).strong());
-        ui.label(RichText::new(trn(left, "{n} is left", "{n} are left")).color(MUTED).size(12.0));
+        ui.label(RichText::new(trn(left, "{n} is left", "{n} are left")).color(pal().muted).size(12.0));
         egui::ScrollArea::vertical().id_salt("likely").max_height(220.0).show(ui, |ui| {
             for certain in [true, false] {
                 let group: Vec<&LikelyDuplicate> = st.likely.iter().filter(|l| l.certain == certain).collect();
@@ -1345,7 +1348,7 @@ fn likely_duplicates(ui: &mut Ui, st: &mut ImportState) {
 fn likely_row(ui: &mut Ui, l: &LikelyDuplicate, decided: &mut BTreeMap<usize, Choice>) {
     let mut said = decided.get(&l.index).copied();
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{}.", l.index + 1)).color(MUTED));
+        ui.label(RichText::new(format!("{}.", l.index + 1)).color(pal().muted));
         ui.label(format!("{} · {}", fmt_date(l.date), cut(&l.payee, 34)));
         ui.label(money(l.amount));
         ui.radio_value(&mut said, Some(Choice::Add), tr("another: import"));
@@ -1355,7 +1358,7 @@ fn likely_row(ui: &mut Ui, l: &LikelyDuplicate, decided: &mut BTreeMap<usize, Ch
     });
     ui.indent(("likely", l.index), |ui| {
         if !l.certain {
-            ui.label(RichText::new(l.reason.label()).color(MUTED).size(12.0));
+            ui.label(RichText::new(l.reason.label()).color(pal().muted).size(12.0));
         }
         for t in &l.existing {
             let line = format!("{} · {} · {}", fmt_date(t.date), cut(&t.payee, 44), fmt_plain(t.amount));
@@ -1387,19 +1390,25 @@ fn statement_summary(ui: &mut Ui, s: &Statement, allow_mismatch: &mut bool) {
             &[("what", &c.label()), ("said", &said), ("read", &fmt_eur(c.found))],
         );
         ui.horizontal(|ui| {
-            ui.label(if c.ok() { RichText::new("✔").color(GREEN) } else { RichText::new("✖").color(RED) });
+            ui.label(if c.ok() {
+                RichText::new("✔").color(pal().green)
+            } else {
+                RichText::new("✖").color(pal().red)
+            });
             ui.label(text);
         });
     }
     if s.unread > 0 {
-        ui.label(RichText::new(trn(s.unread, "{n} row could not be read", "{n} rows could not be read")).color(RED));
+        ui.label(
+            RichText::new(trn(s.unread, "{n} row could not be read", "{n} rows could not be read")).color(pal().red),
+        );
     }
     if s.debit_date.is_none() || s.debit.is_none() {
-        ui.label(RichText::new(tr("The debit was not found: its payment will not be proposed.")).color(AMBER));
+        ui.label(RichText::new(tr("The debit was not found: its payment will not be proposed.")).color(pal().amber));
     }
     if !s.is_identified() {
         let text = tr("The date of the statement or the number of the card was not read: it cannot be imported.");
-        ui.label(RichText::new(text).color(RED));
+        ui.label(RichText::new(text).color(pal().red));
     } else if !s.is_sound() {
         ui.checkbox(allow_mismatch, tr("The totals do not match: import the rows all the same"));
     }

@@ -16,5 +16,5 @@ Notes for people and coding agents working on CashCraft. The shared rules for Cr
 - Checks: `cargo xtask ci` (fmt, clippy with `-D warnings`, tests). `unsafe` is forbidden; `unwrap`, `expect`, `panic`, `todo`, `unreachable` and `unimplemented` are denied outside tests. No `allow` attributes.
 - Licenses: dependencies and assets only under the license allowlist of the Craft apps, checked by `cargo deny check` (no MPL; no GPL, LGPL or AGPL code, not even read). Record every addition in `ATTRIBUTION.md`.
 - Clean room: no code, text, icons or assets from proprietary products. Do not name other products in the interface.
-- Screenshot: `cargo run -p cashcraft -- --screenshot shot.png` (`CASHCRAFT_START_VIEW=register|reports|budget|…` for another screen); with no data file it uses sample data in memory.
+- Screenshot: `cargo run -p cashcraft -- --screenshot shot.png` (`CASHCRAFT_START_VIEW=register|reports|budget|…` for another screen, `CASHCRAFT_THEME=light|dark` for a theme); with no data file it uses sample data in memory.
 - Icons: `cargo xtask icons` after a change to `crates/icon`.

@@ -1,8 +1,7 @@
 //! Automatic rules: the screen, the form of a rule with the live count, and the preview of a run.
 
 use crate::gui::{
-    ACCENT, AMBER, App, Dialog, MUTED, RED, TEXT, ZEBRA, account_combo, card, category_combo, cut, form_row, money,
-    or_report, primary_button,
+    App, Dialog, account_combo, card, category_combo, cut, form_row, money, or_report, pal, primary_button,
 };
 use anyhow::Result;
 use cashcraft_engine::db::{Account, Category, Db, Transaction, TxFilter};
@@ -183,7 +182,7 @@ impl App {
                         "Rules run from the first to the last on every new or imported transaction without a category. \
                          The first that matches decides the category; tags are those of every rule that matches.",
                     ))
-                    .color(MUTED),
+                    .color(pal().muted),
                 );
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
@@ -205,7 +204,7 @@ impl App {
             card(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if rules.is_empty() {
-                    ui.label(RichText::new(tr("There are no rules.")).color(MUTED));
+                    ui.label(RichText::new(tr("There are no rules.")).color(pal().muted));
                     return;
                 }
                 let [number, when, then, buttons] = rule_columns(ui.available_width());
@@ -213,27 +212,27 @@ impl App {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for (w, h) in [(number, ""), (when, tr("When")), (then, tr("Then"))] {
                         rule_cell(ui, w, |ui| {
-                            ui.label(RichText::new(h.to_uppercase()).size(11.0).color(MUTED));
+                            ui.label(RichText::new(h.to_uppercase()).size(11.0).color(pal().muted));
                         });
                     }
                 });
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for (i, r) in rules.iter().enumerate() {
-                    let fill = if i % 2 == 0 { ZEBRA } else { Color32::TRANSPARENT };
+                    let fill = if i % 2 == 0 { pal().zebra } else { Color32::TRANSPARENT };
                     Frame::new().fill(fill).inner_margin(Margin::symmetric(0, 5)).show(ui, |ui| {
                         ui.horizontal_top(|ui| {
                             ui.spacing_mut().item_spacing.x = 0.0;
                             rule_cell(ui, number, |ui| {
-                                ui.label(RichText::new((i + 1).to_string()).color(MUTED))
+                                ui.label(RichText::new((i + 1).to_string()).color(pal().muted))
                                     .on_hover_text(trf("Rule {id}", &[("id", &r.id)]));
                             });
                             rule_cell(ui, when, |ui| {
-                                two_lines(ui, &r.conditions(), TEXT);
+                                two_lines(ui, &r.conditions(), pal().text);
                                 if let Some(p) = &r.problem {
-                                    two_lines(ui, &trf("skipped: {problem}", &[("problem", p)]), RED);
+                                    two_lines(ui, &trf("skipped: {problem}", &[("problem", p)]), pal().red);
                                 }
                             });
-                            rule_cell(ui, then, |ui| two_lines(ui, &r.actions(), ACCENT));
+                            rule_cell(ui, then, |ui| two_lines(ui, &r.actions(), pal().accent));
                             ui.spacing_mut().item_spacing.x = 6.0;
                             ui.allocate_ui_with_layout(
                                 Vec2::new(buttons, ui.spacing().interact_size.y),
@@ -375,18 +374,18 @@ impl App {
                 } else {
                     trn(n, "It matches {n} transaction at least", "It matches {n} transactions at least")
                 };
-                ui.label(RichText::new(text).strong().color(ACCENT));
+                ui.label(RichText::new(text).strong().color(pal().accent));
             }
             Some(Err(e)) => {
-                ui.label(RichText::new(e).color(AMBER));
+                ui.label(RichText::new(e).color(pal().amber));
             }
             None => {
-                ui.label(RichText::new(tr("Counting…")).color(MUTED));
+                ui.label(RichText::new(tr("Counting…")).color(pal().muted));
                 ui.ctx().request_repaint_after(Duration::from_millis(50));
             }
         }
         if !f.error.is_empty() {
-            ui.label(RichText::new(&f.error).color(RED));
+            ui.label(RichText::new(&f.error).color(pal().red));
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -415,7 +414,7 @@ impl App {
         let mut message = None;
         ui.set_min_width(780.0);
         ui.heading(tr("Apply the rules"));
-        ui.label(RichText::new(tr("Transfers and splits are left alone.")).color(MUTED));
+        ui.label(RichText::new(tr("Transfers and splits are left alone.")).color(pal().muted));
         ui.add_space(6.0);
         ui.radio_value(&mut f.scope, Scope::default(), tr("Transactions without a category"));
         let all = Scope { all: true, overwrite: false };
@@ -439,7 +438,7 @@ impl App {
         let n = plan.changes.len();
         ui.label(RichText::new(trn(n, "{n} transaction would change", "{n} transactions would change")).strong());
         if !plan.broken.is_empty() {
-            ui.label(RichText::new(broken_message(&plan.broken)).color(RED));
+            ui.label(RichText::new(broken_message(&plan.broken)).color(pal().red));
         }
         egui::ScrollArea::vertical().id_salt("run_preview").max_height(320.0).auto_shrink([false, true]).show_rows(
             ui,
@@ -450,7 +449,7 @@ impl App {
                     ui,
                     |ui| {
                         for c in plan.changes.get(range).unwrap_or_default() {
-                            ui.label(RichText::new(fmt_date(c.date)).color(MUTED));
+                            ui.label(RichText::new(fmt_date(c.date)).color(pal().muted));
                             ui.label(cut(&c.payee, 30));
                             ui.label(money(c.amount));
                             let mut what = Vec::new();
@@ -461,10 +460,12 @@ impl App {
                             what.extend(c.new_payee.as_ref().map(|p| format!("\"{p}\"")));
                             what.extend(c.new_tags.iter().map(|t| format!("#{t}")));
                             let what = what.join(", ");
-                            ui.label(RichText::new(cut(&what, 56)).color(ACCENT)).on_hover_text(what);
+                            ui.label(RichText::new(cut(&what, 56)).color(pal().accent)).on_hover_text(what);
                             let ids: Vec<String> = c.rules.iter().map(i64::to_string).collect();
                             ui.label(
-                                RichText::new(trf("rules {ids}", &[("ids", &ids.join(", "))])).color(MUTED).size(12.0),
+                                RichText::new(trf("rules {ids}", &[("ids", &ids.join(", "))]))
+                                    .color(pal().muted)
+                                    .size(12.0),
                             );
                             ui.end_row();
                         }
@@ -473,7 +474,7 @@ impl App {
             },
         );
         if !f.error.is_empty() {
-            ui.label(RichText::new(&f.error).color(RED));
+            ui.label(RichText::new(&f.error).color(pal().red));
         }
         ui.add_space(8.0);
         let token = plan.token.clone();

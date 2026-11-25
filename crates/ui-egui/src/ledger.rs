@@ -1,8 +1,8 @@
 //! The chart of accounts, the trial balance and the form of an entry.
 
 use crate::gui::{
-    App, Dialog, MUTED, RED, TEXT, TRACK, card, category_combo, cut, error_text, form_row, or_report, primary_button,
-    section_title, small_caps,
+    App, Dialog, card, category_combo, cut, error_text, form_row, or_report, pal, primary_button, section_title,
+    small_caps,
 };
 use anyhow::Result;
 use cashcraft_engine::db::{self, Cents, Transaction, TxKind};
@@ -184,7 +184,7 @@ fn ledger_combo(ui: &mut Ui, id: (&str, usize), accounts: &[LedgerAccount], valu
     let combo = egui::ComboBox::from_id_salt(id).selected_text(text).width(260.0).height(420.0).show_ui(ui, |ui| {
         ui.selectable_value(value, None, none);
         for class in Class::ALL {
-            ui.label(RichText::new(class.label()).small().color(MUTED));
+            ui.label(RichText::new(class.label()).small().color(pal().muted));
             for a in accounts.iter().filter(|a| a.class == class) {
                 ui.selectable_value(value, Some(a.id), name(a));
             }
@@ -268,21 +268,21 @@ impl App {
                         section_title(ui, tr("Trial balance"));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             let edit = egui::TextEdit::singleline(&mut self.ledger_date)
-                                .background_color(TRACK)
+                                .background_color(pal().track)
                                 .hint_text(tr("yyyy-mm-dd"))
                                 .desired_width(100.0);
                             changed = ui.add(edit).changed();
-                            ui.label(RichText::new(tr("up to")).color(MUTED));
+                            ui.label(RichText::new(tr("up to")).color(pal().muted));
                         });
                     });
                     if !date.is_empty() && until.is_none() {
-                        ui.label(RichText::new(tr("the date is not valid")).color(RED));
+                        ui.label(RichText::new(tr("the date is not valid")).color(pal().red));
                     }
                     ui.spacing_mut().item_spacing.x = 8.0;
                     match &data.trial {
                         Ok(t) => trial_table(ui, t),
                         Err(e) => {
-                            ui.label(RichText::new(e).color(RED));
+                            ui.label(RichText::new(e).color(pal().red));
                         }
                     }
                 });
@@ -344,7 +344,7 @@ impl App {
         let when = if e.opening { tr("Opening balance").to_string() } else { fmt_date(e.date) };
         ui.label(RichText::new(format!("{when} · {}", e.payee)).strong());
         if !e.memo.is_empty() {
-            ui.label(RichText::new(&e.memo).color(MUTED));
+            ui.label(RichText::new(&e.memo).color(pal().muted));
         }
         ui.add_space(8.0);
         let mut message = None;
@@ -352,7 +352,7 @@ impl App {
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             egui::Grid::new("entry_detail").num_columns(3).striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
                 for h in [tr("Account"), tr("Debit"), tr("Credit")] {
-                    ui.label(RichText::new(h.to_uppercase()).size(11.0).color(MUTED));
+                    ui.label(RichText::new(h.to_uppercase()).size(11.0).color(pal().muted));
                 }
                 ui.end_row();
                 for p in &e.postings {
@@ -380,7 +380,7 @@ impl App {
         ui.add_space(8.0);
         let mut keep = true;
         ui.horizontal(|ui| {
-            if !e.opening && ui.button(RichText::new(tr("🗑 Delete")).color(RED)).clicked() {
+            if !e.opening && ui.button(RichText::new(tr("🗑 Delete")).color(pal().red)).clicked() {
                 self.dialog = Some(Dialog::ConfirmDeleteEntry(id, e.postings.len()));
                 keep = false;
             }
@@ -399,25 +399,25 @@ impl App {
     pub fn entry_dialog(&mut self, ui: &mut Ui, f: &mut EntryForm) -> (bool, Option<Result<String>>) {
         ui.set_min_width(640.0);
         ui.heading(tr("New entry"));
-        ui.label(RichText::new(tr("Debits and credits must be equal.")).color(MUTED));
+        ui.label(RichText::new(tr("Debits and credits must be equal.")).color(pal().muted));
         ui.add_space(8.0);
         form_row(ui, tr("Date"), |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut f.date)
-                    .background_color(TRACK)
+                    .background_color(pal().track)
                     .hint_text(tr("yyyy-mm-dd"))
                     .desired_width(120.0),
             );
         });
         form_row(ui, tr("Description"), |ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut f.payee).background_color(TRACK).desired_width(360.0));
+            let r = ui.add(egui::TextEdit::singleline(&mut f.payee).background_color(pal().track).desired_width(360.0));
             if !f.focused {
                 f.focused = true;
                 r.request_focus();
             }
         });
         form_row(ui, tr("Notes"), |ui| {
-            ui.add(egui::TextEdit::singleline(&mut f.memo).background_color(TRACK).desired_width(360.0));
+            ui.add(egui::TextEdit::singleline(&mut f.memo).background_color(pal().track).desired_width(360.0));
         });
         ui.add_space(6.0);
         let accounts = or_report(self.db.ledger_accounts(), &mut self.toast);
@@ -425,7 +425,7 @@ impl App {
         egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
             egui::Grid::new("entry_lines").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
                 for h in [tr("Account"), tr("Debit"), tr("Credit"), ""] {
-                    ui.label(RichText::new(h.to_uppercase()).size(11.0).color(MUTED));
+                    ui.label(RichText::new(h.to_uppercase()).size(11.0).color(pal().muted));
                 }
                 ui.end_row();
                 let removable = f.lines.len() > 2;
@@ -434,7 +434,7 @@ impl App {
                     for text in [&mut l.debit, &mut l.credit] {
                         let edit = egui::TextEdit::singleline(text)
                             .hint_text(fmt_plain(0))
-                            .background_color(TRACK)
+                            .background_color(pal().track)
                             .align(egui::Align2::RIGHT_CENTER);
                         ui.add_sized([120.0, 26.0], edit);
                     }
@@ -454,14 +454,14 @@ impl App {
                 f.lines.push(EntryLine::default());
             }
             let (text, color) = match f.difference() {
-                Ok(0) => (trf("Difference: {amount}", &[("amount", &fmt_plain(0))]), MUTED),
-                Ok(d) => (trf("Difference: {amount}", &[("amount", &fmt_plain(d))]), RED),
-                Err(e) => (error_text(&e), RED),
+                Ok(0) => (trf("Difference: {amount}", &[("amount", &fmt_plain(0))]), pal().muted),
+                Ok(d) => (trf("Difference: {amount}", &[("amount", &fmt_plain(d))]), pal().red),
+                Err(e) => (error_text(&e), pal().red),
             };
             ui.label(RichText::new(text).strong().color(color));
         });
         if !f.error.is_empty() {
-            ui.label(RichText::new(&f.error).color(RED));
+            ui.label(RichText::new(&f.error).color(pal().red));
         }
         ui.add_space(8.0);
         let mut keep = true;
@@ -488,12 +488,12 @@ impl App {
         ui.add_space(8.0);
         let accounts = or_report(self.db.ledger_accounts(), &mut self.toast);
         form_row(ui, tr("Name"), |ui| {
-            ui.add(egui::TextEdit::singleline(&mut f.name).background_color(TRACK).desired_width(260.0));
+            ui.add(egui::TextEdit::singleline(&mut f.name).background_color(pal().track).desired_width(260.0));
         });
         form_row(ui, tr("Code"), |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut f.code)
-                    .background_color(TRACK)
+                    .background_color(pal().track)
                     .hint_text(tr("optional"))
                     .desired_width(120.0),
             );
@@ -520,19 +520,19 @@ impl App {
         });
         let is_category = matches!(class, Some(Class::Income | Class::Expense));
         if is_category {
-            ui.label(RichText::new(tr("An income or expense account is a category.")).color(MUTED));
+            ui.label(RichText::new(tr("An income or expense account is a category.")).color(pal().muted));
         } else {
             form_row(ui, tr("Currency"), |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut f.currency)
-                        .background_color(TRACK)
+                        .background_color(pal().track)
                         .hint_text("EUR")
                         .desired_width(80.0),
                 );
             });
         }
         if !f.error.is_empty() {
-            ui.label(RichText::new(&f.error).color(RED));
+            ui.label(RichText::new(&f.error).color(pal().red));
         }
         ui.add_space(8.0);
         let mut keep = true;
@@ -570,9 +570,9 @@ fn chart_row(ui: &mut Ui, row: &TreeRow, chosen: Option<i64>, wanted: &mut Optio
     ui.horizontal(|ui| {
         ui.add_space(row.depth as f32 * 18.0);
         if !a.code.is_empty() {
-            ui.label(RichText::new(&a.code).size(12.0).color(MUTED));
+            ui.label(RichText::new(&a.code).size(12.0).color(pal().muted));
         }
-        let name = RichText::new(&a.name).color(if a.system.is_some() { MUTED } else { TEXT });
+        let name = RichText::new(&a.name).color(if a.system.is_some() { pal().muted } else { pal().text });
         let name = if row.depth == 0 { name.strong() } else { name };
         if ui.selectable_label(chosen == Some(a.id), name).on_hover_text(tr("Show its entries")).clicked() {
             *wanted = Some(Wanted::Journal(Some((a.id, 0))));
@@ -621,7 +621,7 @@ fn journal_view(
     let (entries, more) = match entries {
         Ok(x) => x,
         Err(e) => {
-            ui.label(RichText::new(e).color(RED));
+            ui.label(RichText::new(e).color(pal().red));
             return;
         }
     };
@@ -629,13 +629,13 @@ fn journal_view(
         if ui.add_enabled(page > 0, egui::Button::new(tr("Newer"))).clicked() {
             *wanted = Some(Wanted::Journal(Some((id, page.saturating_sub(1)))));
         }
-        ui.label(RichText::new(trf("Page {n}", &[("n", &page.saturating_add(1))])).color(MUTED));
+        ui.label(RichText::new(trf("Page {n}", &[("n", &page.saturating_add(1))])).color(pal().muted));
         if ui.add_enabled(*more, egui::Button::new(tr("Older"))).clicked() {
             *wanted = Some(Wanted::Journal(Some((id, page.saturating_add(1)))));
         }
     });
     if entries.is_empty() {
-        ui.label(RichText::new(tr("Nothing has been recorded yet.")).color(MUTED));
+        ui.label(RichText::new(tr("Nothing has been recorded yet.")).color(pal().muted));
         return;
     }
     egui::ScrollArea::vertical().id_salt("journal").auto_shrink([false, false]).show(ui, |ui| {
@@ -662,7 +662,7 @@ fn journal_view(
 
 fn trial_table(ui: &mut Ui, t: &TrialBalance) {
     if t.lines.is_empty() {
-        ui.label(RichText::new(tr("Nothing has been recorded yet.")).color(MUTED));
+        ui.label(RichText::new(tr("Nothing has been recorded yet.")).color(pal().muted));
         return;
     }
     let cell = |ui: &mut Ui, w: f32, layout: Layout, text: RichText| {
@@ -677,7 +677,7 @@ fn trial_table(ui: &mut Ui, t: &TrialBalance) {
         let w = ui.available_width() - 30.0;
         let (name_w, amount_w) = (w * 0.48, w * 0.26);
         egui::Grid::new("trial_balance").striped(true).num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
-            let head = |s: &str| RichText::new(s.to_uppercase()).size(11.0).color(MUTED);
+            let head = |s: &str| RichText::new(s.to_uppercase()).size(11.0).color(pal().muted);
             cell(ui, name_w, left, head(tr("Account")));
             cell(ui, amount_w, right, head(tr("Debit")));
             cell(ui, amount_w, right, head(tr("Credit")));
@@ -694,7 +694,7 @@ fn trial_table(ui: &mut Ui, t: &TrialBalance) {
             for x in &t.totals {
                 cell(ui, name_w, left, RichText::new(tr("Total")).strong());
                 for c in [x.debit, x.credit] {
-                    let color = if x.debit == x.credit { TEXT } else { RED };
+                    let color = if x.debit == x.credit { pal().text } else { pal().red };
                     cell(ui, amount_w, right, RichText::new(fmt_currency(c, &x.currency)).strong().color(color));
                 }
                 ui.end_row();

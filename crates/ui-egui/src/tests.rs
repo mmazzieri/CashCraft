@@ -740,3 +740,44 @@ fn long_rules_stay_on_two_lines() {
         assert!(pair[1] > pair[0] && pair[1] < pair[0] * 2.5, "{pair:?}");
     }
 }
+
+#[test]
+fn both_themes_keep_text_readable() {
+    use crate::gui::{DARK, LIGHT};
+    use egui::Color32;
+    fn lum(c: Color32) -> f32 {
+        let ch = |v: u8| {
+            let s = f32::from(v) / 255.0;
+            if s <= 0.03928 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
+    }
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+    for p in [&LIGHT, &DARK] {
+        for bg in [p.bg, p.card, p.sidebar, p.zebra] {
+            assert!(contrast(p.text, bg) >= 4.5);
+            assert!(contrast(p.muted, bg) >= 4.5);
+        }
+        // Amounts and links on cards.
+        for fg in [p.accent, p.red, p.green] {
+            assert!(contrast(fg, p.card) >= 3.0);
+        }
+        // White text on filled buttons.
+        for fill in [p.accent_fill, p.red_fill, p.green_fill] {
+            assert!(contrast(Color32::WHITE, fill) >= 4.5);
+        }
+    }
+}
+
+#[test]
+fn the_theme_follows_the_system_until_chosen() {
+    use crate::gui::Theme;
+    assert_eq!(Theme::from_setting(None), Theme::System);
+    assert_eq!(Theme::from_setting(Some("something else")), Theme::System);
+    for t in Theme::ALL {
+        assert_eq!(Theme::from_setting(Some(t.code())), t);
+    }
+}
