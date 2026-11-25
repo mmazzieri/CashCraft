@@ -761,9 +761,9 @@ fn both_themes_keep_text_readable() {
             assert!(contrast(p.text, bg) >= 4.5);
             assert!(contrast(p.muted, bg) >= 4.5);
         }
-        // Amounts and links on cards.
+        // Amounts and links on cards: normal-size text.
         for fg in [p.accent, p.red, p.green] {
-            assert!(contrast(fg, p.card) >= 3.0);
+            assert!(contrast(fg, p.card) >= 4.5);
         }
         // White text on filled buttons.
         for fill in [p.accent_fill, p.red_fill, p.green_fill] {
