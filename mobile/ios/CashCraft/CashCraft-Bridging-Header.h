@@ -1,0 +1,1 @@
+#include "CashCraftCore.h"
