@@ -721,3 +721,22 @@ fn form_of(app: &mut App, id: i64) -> crate::gui::TxForm {
         _ => panic!("no form"),
     }
 }
+
+/// A long condition stays on two lines, in a column that takes most of the width.
+#[test]
+fn long_rules_stay_on_two_lines() {
+    let long = "payee: instalment of the financing for social security contributions ".repeat(4);
+    let mut heights = Vec::new();
+    egui::__run_test_ui(|ui| {
+        let [_, when, then, _] = crate::rules::rule_columns(900.0);
+        assert!(when > then && when > 900.0 / 2.0 - 100.0);
+        for text in ["x", long.as_str()] {
+            let top = ui.cursor().top();
+            crate::rules::rule_cell(ui, when, |ui| crate::rules::two_lines(ui, text, egui::Color32::BLACK));
+            heights.push(ui.cursor().top() - top);
+        }
+    });
+    for pair in heights.chunks(2) {
+        assert!(pair[1] > pair[0] && pair[1] < pair[0] * 2.5, "{pair:?}");
+    }
+}

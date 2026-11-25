@@ -1,15 +1,15 @@
 //! Automatic rules: the screen, the form of a rule with the live count, and the preview of a run.
 
 use crate::gui::{
-    ACCENT, AMBER, App, Dialog, MUTED, RED, account_combo, card, category_combo, cut, form_row, money, or_report,
-    primary_button,
+    ACCENT, AMBER, App, Dialog, MUTED, RED, TEXT, ZEBRA, account_combo, card, category_combo, cut, form_row, money,
+    or_report, primary_button,
 };
 use anyhow::Result;
 use cashcraft_engine::db::{Account, Category, Db, Transaction, TxFilter};
 use cashcraft_engine::i18n::{lang, tr, trf, trn, with_lang};
 use cashcraft_engine::money::{fmt_date, fmt_plain, parse_amount};
 use cashcraft_engine::rules::{Place, Plan, Rule, Scope, Sign, broken_message, count_matches, parse_tags};
-use egui::{self, RichText, Ui};
+use egui::{self, Color32, Frame, Margin, RichText, Ui, Vec2};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
@@ -134,6 +134,34 @@ pub struct RunForm {
     pub error: String,
 }
 
+/// The widths of a rule's row: its place, when, then, and the buttons. The text takes what is left.
+pub fn rule_columns(width: f32) -> [f32; 4] {
+    let (number, buttons) = (32.0, 170.0);
+    let text = (width - number - buttons).max(200.0);
+    [number, text * 0.62, text * 0.38, buttons]
+}
+
+pub fn rule_cell(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
+    let size = Vec2::new(width, 0.0);
+    ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.set_width(width);
+        add(ui);
+    });
+}
+
+/// At most two lines, the rest in the tooltip.
+pub fn two_lines(ui: &mut Ui, text: &str, color: Color32) {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::simple(text.to_string(), font, color, ui.available_width() - 14.0);
+    job.wrap.max_rows = 2;
+    let galley = ui.painter().layout_job(job);
+    let cut = galley.elided;
+    let r = ui.label(galley);
+    if cut {
+        r.on_hover_text(text);
+    }
+}
+
 impl App {
     pub fn rules_view(&mut self, ui: &mut Ui) {
         if self.rules.is_none() {
@@ -180,41 +208,54 @@ impl App {
                     ui.label(RichText::new(tr("There are no rules.")).color(MUTED));
                     return;
                 }
-                egui::Grid::new("rules").striped(true).num_columns(4).min_col_width(40.0).spacing([16.0, 8.0]).show(
-                    ui,
-                    |ui| {
-                        for h in ["", tr("When"), tr("Then"), ""] {
+                let [number, when, then, buttons] = rule_columns(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for (w, h) in [(number, ""), (when, tr("When")), (then, tr("Then"))] {
+                        rule_cell(ui, w, |ui| {
                             ui.label(RichText::new(h.to_uppercase()).size(11.0).color(MUTED));
-                        }
-                        ui.end_row();
-                        for (i, r) in rules.iter().enumerate() {
-                            ui.label(RichText::new((i + 1).to_string()).color(MUTED))
-                                .on_hover_text(trf("Rule {id}", &[("id", &r.id)]));
-                            ui.vertical(|ui| {
-                                ui.label(cut(&r.conditions(), 70)).on_hover_text(r.conditions());
+                        });
+                    }
+                });
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (i, r) in rules.iter().enumerate() {
+                    let fill = if i % 2 == 0 { ZEBRA } else { Color32::TRANSPARENT };
+                    Frame::new().fill(fill).inner_margin(Margin::symmetric(0, 5)).show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            rule_cell(ui, number, |ui| {
+                                ui.label(RichText::new((i + 1).to_string()).color(MUTED))
+                                    .on_hover_text(trf("Rule {id}", &[("id", &r.id)]));
+                            });
+                            rule_cell(ui, when, |ui| {
+                                two_lines(ui, &r.conditions(), TEXT);
                                 if let Some(p) = &r.problem {
-                                    ui.label(RichText::new(trf("skipped: {problem}", &[("problem", p)])).color(RED));
+                                    two_lines(ui, &trf("skipped: {problem}", &[("problem", p)]), RED);
                                 }
                             });
-                            ui.label(RichText::new(cut(&r.actions(), 50)).color(ACCENT)).on_hover_text(r.actions());
-                            ui.horizontal(|ui| {
-                                if ui.add_enabled(i > 0, egui::Button::new("⬆").small()).clicked() {
-                                    moved = Some((r.id, Place::Up));
-                                }
-                                if ui.add_enabled(i + 1 < rules.len(), egui::Button::new("⬇").small()).clicked() {
-                                    moved = Some((r.id, Place::Down));
-                                }
-                                if ui.small_button("✏").clicked() {
-                                    open = Some(r.clone());
-                                }
-                                if ui.small_button("🗑").clicked() {
-                                    delete = Some(r.id);
-                                }
-                            });
-                            ui.end_row();
-                        }
-                    },
-                );
+                            rule_cell(ui, then, |ui| two_lines(ui, &r.actions(), ACCENT));
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(buttons, ui.spacing().interact_size.y),
+                                egui::Layout::left_to_right(egui::Align::Min),
+                                |ui| {
+                                    if ui.add_enabled(i > 0, egui::Button::new("⬆").small()).clicked() {
+                                        moved = Some((r.id, Place::Up));
+                                    }
+                                    if ui.add_enabled(i + 1 < rules.len(), egui::Button::new("⬇").small()).clicked() {
+                                        moved = Some((r.id, Place::Down));
+                                    }
+                                    if ui.small_button("✏").clicked() {
+                                        open = Some(r.clone());
+                                    }
+                                    if ui.small_button("🗑").clicked() {
+                                        delete = Some(r.id);
+                                    }
+                                },
+                            );
+                        });
+                    });
+                }
             });
         });
         if let Some(r) = open {
