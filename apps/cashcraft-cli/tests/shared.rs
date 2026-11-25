@@ -175,6 +175,71 @@ mod tests {
         assert_eq!(d.names(), ["books.db".to_string()].into());
     }
 
+    /// A folder that is not known for a synced one, which the user chose.
+    #[test]
+    fn a_file_that_was_put_in_a_folder_is_never_opened_in_place() {
+        let d = Dir::new("plain");
+        let local = d.0.join("local.db");
+        let folder = d.0.join("Sync");
+        std::fs::create_dir_all(&folder).unwrap();
+        let local = local.to_str().unwrap();
+        assert!(d.run("one", &["--db", local, "accounts", "add", "Savings"]).status.success());
+        assert!(d.run("one", &["--db", local, "data", "keep", folder.to_str().unwrap()]).status.success());
+        let status = String::from_utf8(d.run("one", &["data", "status"]).stdout).unwrap();
+        assert!(status.contains("Used through a private copy"), "{status}");
+        assert!(d.run("one", &["accounts", "add", "Other"]).status.success());
+        let names: Vec<_> = std::fs::read_dir(&folder).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["local.db"]);
+        complete(&folder.join("local.db"));
+        assert!(std::path::Path::new(local).exists());
+    }
+
+    /// A program that stays open, as the window does, and others that start meanwhile on the same computer.
+    #[test]
+    fn programs_of_one_computer_work_at_once() {
+        let d = Dir::new("same");
+        d.ok("one", &["accounts", "add", "Bank"]);
+        let file = d.file();
+        let root = d.0.to_str().unwrap().to_string();
+        let args =
+            ["--db", file.to_str().unwrap(), "mcp", "--automation-read-root", &root, "--automation-write-root", &root];
+        let mut server = d.command("one", &args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let mut stdin = server.stdin.take().unwrap();
+        let mut lines = std::io::BufRead::lines(std::io::BufReader::new(server.stdout.take().unwrap()));
+        let mut expected = BTreeSet::new();
+        for round in 0..3 {
+            let mut children = Vec::new();
+            for i in 0..5 {
+                let payee = format!("cli-{round}-{i}");
+                let file = file.to_str().unwrap();
+                let args = ["--db", file, "tx", "add", "--account", "Bank", "--amount=-1", "--payee", &payee];
+                children.push(d.command("one", &args).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap());
+                expected.insert(payee);
+            }
+            for i in 0..3 {
+                let payee = format!("mcp-{round}-{i}");
+                let arguments = serde_json::json!({"account": "Bank", "amount": -1, "payee": payee});
+                let params = serde_json::json!({"name": "add_transaction", "arguments": arguments});
+                let msg = serde_json::json!({"jsonrpc": "2.0", "id": i, "method": "tools/call", "params": params});
+                writeln!(stdin, "{msg}").unwrap();
+                let reply: serde_json::Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+                assert_eq!(reply["result"]["isError"], false, "{reply}");
+                expected.insert(payee);
+            }
+            for c in children {
+                let out = c.wait_with_output().unwrap();
+                assert!(out.status.success() && out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+            }
+        }
+        drop(stdin);
+        server.wait().unwrap();
+        complete(&file);
+        assert_eq!(d.names(), ["books.db".to_string()].into());
+        // From the file alone.
+        let list = d.ok("two", &["--json", "tx", "list", "--limit", "100"]).0;
+        assert!(expected.iter().all(|p| list.contains(&format!("\"{p}\""))), "{list}");
+    }
+
     /// Programs that are really killed, at any moment.
     #[test]
     fn killed_programs_leave_a_complete_file() {

@@ -1066,7 +1066,13 @@ impl Shared {
         }
         if let Err(e) = content::open(&tested).and_then(|c| {
             content::settle(c, &tested)?;
-            self.check(&tested)
+            let print = self.check(&tested)?;
+            // A log of an older file would leave indexes that do not agree with their tables.
+            let all: String = content::open(&tested)?.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+            if all != "ok" {
+                bail!(tr("the data file is damaged"));
+            }
+            Ok(print)
         }) {
             return Ok(Err(Status::Waiting(format!("{e:#}"))));
         }
@@ -1105,13 +1111,9 @@ fn written(w: Written) -> Option<Status> {
 /// A database as one complete file: its bytes, and the fingerprint of what they hold.
 fn snapshot(from: &Path, out: &Path) -> Result<(Vec<u8>, String)> {
     let source = content::open(from)?;
-    snapshot_of(&source, out)
-}
-
-fn snapshot_of(source: &Connection, out: &Path) -> Result<(Vec<u8>, String)> {
     content::remove_with_logs(out);
     let mut copy = Connection::open(out)?;
-    content::copy_into(source, &mut copy)?;
+    content::copy_into(&source, &mut copy)?;
     let print = content::fingerprint(&copy)?;
     content::settle(copy, out)?;
     let bytes = std::fs::read(out)?;
@@ -1139,8 +1141,9 @@ pub fn around<T>(shared: &Shared, f: impl FnOnce() -> T) -> Result<(T, Vec<Strin
     Ok((out, notices))
 }
 
-/// Puts a complete copy of the open data file into a folder, under a name that must be free, and checks it there.
-pub fn copy_to(home: &Home, db: &Db, target: &Path) -> Result<()> {
+/// Puts a complete copy of a data file, or of a working copy, into a folder, under a name that must be free, and checks
+/// it there. The new file is used through a private copy, whatever the folder is.
+pub fn copy_to(home: &Home, from: &Path, target: &Path) -> Result<()> {
     let target = resolved(target);
     if std::fs::symlink_metadata(&target).is_ok() {
         bail!(trf("{path} is there already", &[("path", &target.display())]));
@@ -1149,7 +1152,7 @@ pub fn copy_to(home: &Home, db: &Db, target: &Path) -> Result<()> {
     let lock = shared.lock_file("sync.lock")?;
     lock.lock()?;
     let scratch = home.scratch()?;
-    let bytes = snapshot_of(&db.conn, &scratch.0.join("out.db"))?.0;
+    let bytes = snapshot(from, &scratch.0.join("out.db"))?.0;
     let mut st = State::load(&shared.dir);
     match shared.place_new(&mut st, target.file_name().unwrap_or_default(), &bytes)? {
         Ok(true) => {}
@@ -1157,7 +1160,7 @@ pub fn copy_to(home: &Home, db: &Db, target: &Path) -> Result<()> {
         Err(why) => bail!(trf("{path} cannot be written: {error}", &[("path", &target.display()), ("error", &why)])),
     }
     match shared.read_whole() {
-        Ok(f) if f.bytes == bytes => Ok(()),
+        Ok(f) if f.bytes == bytes => home.set_choice(&target, Use::Shared),
         _ => bail!(trf("{path} was not written whole", &[("path", &target.display())])),
     }
 }

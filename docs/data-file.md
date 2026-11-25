@@ -60,7 +60,7 @@ say, and one a day old is removed.
 ## Moving into a synced folder
 
 *Keep it in a synced folder…*, behind the path at the bottom of the window, or `data keep <folder>`: a complete copy is made under a free
-name, read back and compared, opened, and used from then on. The old file stays, or is removed (`--move`) if nobody has
+name, read back and compared, opened, and used from then on, through a private copy whatever the folder is called. The old file stays, or is removed (`--move`) if nobody has
 it open and it still holds the same.
 
 ## Files that 0.3.0 left

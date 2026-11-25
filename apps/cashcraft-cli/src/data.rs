@@ -149,7 +149,8 @@ pub fn run(home: &Home, path: &Path, asked: Use, cmd: DataCmd, as_json: bool) ->
                 bail!(trf("the path \"{path}\" has no file name", &[("path", &name.display())]));
             }
             let target = folder.join(name);
-            store::copy_to(home, &opened.db, &target)?;
+            let from = opened.db.path.clone().unwrap_or_else(|| path.to_path_buf());
+            store::copy_to(home, &from, &target)?;
             let target = store::resolved(&target);
             let new = store::open(home, &target, Use::Auto, lang(), true)?;
             home.remember(Some(&target))?;

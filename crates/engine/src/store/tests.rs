@@ -624,10 +624,11 @@ fn a_copy_is_put_in_a_folder_and_the_old_file_goes_only_when_it_is_safe() {
     let o = open(&home, &old, Use::Auto, Lang::En, false).unwrap();
     assert!(o.shared.is_none());
     add(&o.db, "x");
-    copy_to(&home, &o.db, &p.file()).unwrap();
-    assert!(copy_to(&home, &o.db, &p.file()).is_err());
+    copy_to(&home, &old, &p.file()).unwrap();
+    assert!(copy_to(&home, &old, &p.file()).is_err());
     assert_eq!((payees_of(&p.file()), p.names()), (set(&["x"]), vec!["books.db".into()]));
-    let new = open(&home, &p.file(), Use::Shared, Lang::En, true).unwrap();
+    let new = open(&home, &p.file(), Use::Auto, Lang::En, true).unwrap();
+    assert!(new.shared.is_some());
     // Open elsewhere, or changed since.
     o.db.conn.execute_batch("BEGIN; SELECT * FROM meta;").unwrap();
     let _ = retire(&old, &new.db).unwrap_err();
@@ -638,13 +639,11 @@ fn a_copy_is_put_in_a_folder_and_the_old_file_goes_only_when_it_is_safe() {
     assert!(old.exists());
     add(&new.db, "late");
     // Not the same entry for a computer: it has another id.
-    let same = open(&home, &old, Use::Direct, Lang::En, true).unwrap().db;
-    copy_to(&home, &same, &p.folder().join("second.db")).unwrap();
-    drop(same);
+    copy_to(&home, &old, &p.folder().join("second.db")).unwrap();
     let second = open(&home, &p.folder().join("second.db"), Use::Shared, Lang::En, true).unwrap();
     retire(&old, &second.db).unwrap();
     assert!(!old.exists() && !content::log(&old, "-wal").exists());
-    assert!(copy_to(&home, &new.db, &p.0.join("nowhere").join("a.db")).is_err());
+    assert!(copy_to(&home, &p.file(), &p.0.join("nowhere").join("a.db")).is_err());
 }
 
 #[test]
