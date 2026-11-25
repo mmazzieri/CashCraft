@@ -1,0 +1,392 @@
+"{amount}" is not a valid amount	importo "{amount}" non valido
+"{amount}" is too large	importo "{amount}" troppo grande
+"{date}" is not a valid date (use YYYY-MM-DD or DD/MM/YYYY)	data "{date}" non valida (usa AAAA-MM-GG o GG/MM/AAAA)
+"{month}" is not a valid month (use YYYY-MM)	mese "{month}" non valido (usa AAAA-MM)
+"{path}" is not a folder	"{path}" non è una cartella
+% of total	% sul totale
+(none: top level)	(nessuna: principale)
+({n} row skipped)	({n} riga saltata)
+({n} rows skipped)	({n} righe saltate)
++ Income	+ Entrata
++ New account	+ Nuovo conto
++ New scheduled transaction	+ Nuovo pianificato
++ Transaction	+ Movimento
+Account	Conto
+Account created	Conto creato
+Account deleted	Conto eliminato
+Account fee	Canone conto
+Account maintenance	Spese tenuta conto
+Account updated	Conto aggiornato
+Add	Aggiungi
+Add rule	Aggiungi regola
+All	Tutto
+All accounts	Tutti i conti
+All categories	Tutte le categorie
+All transactions	Tutti i movimenti
+Amount	Importo
+Amount (signed)	Importo (con segno)
+Amount €	Importo €
+Analysis	Analisi
+Analyze	Analizza
+Apartment rent	Affitto appartamento
+April	aprile
+Archived (hidden from the sidebar)	Archiviato (nascosto dalla barra laterale)
+August	agosto
+Automatic (rules)	Automatica (regole)
+Automatic rules	Regole automatiche
+Balance	Saldo
+Bank and taxes:Fees	Banca e tasse:Commissioni
+Bank and taxes:Taxes	Banca e tasse:Imposte
+Bill by direct debit	Addebito diretto bolletta
+Breakfast	Colazione
+Budget	Budget
+Budget of {month}	Budget di {month}
+Budget removed	Budget rimosso
+Budget saved	Budget salvato
+Budget this month	Budget del mese
+Cancel	Annulla
+Card payment 0412	Pagamento POS 0412
+Card statement payment	Saldo estratto carta
+Cash	Contanti
+Cash withdrawal	Prelievo bancomat
+Categories	Categorie
+Categories and rules stay, so you can start right away.	Categorie e regole restano, così puoi iniziare subito.
+Category	Categoria
+Category created	Categoria creata
+Category deleted	Categoria eliminata
+Category renamed	Categoria rinominata
+Category updated	Categoria aggiornata
+Checked against the bank statement	Verificato sull'estratto conto
+Choose a category…	Scegli categoria…
+Choose an account…	Scegli un conto…
+Choose the category of the rule	Scegli la categoria della regola
+Cinema and books	Cinema e libri
+Cleared	Verificato
+Close	Chiudi
+Clothes Shop	Negozio Abbigliamento
+Clothing	Abbigliamento
+Column {n}	Colonna {n}
+Credit card	Carta di credito
+Credit cards	Carte di credito
+Current account	Conto corrente
+Current accounts	Conti correnti
+Current balance	Saldo attuale
+Current month	Mese corrente
+Current net worth: {amount}	Patrimonio netto attuale: {amount}
+Data file: {path}	Archivio: {path}
+Date	Data
+December	dicembre
+Delete	Elimina
+Delete (its transactions stay, uncategorized)	Elimina (i movimenti restano senza categoria)
+Delete and start	Elimina e inizia
+Delete it and start with your own accounts	Eliminali e inizia con i tuoi conti
+Delete the account?	Eliminare il conto?
+Delete the sample data?	Eliminare i dati di esempio?
+Deposit account	Conto deposito
+Description	Descrizione
+Details	Dettagli
+Details by category	Dettaglio per categoria
+Dinner	Cena
+Downtown Supermarket	Supermercato Centro
+Edit account	Modifica conto
+Edit amount	Modifica importo
+Edit transaction	Modifica movimento
+Education	Istruzione
+Electricity	Energia Elettrica
+Encoding {encoding} · separator «{separator}» · decimals with «{decimal}» · header {header}	Codifica {encoding} · separatore «{separator}» · decimali con «{decimal}» · intestazione {header}
+Error: {error}	Errore: {error}
+Expenses	Uscite
+Expenses / debits	Uscite / Addebiti
+Expenses by category	Spese per categoria
+Expenses this month	Uscite del mese
+February	febbraio
+First due date	Prima scadenza
+Format: separator '{separator}', encoding {encoding}, decimals '{decimal}', header on row {row}	Formato: separatore '{separator}', codifica {encoding}, decimali '{decimal}', intestazione alla riga {row}
+From	Da
+From {from} to {to}	Dal {from} al {to}
+Gas Station	Distributore Carburante
+Gas and water	Gas e acqua
+Gifts	Regali
+Gino's Pizzeria	Pizzeria Da Gino
+Go to the account	Vai al conto
+Groceries	Alimentari
+Health	Salute
+Home fiber	Fibra Casa
+Home:Maintenance	Casa:Manutenzione
+Home:Rent and mortgage	Casa:Affitto e mutuo
+Home:Utilities	Casa:Bollette
+How income and expenses are grouped	Come raggruppare entrate e uscite
+Import a CSV statement	Importa estratto conto CSV
+Import a bank statement (⌘I). You can also drop the file on the window.	Importa l'estratto conto della banca (⌘I). Puoi anche trascinare il file sulla finestra.
+Import into the account:	Importa nel conto:
+Import {n} transaction	Importa {n} movimento
+Import {n} transactions	Importa {n} movimenti
+Income	Entrate
+Income / credits	Entrate / Accrediti
+Income and expenses	Entrate e uscite
+Income and expenses by month	Entrate e uscite per mese
+Income this month	Entrate del mese
+Interest	Interessi
+Interest earned	Interessi creditori
+Internet subscription	Abbonamento internet
+Invert the sign (credit cards)	Inverti segno (carte di credito)
+Investment	Investimento
+Investments	Investimenti
+It works with CSV files exported from online banking: columns, separator, dates and Italian amounts are recognized. Transactions already imported are skipped.	Funziona con i CSV esportati dall'home banking: colonne, separatore, date e importi all'italiana vengono riconosciuti da soli. I movimenti già importati vengono saltati.
+January	gennaio
+July	luglio
+June	giugno
+Keywords	Parole chiave
+Language	Lingua
+Last 12 months	Ultimi 12 mesi
+Last 3 months	Ultimi 3 mesi
+Last 6 months, transfers excluded	Ultimi 6 mesi, giroconti esclusi
+Last month	Mese scorso
+Latest transactions	Ultimi movimenti
+Left	Restano
+Leisure	Svago
+Loan / mortgage	Prestito / mutuo
+Loans and mortgages	Prestiti e mutui
+Manage	Gestisci
+March	marzo
+Mark as not cleared	Segna come non verificato
+May	maggio
+Money in	Entrata
+Money out	Uscita
+Month	Mese
+Monthly rent	Canone mensile
+Monthly savings	Risparmio mensile
+Monthly spending limits by category	Limiti di spesa mensili per categoria
+Monthly subscription	Abbonamento mensile
+Move money between two of your accounts (it does not count as an expense).	Sposta denaro tra due tuoi conti (non conta come spesa).
+Name	Nome
+Net worth	Patrimonio netto
+Net worth over time (12 months)	Andamento del patrimonio netto (12 mesi)
+Net worth: {amount}	Patrimonio netto: {amount}
+New account	Nuovo conto
+New budget:	Nuovo budget:
+New category:	Nuova categoria:
+New scheduled transaction	Nuovo movimento pianificato
+New transaction	Nuovo movimento
+New transaction (⌘N)	Nuovo movimento (⌘N)
+Next	Prossima
+No budget set.	Nessun budget impostato.
+No budgets: add one below.	Nessun budget: aggiungine uno qui sotto.
+No expenses this month.	Nessuna spesa questo mese.
+No scheduled transactions.	Nessun movimento pianificato.
+No transactions in this period.	Nessun movimento in questo periodo.
+None	Nessuna
+Notes	Note
+November	novembre
+October	ottobre
+Only uncategorized	Solo senza categoria
+Opening balance €	Saldo iniziale €
+Organize	Organizza
+Other	Altro
+Other expenses	Altre spese
+Other income	Altre entrate
+Overview	Panoramica
+Payee	Beneficiario
+Ready: create your first account or import a CSV	Pronto: crea il tuo primo conto o importa un CSV
+Record	Registra
+Recurring transactions and due dates	Movimenti ricorrenti e scadenze
+Refueling	Rifornimento
+Refunds	Rimborsi
+Remove budget	Rimuovi budget
+Rename	Rinomina
+Rename to	Rinomina in
+Repeat every	Ripeti ogni
+Repetition	Ripetizione
+Reports	Report
+Restaurants and bars	Ristoranti e bar
+Rule added	Regola aggiunta
+Rule deleted	Regola eliminata
+Salary	Stipendio
+Salary transfer	Bonifico emolumenti
+Sample accounts, transactions, budgets and scheduled transactions will be deleted.	Conti, movimenti, budget e pianificati di esempio saranno eliminati.
+Save	Salva
+Saved	Risparmio
+Saved this month	Risparmio del mese
+Savings	Risparmi
+Savings account	Risparmio
+Savings rate	Tasso di risparmio
+Scheduled	Pianificati
+Scheduled transaction added	Pianificato aggiunto
+Scheduled transaction deleted	Pianificato eliminato
+See all	Vedi tutti
+See the transactions	Vedi i movimenti
+September	settembre
+Sort them out	Sistemali
+Spent	Speso
+Square Café	Bar Piazza
+Subscriptions	Abbonamenti
+System	Sistema
+The account "{name}" and all its transactions will be deleted. This cannot be undone.	Il conto "{name}" e tutti i suoi movimenti saranno eliminati. Non si può annullare.
+The picture cannot be saved: {error}	Errore nel salvare l'immagine: {error}
+They categorize imported transactions	Assegnano la categoria ai movimenti importati
+This month	Questo mese
+This year	Quest'anno
+To	A
+Total	Totale
+Town Pharmacy	Farmacia Comunale
+Transaction	Movimento
+Transaction deleted	Movimento eliminato
+Transaction recorded	Movimento registrato
+Transaction updated	Movimento aggiornato
+Transactions found: {found} (rows skipped: {skipped}), from {from} to {to}, sum {sum}	Movimenti trovati: {found} (righe saltate: {skipped}), dal {from} al {to}, somma {sum}
+Transfer	Giroconto
+Transfer from {account}	Giroconto da {account}
+Transfer recorded	Giroconto registrato
+Transfer to {account}	Giroconto verso {account}
+Transfer: changes apply to both accounts.	Giroconto: le modifiche valgono per entrambi i conti.
+Transport:Car	Trasporti:Auto
+Transport:Fuel	Trasporti:Carburante
+Transport:Public transport	Trasporti:Mezzi pubblici
+Travel	Viaggi
+Two-monthly bill	Bolletta bimestrale
+Type	Tipo
+Uncategorized	Senza categoria
+Upcoming	Prossime scadenze
+Video streaming	Streaming Video
+Wallet	Portafoglio
+Weekly shopping	Spesa settimanale
+When the payee or the description contains one of the keywords (separated by | ), the transaction gets that category. Rules apply to every new or imported transaction without a category.	Quando il beneficiario o la descrizione contengono una delle parole chiave (separate da | ), il movimento riceve la categoria indicata. Le regole valgono per ogni movimento nuovo o importato senza categoria.
+Where your money goes	Dove vanno i tuoi soldi
+Works from the terminal (cashcraft-cli --help) and over MCP (cashcraft-cli mcp)	Pilotabile da terminale (cashcraft-cli --help) e da MCP (cashcraft-cli mcp)
+[Transfer] {account}	[Giroconto] {account}
+access denied: "{path}" is outside the allowed read folder	accesso negato: "{path}" è fuori dalla cartella di lettura consentita
+access denied: "{path}" is outside the allowed write folder	accesso negato: "{path}" è fuori dalla cartella di scrittura consentita
+account "{name}" deleted	conto "{name}" eliminato
+account "{name}" not found	conto "{name}" non trovato
+account created	conto creato
+all accounts	tutti i conti
+amount a month	importo al mese
+budget of "{category}": {amount} a month	budget di "{category}": {amount} al mese
+cannot create {path}	impossibile creare {path}
+cannot open {path}	impossibile aprire {path}
+cannot read {path}	impossibile leggere {path}
+category "{name}" deleted	categoria "{name}" eliminata
+category "{name}" not found	categoria "{name}" non trovata
+choose an account	scegli un conto
+choose the account	scegli il conto
+choose the account to transfer from	scegli il conto di origine
+choose the account to transfer to	scegli il conto di destinazione
+column "{name}" is not in the file	colonna "{name}" non trovata nel file
+days	giorni
+e.g. Main account	es. Conto principale
+enter an amount	inserisci un importo
+every day	ogni giorno
+every month	ogni mese
+every week	ogni settimana
+every year	ogni anno
+every {n} days	ogni {n} giorni
+every {n} months	ogni {n} mesi
+every {n} weeks	ogni {n} settimane
+every {n} years	ogni {n} anni
+expense	uscita
+expenses above income	uscite oltre le entrate
+from {from} to {to}	dal {from} al {to}
+income	entrata
+inside	dentro
+is income	è un'entrata
+is there already an account named "{name}"?	esiste già un conto chiamato "{name}"?
+keywords, e.g. bakery|pastry shop	parole chiave, es. panificio|forno
+missing	assente
+months	mesi
+name	nome
+no	no
+on row {n}	alla riga {n}
+optional	facoltativo
+or into a new account:	oppure in un nuovo conto:
+rename payee (optional)	rinomina beneficiario (facoltativo)
+rule deleted	regola eliminata
+scheduled transaction deleted	pianificato eliminato
+sum {amount}	somma {amount}
+the JSON arguments are not valid: {error}	argomenti JSON non validi: {error}
+the account needs a name	il nome del conto è obbligatorio
+the account to transfer from does not exist	conto di origine inesistente
+the account to transfer to does not exist	conto di destinazione inesistente
+the amount column was not found: give it with amount_column or credit_column/debit_column	non trovo la colonna dell'importo: indicala con amount_column o credit_column/debit_column
+the amount is empty	importo vuoto
+the amount is not valid	importo non valido
+the category needs a name	nome di categoria vuoto
+the data file was written by a newer version of CashCraft (format {version})	l'archivio è stato scritto da una versione più recente di CashCraft (formato {version})
+the date column was not found: give it with date_column	non trovo la colonna della data: indicala con date_column
+the date is not valid	data non valida
+the date is not valid (yyyy-mm-dd)	data non valida (gg/mm/aaaa)
+the file "{path}" cannot be read: {error}	file "{path}" non leggibile: {error}
+the file is empty or is not a CSV	il file è vuoto o non è un CSV
+the folder "{path}" cannot be used: {error}	cartella "{path}" non valida: {error}
+the folder of "{path}" cannot be used: {error}	cartella di "{path}" non valida: {error}
+the numeric parameter "{name}" is missing	manca il parametro numerico "{name}"
+the parameter "{name}" is missing	manca il parametro "{name}"
+the path "{path}" has no file name	percorso "{path}" senza nome di file
+the path "{path}" is not valid	percorso "{path}" non valido
+the picture is not valid	immagine non valida
+the repetition goes from 1 to 1000	la ripetizione va da 1 a 1000
+the rule needs a keyword	la parola chiave della regola è vuota
+the transaction was not saved	movimento non salvato
+the two accounts of the transfer are the same	il conto di origine e di destinazione coincidono
+the window cannot be opened: {error}	impossibile aprire la finestra: {error}
+to categorize	da categorizzare
+transaction {id} deleted	movimento {id} eliminato
+transaction {id} not found	movimento {id} non trovato
+transaction {id} not found (or it is a transfer)	movimento {id} non trovato (o è un giroconto)
+transfer recorded	giroconto registrato
+trial data in memory	archivio di prova in memoria
+unknown account type "{kind}"	tipo di conto "{kind}" sconosciuto
+unknown operation "{name}"	operazione "{name}" sconosciuta
+unknown repetition unit "{unit}" (day, week, month, year)	unità di ripetizione "{unit}" sconosciuta (giorno, settimana, mese, anno)
+weeks	settimane
+write a description	scrivi una descrizione
+write the payee or a description	scrivi il beneficiario o una descrizione
+years	anni
+yes	sì
+yyyy-mm-dd	gg/mm/aaaa
+{added} imported, {present} already present, {categorized} categorized automatically	{added} movimenti importati, {present} già presenti, {categorized} categorizzati automaticamente
+{amount} left	restano {amount}
+{amount} over	{amount} oltre
+{amount} over budget	sforato di {amount}
+{n} already present (skipped)	{n} già presenti (saltati)
+{n} categorized automatically by the rules	{n} categorizzati automaticamente dalle regole
+{n} row was not a transaction (balances, totals…)	{n} riga non era un movimento (saldi, totali…)
+{n} rows were not transactions (balances, totals…)	{n} righe non erano movimenti (saldi, totali…)
+{n} transaction	{n} movimento
+{n} transaction categorized	{n} movimento categorizzato
+{n} transaction found	{n} movimento trovato
+{n} transaction imported	{n} movimento importato
+{n} transaction recorded	{n} movimento registrato
+{n} transactions	{n} movimenti
+{n} transactions categorized	{n} movimenti categorizzati
+{n} transactions found	{n} movimenti trovati
+{n} transactions imported	{n} movimenti importati
+{n} transactions recorded	{n} movimenti registrati
+{path}: the file is larger than {mb} MB	{path}: il file supera i {mb} MB
+{percent}% of income	{percent}% delle entrate
+{spent} spent of {budget}	{spent} spesi su {budget}
+· Difference	· Differenza
+· Expenses	· Uscite
+· Income	· Entrate
+— to categorize —	— da categorizzare —
+…or paste the path of the file	…oppure incolla il percorso del file
+ℹ You are looking at sample data, to try the app out.	ℹ Stai guardando dati di esempio, per provare il programma.
+− Expense	− Uscita
+▶ Apply now to uncategorized transactions	▶ Applica ora ai movimenti senza categoria
+⚫ {n} uncategorized transaction	⚫ {n} movimento senza categoria
+⚫ {n} uncategorized transactions	⚫ {n} movimenti senza categoria
+✏ Edit	✏ Modifica
+✏ Edit account…	✏ Modifica conto…
+✏ Edit…	✏ Modifica…
+✔ Import completed	✔ Importazione completata
+✔ Mark as cleared	✔ Segna come verificato
+✔ Record what is due up to today ({n})	✔ Registra le scadenze fino a oggi ({n})
+✖ Clear filters	✖ Azzera filtri
+⬇ Import CSV	⬇ Importa CSV
+⬇ Import CSV into this account…	⬇ Importa CSV in questo conto…
+⬇ Import a CSV statement	⬇ Importa un estratto conto CSV
+🏷 Category	🏷 Categoria
+📂 Choose file…	📂 Scegli file…
+🔁 Transfer	🔁 Giroconto
+🔍 Search payee, notes, amount…	🔍 Cerca beneficiario, note, importo…
+🗑 Delete	🗑 Elimina
+🗑 Delete account…	🗑 Elimina conto…

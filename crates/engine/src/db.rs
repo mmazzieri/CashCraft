@@ -2,6 +2,7 @@
 //! regole di categorizzazione automatica e movimenti pianificati.
 //! Gli importi sono sempre in centesimi (i64): negativi = uscite, positivi = entrate.
 
+use crate::i18n::{Lang, lang, tr, trf, trn, with_lang};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{Datelike, Days, Local, Months, NaiveDate};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -46,36 +47,38 @@ impl AccountKind {
     pub fn from_code(s: &str) -> Option<Self> {
         let s = s.trim().to_lowercase();
         Some(match s.as_str() {
-            "bank" | "banca" | "conto" | "conto corrente" | "checking" => AccountKind::Bank,
-            "cash" | "contanti" | "portafoglio" => AccountKind::Cash,
+            "bank" | "banca" | "conto" | "conto corrente" | "checking" | "current account" => AccountKind::Bank,
+            "cash" | "contanti" | "portafoglio" | "wallet" => AccountKind::Cash,
             "credit_card" | "credit card" | "carta" | "carta di credito" | "card" => AccountKind::CreditCard,
-            "savings" | "risparmio" | "risparmi" | "deposito" | "conto deposito" => AccountKind::Savings,
-            "investment" | "investimenti" | "investimento" | "titoli" => AccountKind::Investment,
-            "loan" | "prestito" | "mutuo" | "debito" => AccountKind::Loan,
+            "savings" | "savings account" | "deposit" | "risparmio" | "risparmi" | "deposito" | "conto deposito" => {
+                AccountKind::Savings
+            }
+            "investment" | "investments" | "investimenti" | "investimento" | "titoli" => AccountKind::Investment,
+            "loan" | "mortgage" | "prestito" | "mutuo" | "debito" => AccountKind::Loan,
             _ => return None,
         })
     }
 
-    /// Titolo del gruppo nella barra laterale.
+    /// Title of the group in the sidebar.
     pub fn group_label(self) -> &'static str {
         match self {
-            AccountKind::Bank => "Conti correnti",
-            AccountKind::Cash => "Contanti",
-            AccountKind::CreditCard => "Carte di credito",
-            AccountKind::Savings => "Risparmi",
-            AccountKind::Investment => "Investimenti",
-            AccountKind::Loan => "Prestiti e mutui",
+            AccountKind::Bank => tr("Current accounts"),
+            AccountKind::Cash => tr("Cash"),
+            AccountKind::CreditCard => tr("Credit cards"),
+            AccountKind::Savings => tr("Savings"),
+            AccountKind::Investment => tr("Investments"),
+            AccountKind::Loan => tr("Loans and mortgages"),
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            AccountKind::Bank => "Conto corrente",
-            AccountKind::Cash => "Contanti",
-            AccountKind::CreditCard => "Carta di credito",
-            AccountKind::Savings => "Risparmio",
-            AccountKind::Investment => "Investimento",
-            AccountKind::Loan => "Prestito / mutuo",
+            AccountKind::Bank => tr("Current account"),
+            AccountKind::Cash => tr("Cash"),
+            AccountKind::CreditCard => tr("Credit card"),
+            AccountKind::Savings => tr("Savings account"),
+            AccountKind::Investment => tr("Investment"),
+            AccountKind::Loan => tr("Loan / mortgage"),
         }
     }
 }
@@ -287,6 +290,10 @@ pub fn default_db_path() -> PathBuf {
     crate::paths::data_dir().join("CashCraft").join("cashcraft.db")
 }
 
+fn no_transaction(id: i64) -> anyhow::Error {
+    anyhow!(trf("transaction {id} not found", &[("id", &id)]))
+}
+
 pub fn today() -> NaiveDate {
     Local::now().date_naive()
 }
@@ -300,19 +307,24 @@ fn s2d(s: &str) -> NaiveDate {
 }
 
 impl Db {
-    /// Apre (o crea) l'archivio. Restituisce anche `true` se il file è nuovo.
+    /// Opens the data file, or creates it. Also returns whether the file is new.
     pub fn open(path: &Path) -> Result<(Db, bool)> {
+        Self::open_seeding(path, lang())
+    }
+
+    /// [`Db::open`] with the language of the categories and rules of a new file.
+    pub fn open_seeding(path: &Path, seed: Lang) -> Result<(Db, bool)> {
         let is_new = !path.exists();
         if let Some(dir) = path.parent()
             && !dir.as_os_str().is_empty()
         {
-            std::fs::create_dir_all(dir).with_context(|| format!("impossibile creare {}", dir.display()))?;
+            std::fs::create_dir_all(dir).with_context(|| trf("cannot create {path}", &[("path", &dir.display())]))?;
         }
-        let conn = Connection::open(path).with_context(|| format!("impossibile aprire {}", path.display()))?;
+        let conn = Connection::open(path).with_context(|| trf("cannot open {path}", &[("path", &path.display())]))?;
         let db = Db { conn, path: Some(path.to_path_buf()) };
         db.init()?;
         if is_new {
-            db.seed_defaults()?;
+            with_lang(seed, || db.seed_defaults())?;
         }
         Ok((db, is_new))
     }
@@ -330,7 +342,10 @@ impl Db {
         let _ = self.conn.execute_batch("PRAGMA journal_mode = WAL;");
         let version: i64 = self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version > SCHEMA_VERSION {
-            bail!("l'archivio è stato scritto da una versione più recente di CashCraft (formato {version})");
+            bail!(trf(
+                "the data file was written by a newer version of CashCraft (format {version})",
+                &[("version", &version)]
+            ));
         }
         self.conn.execute_batch(SCHEMA)?;
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -356,45 +371,46 @@ impl Db {
 
     fn seed_defaults(&self) -> Result<()> {
         let expense: &[&str] = &[
-            "Casa:Affitto e mutuo",
-            "Casa:Bollette",
-            "Casa:Manutenzione",
-            "Alimentari",
-            "Ristoranti e bar",
-            "Trasporti:Carburante",
-            "Trasporti:Mezzi pubblici",
-            "Trasporti:Auto",
-            "Salute",
-            "Svago",
-            "Abbigliamento",
-            "Viaggi",
-            "Abbonamenti",
-            "Banca e tasse:Commissioni",
-            "Banca e tasse:Imposte",
-            "Istruzione",
-            "Regali",
-            "Altre spese",
+            tr("Home:Rent and mortgage"),
+            tr("Home:Utilities"),
+            tr("Home:Maintenance"),
+            tr("Groceries"),
+            tr("Restaurants and bars"),
+            tr("Transport:Fuel"),
+            tr("Transport:Public transport"),
+            tr("Transport:Car"),
+            tr("Health"),
+            tr("Leisure"),
+            tr("Clothing"),
+            tr("Travel"),
+            tr("Subscriptions"),
+            tr("Bank and taxes:Fees"),
+            tr("Bank and taxes:Taxes"),
+            tr("Education"),
+            tr("Gifts"),
+            tr("Other expenses"),
         ];
-        let income: &[&str] = &["Stipendio", "Rimborsi", "Interessi", "Altre entrate"];
+        let income: &[&str] = &[tr("Salary"), tr("Refunds"), tr("Interest"), tr("Other income")];
         for p in expense {
             self.category_by_path(p, false, true)?;
         }
         for p in income {
             self.category_by_path(p, true, true)?;
         }
+        // Italian keywords in every language: they match the wording of Italian banks.
         let rules: &[(&str, &str)] = &[
-            ("supermercato|alimentari|market|discount|ipermercato", "Alimentari"),
-            ("ristorante|pizzeria|bar |trattoria|osteria|caffe", "Ristoranti e bar"),
-            ("carburante|benzina|distributore|rifornimento", "Trasporti:Carburante"),
-            ("treno|autobus|metro|biglietto|trasporto pubblico", "Trasporti:Mezzi pubblici"),
-            ("farmacia|medico|ospedale|ticket sanitario", "Salute"),
-            ("energia|luce e gas|gas |acqua|bolletta|utenza", "Casa:Bollette"),
-            ("affitto|canone locazione|rata mutuo", "Casa:Affitto e mutuo"),
-            ("commissione|commissioni|canone conto|spese tenuta", "Banca e tasse:Commissioni"),
-            ("imposta di bollo|f24|imposta", "Banca e tasse:Imposte"),
-            ("stipendio|emolumenti|retribuzione", "Stipendio"),
-            ("interessi creditori|interessi", "Interessi"),
-            ("abbonamento|streaming", "Abbonamenti"),
+            ("supermercato|alimentari|market|discount|ipermercato", tr("Groceries")),
+            ("ristorante|pizzeria|bar |trattoria|osteria|caffe", tr("Restaurants and bars")),
+            ("carburante|benzina|distributore|rifornimento", tr("Transport:Fuel")),
+            ("treno|autobus|metro|biglietto|trasporto pubblico", tr("Transport:Public transport")),
+            ("farmacia|medico|ospedale|ticket sanitario", tr("Health")),
+            ("energia|luce e gas|gas |acqua|bolletta|utenza", tr("Home:Utilities")),
+            ("affitto|canone locazione|rata mutuo", tr("Home:Rent and mortgage")),
+            ("commissione|commissioni|canone conto|spese tenuta", tr("Bank and taxes:Fees")),
+            ("imposta di bollo|f24|imposta", tr("Bank and taxes:Taxes")),
+            ("stipendio|emolumenti|retribuzione", tr("Salary")),
+            ("interessi creditori|interessi", tr("Interest")),
+            ("abbonamento|streaming", tr("Subscriptions")),
         ];
         for (pat, cat) in rules {
             let cid = self.category_by_path(cat, false, false)?;
@@ -444,14 +460,14 @@ impl Db {
     ) -> Result<i64> {
         let name = name.trim();
         if name.is_empty() {
-            bail!("il nome del conto è obbligatorio");
+            bail!(tr("the account needs a name"));
         }
         self.conn
             .execute(
                 "INSERT INTO accounts(name,kind,currency,opening_balance,iban) VALUES(?1,?2,?3,?4,?5)",
                 params![name, kind.code(), currency, opening, iban],
             )
-            .with_context(|| format!("esiste già un conto chiamato \"{name}\"?"))?;
+            .with_context(|| trf("is there already an account named \"{name}\"?", &[("name", &name)]))?;
         Ok(self.conn.last_insert_rowid())
     }
 
@@ -498,7 +514,7 @@ impl Db {
         if let [only] = partial.as_slice() {
             return Ok((*only).clone());
         }
-        Err(anyhow!("conto \"{key}\" non trovato"))
+        Err(anyhow!(trf("account \"{name}\" not found", &[("name", &key)])))
     }
 
     // ------------------------------------------------------------ categorie
@@ -556,10 +572,10 @@ impl Db {
                     )?;
                     self.conn.last_insert_rowid()
                 }
-                None => bail!("categoria \"{path}\" non trovata"),
+                None => bail!(trf("category \"{name}\" not found", &[("name", &path)])),
             });
         }
-        parent.ok_or_else(|| anyhow!("nome di categoria vuoto"))
+        parent.ok_or_else(|| anyhow!(tr("the category needs a name")))
     }
 
     /// Trova una categoria per id, percorso completo o nome (anche parziale se univoco).
@@ -583,7 +599,7 @@ impl Db {
         if let [only] = partial.as_slice() {
             return Ok((*only).clone());
         }
-        Err(anyhow!("categoria \"{key}\" non trovata"))
+        Err(anyhow!(trf("category \"{name}\" not found", &[("name", &key)])))
     }
 
     pub fn rename_category(&self, id: i64, name: &str) -> Result<()> {
@@ -627,7 +643,7 @@ impl Db {
                     memo: r.get(6)?,
                     category_id: cat_id,
                     category: match (&peer_name, cat_id) {
-                        (Some(p), _) => format!("[Giroconto] {p}"),
+                        (Some(p), _) => trf("[Transfer] {account}", &[("account", p)]),
                         (None, Some(c)) => cats.get(&c).cloned().unwrap_or_default(),
                         (None, None) => String::new(),
                     },
@@ -699,9 +715,9 @@ impl Db {
             .conn
             .query_row("SELECT account_id, date FROM transactions WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?;
-        let (acc, _) = t.ok_or_else(|| anyhow!("movimento {id} non trovato"))?;
+        let (acc, _) = t.ok_or_else(|| no_transaction(id))?;
         let all = self.transactions(&TxFilter { account_id: Some(acc), ..Default::default() })?;
-        all.into_iter().find(|t| t.id == id).ok_or_else(|| anyhow!("movimento {id} non trovato"))
+        all.into_iter().find(|t| t.id == id).ok_or_else(|| no_transaction(id))
     }
 
     /// Inserisce un movimento. Se non ha categoria applica le regole.
@@ -741,7 +757,7 @@ impl Db {
             .conn
             .query_row("SELECT transfer_peer FROM transactions WHERE id=?1", [id], |r| r.get(0))
             .optional()?
-            .ok_or_else(|| anyhow!("movimento {id} non trovato"))?;
+            .ok_or_else(|| no_transaction(id))?;
         self.conn.execute(
             "UPDATE transactions SET date=?2, amount=?3, payee=?4, memo=?5, category_id=?6, cleared=?7 WHERE id=?1",
             params![
@@ -769,7 +785,7 @@ impl Db {
             params![id, category_id],
         )?;
         if n == 0 {
-            bail!("movimento {id} non trovato (o è un giroconto)");
+            bail!(trf("transaction {id} not found (or it is a transfer)", &[("id", &id)]));
         }
         Ok(())
     }
@@ -784,7 +800,7 @@ impl Db {
             .conn
             .query_row("SELECT transfer_peer FROM transactions WHERE id=?1", [id], |r| r.get(0))
             .optional()?
-            .ok_or_else(|| anyhow!("movimento {id} non trovato"))?;
+            .ok_or_else(|| no_transaction(id))?;
         self.conn.execute("DELETE FROM transactions WHERE id=?1", [id])?;
         if let Some(p) = peer {
             self.conn.execute("DELETE FROM transactions WHERE id=?1", [p])?;
@@ -792,23 +808,23 @@ impl Db {
         Ok(())
     }
 
-    /// Giroconto: esce da `from`, entra in `to`. Restituisce gli id (uscita, entrata).
+    /// Transfer: out of `from`, into `to`. Returns the ids (out, in).
     pub fn add_transfer(&self, from: i64, to: i64, date: NaiveDate, amount: Cents, memo: &str) -> Result<(i64, i64)> {
         if from == to {
-            bail!("il conto di origine e di destinazione coincidono");
+            bail!(tr("the two accounts of the transfer are the same"));
         }
         let amount = amount.abs();
         let names: HashMap<i64, String> = self.accounts(true)?.into_iter().map(|a| (a.id, a.name)).collect();
-        let to_name = names.get(&to).ok_or_else(|| anyhow!("conto di destinazione inesistente"))?;
-        let from_name = names.get(&from).ok_or_else(|| anyhow!("conto di origine inesistente"))?;
+        let to_name = names.get(&to).ok_or_else(|| anyhow!(tr("the account to transfer to does not exist")))?;
+        let from_name = names.get(&from).ok_or_else(|| anyhow!(tr("the account to transfer from does not exist")))?;
         self.conn.execute(
             "INSERT INTO transactions(account_id,date,amount,payee,memo) VALUES(?1,?2,?3,?4,?5)",
-            params![from, d2s(date), -amount, format!("Giroconto verso {to_name}"), memo],
+            params![from, d2s(date), -amount, trf("Transfer to {account}", &[("account", to_name)]), memo],
         )?;
         let a = self.conn.last_insert_rowid();
         self.conn.execute(
             "INSERT INTO transactions(account_id,date,amount,payee,memo,transfer_peer) VALUES(?1,?2,?3,?4,?5,?6)",
-            params![to, d2s(date), amount, format!("Giroconto da {from_name}"), memo, a],
+            params![to, d2s(date), amount, trf("Transfer from {account}", &[("account", from_name)]), memo, a],
         )?;
         let b = self.conn.last_insert_rowid();
         self.conn.execute("UPDATE transactions SET transfer_peer=?2 WHERE id=?1", params![a, b])?;
@@ -840,7 +856,7 @@ impl Db {
 
     pub fn add_rule(&self, pattern: &str, category_id: i64, rename_payee: &str) -> Result<i64> {
         if pattern.trim().is_empty() {
-            bail!("la parola chiave della regola è vuota");
+            bail!(tr("the rule needs a keyword"));
         }
         self.conn.execute(
             "INSERT INTO rules(pattern,category_id,rename_payee) VALUES(?1,?2,?3)",
@@ -923,7 +939,7 @@ impl Db {
             let prefix = format!("{}:", c.path);
             let total: Cents = totals
                 .iter()
-                .filter(|t| t.category == c.path || t.category.starts_with(&prefix))
+                .filter(|t| t.category_id.is_some() && (t.category == c.path || t.category.starts_with(&prefix)))
                 .map(|t| t.total)
                 .sum();
             let spent = if c.is_income { total } else { -total };
@@ -950,7 +966,7 @@ impl Db {
             let (cid, total) = row?;
             let (name, is_income) = match cid.and_then(|c| cats.get(&c)) {
                 Some(c) => (c.path.clone(), c.is_income),
-                None => ("Senza categoria".to_string(), total > 0),
+                None => (tr("Uncategorized").to_string(), total > 0),
             };
             out.push(CategoryTotal { category_id: cid, category: name, is_income, total });
         }
@@ -1033,7 +1049,7 @@ impl Db {
     pub fn add_scheduled(&self, s: &NewScheduled) -> Result<i64> {
         let unit = normalize_unit(&s.unit)?;
         if !(1..=1000).contains(&s.every) {
-            bail!("la ripetizione va da 1 a 1000");
+            bail!(tr("the repetition goes from 1 to 1000"));
         }
         self.conn.execute(
             "INSERT INTO scheduled(account_id,to_account_id,amount,payee,memo,category_id,next_date,every,unit)
@@ -1125,19 +1141,19 @@ pub fn normalize_unit(u: &str) -> Result<&'static str> {
         "month" | "months" | "mese" | "mesi" | "m" => "month",
         "year" | "years" | "anno" | "anni" | "y" => "year",
         other => {
-            bail!("unità di ripetizione \"{other}\" sconosciuta (giorno, settimana, mese, anno)")
+            bail!(trf("unknown repetition unit \"{unit}\" (day, week, month, year)", &[("unit", &other)]))
         }
     })
 }
 
 pub fn unit_label(unit: &str, every: i64) -> String {
-    let (s, p) = match unit {
-        "day" => ("giorno", "giorni"),
-        "week" => ("settimana", "settimane"),
-        "year" => ("anno", "anni"),
-        _ => ("mese", "mesi"),
-    };
-    if every <= 1 { format!("ogni {s}") } else { format!("ogni {every} {p}") }
+    let n = usize::try_from(every).unwrap_or(1).max(1);
+    match unit {
+        "day" => trn(n, "every day", "every {n} days"),
+        "week" => trn(n, "every week", "every {n} weeks"),
+        "year" => trn(n, "every year", "every {n} years"),
+        _ => trn(n, "every month", "every {n} months"),
+    }
 }
 
 pub fn advance(d: NaiveDate, every: i64, unit: &str) -> NaiveDate {
@@ -1176,6 +1192,36 @@ mod tests {
         let v: i64 = Connection::open(&path).unwrap().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(v, newer);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_new_file_gets_categories_and_rules_in_its_language() {
+        let categories = |l| {
+            with_lang(l, || {
+                let db = Db::open_in_memory().unwrap();
+                let patterns: Vec<String> = db.rules().unwrap().into_iter().map(|r| r.pattern).collect();
+                // Italian statements are categorized in every language.
+                let acc = db.add_account("A", AccountKind::Bank, "EUR", 0, "").unwrap();
+                let tx =
+                    NewTx { account_id: acc, payee: "FARMACIA COMUNALE".into(), amount: -100, ..Default::default() };
+                let id = db.add_transaction(&tx).unwrap().unwrap();
+                let names: Vec<String> = db.categories().unwrap().into_iter().map(|c| c.path).collect();
+                (names, patterns, db.transaction(id).unwrap().category)
+            })
+        };
+        let (en, en_rules, en_hit) = categories(Lang::En);
+        let (it, it_rules, it_hit) = categories(Lang::It);
+        assert!(en.contains(&"Home:Utilities".to_string()) && it.contains(&"Casa:Bollette".to_string()));
+        assert_eq!(en.len(), it.len());
+        assert_eq!(en_rules, it_rules);
+        assert_eq!((en_hit.as_str(), it_hit.as_str()), ("Health", "Salute"));
+    }
+
+    #[test]
+    fn what_the_user_wrote_is_never_translated() {
+        let db = with_lang(Lang::It, Db::open_in_memory).unwrap();
+        let names = |l| with_lang(l, || db.categories().unwrap().into_iter().map(|c| c.path).collect::<Vec<_>>());
+        assert_eq!(names(Lang::It), names(Lang::En));
     }
 
     #[test]

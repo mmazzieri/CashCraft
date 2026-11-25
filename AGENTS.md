@@ -9,8 +9,9 @@ Notes for people and coding agents working on CashCraft. The shared rules for Cr
 - Every operation is in `ops.rs` as JSON in, JSON out, shared by the command line and MCP. `ops::Roots` confines MCP file access; the MCP server refuses to start without both roots.
 - Statements and MCP parameters are hostile input: capped sizes and errors, never a panic. A crash fix adds its input to the sweeps in the tests.
 - A failed read is shown to the user (`or_report`), never drawn as "no data".
+- Text is written in English inside `tr`, `trf` or `trn` with a literal key, and its Italian goes in `crates/engine/src/i18n/it.tsv`; a test scans the sources for both. Command help and MCP text are English only. Tests pick a language with `with_lang`, never `set_lang`.
 - Checks: `cargo xtask ci` (fmt, clippy with `-D warnings`, tests). `unsafe` is forbidden; `unwrap`, `expect`, `panic`, `todo`, `unreachable` and `unimplemented` are denied outside tests. No `allow` attributes.
 - Licenses: dependencies and assets only under the license allowlist of the Craft apps, checked by `cargo deny check` (no MPL; no GPL, LGPL or AGPL code, not even read). Record every addition in `ATTRIBUTION.md`.
 - Clean room: no code, text, icons or assets from proprietary products. Do not name other products in the interface.
-- Screenshot: `cargo run -p cashcraft -- --screenshot shot.png` (`CASHCRAFT_START_VIEW=movimenti|report|budget|…` for another screen); with no data file it uses sample data in memory.
+- Screenshot: `cargo run -p cashcraft -- --screenshot shot.png` (`CASHCRAFT_START_VIEW=register|reports|budget|…` for another screen); with no data file it uses sample data in memory.
 - Icons: `cargo xtask icons` after a change to `crates/icon`.
