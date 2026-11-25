@@ -1161,7 +1161,7 @@ fn a_wrong_clock_of_the_files_changes_nothing() {
 fn no_entry_is_lost_whatever_happens() {
     let mut deaths = 0;
     let mut clashes = 0;
-    for seed in 1..=8u64 {
+    for seed in 1..=12u64 {
         let p = Place::new();
         let mut r = Seeded(seed * 7919);
         let mut entered = BTreeSet::new();
