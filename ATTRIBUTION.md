@@ -29,6 +29,7 @@ Rust crates are listed with their licenses by `cargo deny list`; `cargo deny che
 | hayro-interpret, hayro-syntax (text of PDF files; no fonts or CMaps bundled; they use `unsafe` code of their own) | 0.7.0, 0.7.2, pinned | MIT OR Apache-2.0 |
 | kurbo | 0.13 | MIT OR Apache-2.0 |
 | epaint_default_fonts, flate2 (tests only) | 0.37, 1 | MIT OR Apache-2.0; fonts as below |
+| regex (with regex-automata, regex-syntax, aho-corasick; the last one Unlicense OR MIT) | 1.13 | MIT OR Apache-2.0 |
 | csv | 1.3 | Unlicense/MIT |
 | encoding_rs | 0.8 | (Apache-2.0 OR MIT) AND BSD-3-Clause |
 | image (PNG and ICO only) | 0.25 | MIT OR Apache-2.0 |

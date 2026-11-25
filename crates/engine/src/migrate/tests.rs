@@ -94,7 +94,7 @@ fn imported() -> Vec<(String, i64, String, String)> {
     let mut st = db
         .conn
         .prepare(
-            "SELECT e.date, p.amount, e.payee, p.import_hash FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
+            "SELECT e.date, p.amount, e.payee, p.import_hash FROM book_postings p JOIN entries e ON e.id=p.entry_id
              WHERE p.import_hash IS NOT NULL ORDER BY p.id",
         )
         .unwrap();
@@ -394,7 +394,7 @@ fn v2_figures(db: &Db) -> Figures {
         register,
         hashes: rows(
             &db.conn,
-            "SELECT p.id, l.money_account_id, p.import_hash FROM ledger_postings p
+            "SELECT p.id, l.money_account_id, p.import_hash FROM book_postings p
              JOIN ledger_accounts l ON l.id=p.ledger_account_id WHERE p.import_hash IS NOT NULL ORDER BY p.id",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -534,21 +534,23 @@ fn a_file_without_transactions_and_an_empty_file_open() {
 }
 
 #[test]
-fn files_of_formats_2_to_6_open() {
+fn files_of_formats_2_to_7_open() {
     ledger_file_opens(2, include_str!("v2.sql"));
     ledger_file_opens(3, include_str!("v3.sql"));
     ledger_file_opens(4, include_str!("v4.sql"));
     ledger_file_opens(5, include_str!("v5.sql"));
     ledger_file_opens(6, include_str!("v6.sql"));
+    ledger_file_opens(7, include_str!("v7.sql"));
 }
 
 /// What is new is added, after a copy; everything else stays as it was.
 fn ledger_file_opens(version: i64, schema: &str) {
     let dir = Dir::new(&format!("format-{version}"));
     let old = Connection::open(dir.file()).unwrap();
+    let table = if version >= 7 { "ledger_postings" } else { "postings" };
+    let run = |sql: &str| old.execute_batch(&sql.replace("postings", table)).unwrap();
     old.execute_batch(schema).unwrap();
-    old.execute_batch(
-        "INSERT INTO accounts(id,name,kind) VALUES (1,'Bank','bank'), (2,'Card','credit_card');
+    run("INSERT INTO accounts(id,name,kind) VALUES (1,'Bank','bank'), (2,'Card','credit_card');
          INSERT INTO categories(id,name) VALUES (1,'Home');
          INSERT INTO entries(id,date,payee) VALUES (1,'2026-01-05','Shop'), (2,'2026-01-06','Moved');
          INSERT INTO postings(id,entry_id,ledger_account_id,amount,currency,import_hash)
@@ -557,32 +559,26 @@ fn ledger_file_opens(version: i64, schema: &str) {
          SELECT 3,2,id,-900,'EUR',NULL FROM ledger_accounts WHERE money_account_id=1 UNION ALL
          SELECT 4,2,id,900,'EUR',NULL FROM ledger_accounts WHERE money_account_id=2;
          UPDATE postings SET payee='side', import_hash='k' WHERE id=3;
-         UPDATE postings SET payee='side' WHERE id=4;",
-    )
-    .unwrap();
+         UPDATE postings SET payee='side' WHERE id=4;");
     old.pragma_update(None, "user_version", version).unwrap();
     if (3..5).contains(&version) {
         // What format 3 left of a transfer whose other account was deleted.
-        old.execute_batch("UPDATE postings SET date='2026-02-01' WHERE id=1").unwrap();
+        run("UPDATE postings SET date='2026-02-01' WHERE id=1");
     }
     if version == 4 {
-        old.execute_batch(
+        run(
             "INSERT INTO card_statements VALUES (1,2,'2026-01-01','2026-01-05',900,'2026-01-01|2026-01-05|900|1234',3,1);
              INSERT INTO entries(id,date,payee) VALUES (3,'2026-01-02','Refund');
              INSERT INTO postings(id,entry_id,ledger_account_id,amount,currency,import_hash)
              SELECT 5,3,id,70,'EUR','r' FROM ledger_accounts WHERE money_account_id=2 UNION ALL
              SELECT 6,3,id,-70,'EUR',NULL FROM ledger_accounts WHERE category_id=1;",
-        )
-        .unwrap();
+        );
     }
     if version >= 5 {
-        old.execute_batch("UPDATE postings SET origin='added' WHERE id=4").unwrap();
+        run("UPDATE postings SET origin='added' WHERE id=4");
     }
-    if version == 6 {
-        old.execute_batch(
-            "INSERT INTO card_statements VALUES (1,2,'2026-01-01','2026-01-05',900,'2026-01-01|1234',3);",
-        )
-        .unwrap();
+    if version >= 6 {
+        run("INSERT INTO card_statements VALUES (1,2,'2026-01-01','2026-01-05',900,'2026-01-01|1234',3);");
     }
     let before = dump(&old);
     let (db, _) = Db::open(&dir.file()).unwrap();
@@ -595,7 +591,7 @@ fn ledger_file_opens(version: i64, schema: &str) {
         db.conn.execute("DELETE FROM card_statements", []).unwrap();
         db.delete_transaction(5).unwrap();
     }
-    if version == 6 {
+    if version >= 6 {
         let s = &db.card_statements().unwrap()[0];
         assert_eq!((s.payment_id, s.matches), (Some(3), true));
         db.conn.execute("DELETE FROM card_statements", []).unwrap();
@@ -642,7 +638,7 @@ fn a_window_of_format_6_with_the_file_open_is_kept_out() {
     let mut ready = old.prepare("SELECT id FROM postings WHERE entry_id=?1").unwrap();
     assert!(ready.exists([1]).unwrap());
     let (db, _) = Db::open(&dir.file()).unwrap();
-    db.conn.execute("UPDATE ledger_postings SET other_hashes='src:csv' WHERE id=1", []).unwrap();
+    db.conn.execute("UPDATE book_postings SET other_hashes='src:csv' WHERE id=1", []).unwrap();
     let before = dump(&db.conn);
     // Every change of 0.3.0 starts by reading the postings of what it changes, or adds some.
     assert!(ready.exists([1]).is_err());
@@ -940,4 +936,88 @@ fn a_path_that_is_not_utf8_is_migrated() {
     assert_eq!(v2_figures(&Db::open(&file).unwrap().0), before);
     let copy = folder.join(std::ffi::OsStr::from_bytes(b"b\xff.v1-backup.db"));
     assert_eq!(dump(&Connection::open(copy).unwrap()), old_dump);
+}
+
+/// A window of format 7 that has the file open can write no posting and apply no rule any more.
+#[test]
+fn a_window_of_format_7_with_the_file_open_is_kept_out() {
+    let dir = Dir::new("format-7-open");
+    let old = Connection::open(dir.file()).unwrap();
+    old.execute_batch(include_str!("v7.sql")).unwrap();
+    old.execute_batch(
+        "PRAGMA foreign_keys=ON;
+         INSERT INTO accounts(id,name,kind) VALUES (1,'Bank','bank');
+         INSERT INTO categories(id,name) VALUES (1,'Home'), (2,'Food');
+         INSERT INTO category_rules VALUES (9,'late',1,''), (3,'shop|bar ',2,'Shop');
+         INSERT INTO csv_layouts(account_id,signature,headers,settings) VALUES (1,'s','[]','{}');
+         INSERT INTO entries(id,date,payee) VALUES (1,'2026-01-05','Shop');
+         INSERT INTO ledger_postings(id,entry_id,ledger_account_id,amount,currency,import_hash,other_hashes)
+         SELECT 1,1,id,-500,'EUR','h','src:csv' FROM ledger_accounts WHERE money_account_id=1 UNION ALL
+         SELECT 2,1,id,500,'EUR',NULL,NULL FROM ledger_accounts WHERE system='uncategorized';",
+    )
+    .unwrap();
+    old.pragma_update(None, "user_version", 7).unwrap();
+    let file = dump(&old);
+    let mut ready = old.prepare("SELECT id FROM ledger_postings WHERE entry_id=?1").unwrap();
+    let mut rules = old.prepare("SELECT id, pattern, category_id, rename_payee FROM category_rules").unwrap();
+    assert!(ready.exists([1]).unwrap() && rules.exists([]).unwrap());
+    let (db, _) = Db::open(&dir.file()).unwrap();
+    assert_eq!(dump(&Connection::open(dir.0.join("books.v7-backup.db")).unwrap()), file);
+    let order: Vec<_> =
+        db.rules().unwrap().into_iter().map(|r| (r.id, r.pattern, r.category, r.rename_payee)).collect();
+    let rule = |id, p: &str, c: &str, n: &str| (id, p.to_string(), c.to_string(), n.to_string());
+    assert_eq!(order, [rule(3, "shop|bar ", "Food", "Shop"), rule(9, "late", "Home", "")]);
+    assert_eq!(db.layouts().unwrap().len(), 1);
+    db.apply_rules().unwrap();
+    db.set_tags(1, &["tag".into()]).unwrap();
+    let before = dump(&db.conn);
+    assert!(ready.exists([1]).is_err() && rules.exists([]).is_err());
+    for sql in [
+        "INSERT INTO ledger_postings(entry_id,ledger_account_id,amount,currency) VALUES(1,1,5,'EUR')",
+        "UPDATE ledger_postings SET payee='x' WHERE id=1",
+        "DELETE FROM ledger_postings WHERE id=1",
+        "INSERT INTO category_rules(pattern,category_id,rename_payee) VALUES('x',1,'')",
+        "DELETE FROM category_rules WHERE id=3",
+        "SELECT id FROM ledger_postings p JOIN entries e ON e.id=p.entry_id",
+        "BEGIN; INSERT INTO entries(date) VALUES('2026-01-01');
+         INSERT INTO ledger_postings(entry_id,ledger_account_id,amount,currency) VALUES(last_insert_rowid(),1,5,'EUR'); COMMIT;",
+    ] {
+        assert!(old.execute_batch(sql).is_err(), "{sql}");
+        if !old.is_autocommit() {
+            old.execute_batch("ROLLBACK").unwrap();
+        }
+        assert_eq!(dump(&db.conn), before, "{sql}");
+    }
+    drop((ready, rules));
+    // It cannot open the file again, and the categories it can still change stay sound.
+    old.execute("INSERT INTO categories(name) VALUES('New')", []).unwrap();
+    old.execute("DELETE FROM entries WHERE id=1", []).unwrap();
+    assert_sound(&db, "kept out");
+}
+
+/// The tables of a new file are those of a file that was migrated.
+#[test]
+fn a_migrated_file_is_like_a_new_one() {
+    let columns = |db: &Db| -> Vec<String> {
+        let sql =
+            "SELECT m.name || '.' || c.name || ' ' || c.type || ' ' || c.[notnull] || ' ' || COALESCE(c.dflt_value,'')
+                   FROM sqlite_schema m JOIN pragma_table_info(m.name) c
+                   WHERE m.type='table' AND m.name NOT LIKE 'sqlite%' ORDER BY 1";
+        let mut st = db.conn.prepare(sql).unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    };
+    let new = columns(&Db::open_in_memory().unwrap());
+    for (version, schema) in [
+        (2, include_str!("v2.sql")),
+        (5, include_str!("v5.sql")),
+        (6, include_str!("v6.sql")),
+        (7, include_str!("v7.sql")),
+    ] {
+        let dir = Dir::new(&format!("like-new-{version}"));
+        let old = Connection::open(dir.file()).unwrap();
+        old.execute_batch(schema).unwrap();
+        old.pragma_update(None, "user_version", version).unwrap();
+        drop(old);
+        assert_eq!(columns(&Db::open(&dir.file()).unwrap().0), new, "{version}");
+    }
 }

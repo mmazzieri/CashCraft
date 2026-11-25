@@ -6,6 +6,7 @@ use crate::i18n::{tr, trf};
 use crate::importer::{Format, ParsedRow, fnv, norm};
 use crate::ledger::CARD_ROW;
 use crate::money::{fmt_date, fmt_plain};
+use crate::rules::{Marks, Proof};
 use anyhow::{Result, anyhow, bail};
 use chrono::{Days, NaiveDate};
 use serde::Serialize;
@@ -39,6 +40,16 @@ pub struct Decision {
     pub skip_same: bool,
     /// Those that are left are added.
     pub add_others: bool,
+}
+
+impl Decision {
+    /// Whether a row that may be there is added.
+    pub(crate) fn adds(&self, row: usize, certain: bool) -> bool {
+        match self.each.get(&row) {
+            Some(c) => *c == Choice::Add,
+            None => self.add_others && !(certain && self.skip_same),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -216,8 +227,9 @@ impl Db {
         let (ledger, _) = self.money_ledger(a)?;
         let mut st = self.conn.prepare(
             "SELECT p.id, p.amount, COALESCE(p.date, e.date), p.import_hash, COALESCE(p.other_hashes,''), p.origin,
-                    COALESCE(p.payee, e.payee), COALESCE(p.memo, e.memo)
-             FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
+                    COALESCE(p.payee, e.payee), COALESCE(p.memo, e.memo), p.original_payee, p.original_memo,
+                    p.rules
+             FROM book_postings p JOIN entries e ON e.id=p.entry_id
              WHERE p.ledger_account_id=?1 AND (p.import_hash IS NOT NULL OR p.other_hashes IS NOT NULL)
              ORDER BY p.id",
         )?;
@@ -236,11 +248,23 @@ impl Db {
                 // Before format 7 the files left no mark.
                 formats = if card { vec![Format::Pdf] } else { vec![Format::Csv, Format::Xls] };
             }
-            let texts = [r.get::<_, String>(6)?, r.get::<_, String>(7)?].map(|t| norm(&t));
+            // Only what the bank wrote: the texts there are now may be the user's.
+            let (payee, memo): (String, String) = (r.get(6)?, r.get(7)?);
+            let (date, amount): (String, Cents) = (r.get(2)?, r.get(1)?);
+            let texts = match r.get::<_, Option<String>>(8)? {
+                Some(_) if Marks::read(r.get::<_, Option<String>>(10)?.as_deref()).typed => Default::default(),
+                Some(p) => [p, r.get::<_, Option<String>>(9)?.unwrap_or_default()],
+                None => {
+                    let keys = format!("{} {others}", first.as_deref().unwrap_or_default());
+                    let proof = Proof::new(&date, amount, &payee, &memo, &keys);
+                    proof.map(|p| [p.payee, p.memo.unwrap_or_default()]).unwrap_or_default()
+                }
+            };
+            let texts = texts.map(|t| norm(&t));
             out.push(Imported {
                 id: r.get(0)?,
-                amount: r.get(1)?,
-                date: s2d(&r.get::<_, String>(2)?),
+                amount,
+                date: s2d(&date),
                 texts,
                 keys: first.into_iter().chain(others.split_whitespace().map(str::to_string)).collect(),
                 formats,
@@ -507,17 +531,17 @@ impl<'a> Planner<'a> {
             let mut repeats = None;
             let (hash, marks, at) = match &row.ofx {
                 None => {
-                    let key = row.key.clone().unwrap_or_else(|| {
-                        format!("{}|{}|{}|{}", row.date, row.amount, row.payee.to_lowercase(), row.memo.to_lowercase())
-                    });
-                    let hash = format!("{:016x}", fnv(&format!("{key}|{}", nth(&key))));
+                    let key = row
+                        .key
+                        .clone()
+                        .unwrap_or_else(|| contents_key(&row.date.to_string(), row.amount, &row.payee, &row.memo));
+                    let hash = numbered_key(&key, nth(&key));
                     let at = self.known.get(&hash).copied();
                     (hash, source, at)
                 }
                 Some(o) => {
                     let c = (row.date, raw(row));
-                    let payee =
-                        format!("{PAYEE}{:016x}", fnv(&format!("{}|{}|{}", c.0, c.1, row.payee.to_lowercase())));
+                    let payee = payee_mark(&c.0.to_string(), c.1, &row.payee);
                     let mut marks = format!("{source} {payee}");
                     if let Some(id) = &o.fitid {
                         marks = format!("{marks} {}", id_mark(id));
@@ -762,6 +786,21 @@ impl Pairing<'_> {
         }
         None
     }
+}
+
+/// What tells a row of CSV or Excel from the others.
+pub(crate) fn contents_key(date: &str, amount: Cents, payee: &str, memo: &str) -> String {
+    format!("{date}|{amount}|{}|{}", payee.to_lowercase(), memo.to_lowercase())
+}
+
+/// The key of the n-th row with those contents.
+pub(crate) fn numbered_key(key: &str, n: usize) -> String {
+    format!("{:016x}", fnv(&format!("{key}|{n}")))
+}
+
+/// What an OFX row is known by beside its FITID.
+pub(crate) fn payee_mark(date: &str, amount: Cents, payee: &str) -> String {
+    format!("{PAYEE}{:016x}", fnv(&format!("{date}|{amount}|{}", payee.to_lowercase())))
 }
 
 fn id_mark(id: &str) -> String {

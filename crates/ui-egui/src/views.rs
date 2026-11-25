@@ -4,8 +4,8 @@
 use crate::gui::{
     ACCENT, ACCENT_SOFT, AMBER, AccountForm, App, BLUE, BORDER, CARD, Dialog, GREEN, LANGUAGES, MUTED, Period, RED,
     SIDEBAR, SchedForm, TEXT, TRACK, TransferForm, View, ZEBRA, amount_color, bars_chart, budget_color, card,
-    category_combo, cut, donut, has_category, hbars, kind_icon, language_name, legend, line_chart, money, nav_item,
-    or_report, palette, primary_button, progress, section_title, small_caps,
+    category_combo, cut, donut, error_text, has_category, hbars, kind_icon, language_name, legend, line_chart, money,
+    nav_item, or_report, palette, primary_button, progress, section_title, small_caps,
 };
 use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Transaction, TxKind};
 use cashcraft_engine::i18n::{tr, trf, trn};
@@ -95,7 +95,8 @@ impl App {
                                         self.open_import(None);
                                     }
                                     if ui.button(RichText::new(tr("🗑 Delete account…")).color(RED)).clicked() {
-                                        self.dialog = Some(Dialog::ConfirmDeleteAccount(a2.id, a2.name.clone()));
+                                        let rules = or_report(self.db.rules_of_account(a2.id), &mut self.toast);
+                                        self.dialog = Some(Dialog::ConfirmDeleteAccount(a2.id, a2.name.clone(), rules));
                                     }
                                 });
                             }
@@ -542,7 +543,7 @@ impl App {
         // In a narrow window the commands of the selected row take two lines.
         let bottom_bar = match self.selected {
             None => 0.0,
-            Some(_) if avail.x < 940.0 => 78.0,
+            Some(_) if avail.x < 1240.0 => 78.0,
             Some(_) => 44.0,
         };
         let table_h = (avail.y - bottom_bar).max(120.0);
@@ -551,6 +552,7 @@ impl App {
         let mut delete: Option<Transaction> = None;
         let mut open_entry: Option<i64> = None;
         let mut turn: Option<Transaction> = None;
+        let mut rule_from: Option<Transaction> = None;
         let mut set_cat: Option<(i64, Option<i64>)> = None;
         let mut want_import = false;
         let cats = self.categories.clone();
@@ -655,7 +657,9 @@ impl App {
                                 13.0,
                             );
                         }
-                        cell(cols[3].1, &t.memo, MUTED, false, 12.5);
+                        let tags: Vec<String> = t.tags.iter().map(|x| format!("#{x}")).collect();
+                        let notes = format!("{} {}", tags.join(" "), t.memo);
+                        cell(cols[3].1, notes.trim(), MUTED, false, 12.5);
                         cell(cols[4].1, &t.account, MUTED, false, 12.5);
                         cell(cols[5].1, &fmt_eur(t.amount), amount_color(t.amount), true, 13.5);
                         let bal = t.balance.map(fmt_eur).unwrap_or_default();
@@ -701,6 +705,9 @@ impl App {
                                     });
                                 });
                             }
+                            if has_category(&tc) && rule_button(ui) {
+                                rule_from = Some(tc.clone());
+                            }
                             if turn_button(ui, &tc) {
                                 turn = Some(tc.clone());
                             }
@@ -731,6 +738,16 @@ impl App {
                         set_cat = Some((t.id, c));
                     }
                 }
+                if !t.rules.is_empty() {
+                    let ids: Vec<String> = t.rules.ids().iter().map(i64::to_string).collect();
+                    ui.label(RichText::new(trf("rules {ids}", &[("ids", &ids.join(", "))])).color(MUTED).size(12.0))
+                        .on_hover_ui(|ui| {
+                            ui.label(self.rules_of(&t).unwrap_or_else(|e| error_text(&e)));
+                        });
+                }
+                if has_category(&t) && rule_button(ui) {
+                    rule_from = Some(t.clone());
+                }
                 if turn_button(ui, &t) {
                     turn = Some(t.clone());
                 }
@@ -759,6 +776,9 @@ impl App {
         if let Some((id, c)) = set_cat {
             let r = self.db.set_category(id, c).map(|_| tr("Category updated").to_string());
             self.act(ui, r);
+        }
+        if let Some(t) = rule_from {
+            self.open_rule_from(&t);
         }
         if let Some(t) = turn {
             self.open_turn(&t);
@@ -1029,6 +1049,21 @@ impl App {
 
     // -------------------------------------------------------------- categorie
 
+    /// Asks first when rules go with it.
+    pub fn delete_category(&mut self, ui: &Ui, id: i64) {
+        match self.db.rules_of_category(id) {
+            Ok(0) => {
+                let r = self.db.delete_category(id).map(|_| tr("Category deleted").to_string());
+                self.act(ui, r);
+            }
+            Ok(n) => {
+                let name = self.categories.iter().find(|c| c.id == id).map(|c| c.path.clone()).unwrap_or_default();
+                self.dialog = Some(Dialog::ConfirmDeleteCategory(id, name, n));
+            }
+            Err(e) => self.act(ui, Err(e)),
+        }
+    }
+
     pub fn categories_view(&mut self, ui: &mut Ui) {
         let cats = self.categories.clone();
         let mut del: Option<i64> = None;
@@ -1120,8 +1155,7 @@ impl App {
             self.act(ui, r);
         }
         if let Some(id) = del {
-            let r = self.db.delete_category(id).map(|_| tr("Category deleted").to_string());
-            self.act(ui, r);
+            self.delete_category(ui, id);
         }
         if let Some(id) = show {
             self.cat_filter = Some(id);
@@ -1129,85 +1163,6 @@ impl App {
             self.period = Period::All;
             self.go(View::Register(None));
             self.reload_txs();
-        }
-    }
-
-    // -------------------------------------------------------------- regole
-
-    pub fn rules_view(&mut self, ui: &mut Ui) {
-        let rules = or_report(self.db.rules(), &mut self.toast);
-        let mut del: Option<i64> = None;
-        let mut add = false;
-        let mut apply = false;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            card(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(
-                    RichText::new(
-                        tr("When the payee or the description contains one of the keywords (separated by | ), \
-                         the transaction gets that category. Rules apply to every new or imported transaction without a category."),
-                    )
-                    .color(MUTED),
-                );
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.new_rule.0).hint_text(tr("keywords, e.g. bakery|pastry shop")).desired_width(240.0));
-                    ui.label("➡");
-                    let cats = self.categories.clone();
-                    category_combo(ui, "rulecat", &cats, &mut self.new_rule.1, tr("Choose a category…"));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.new_rule.2)
-                            .hint_text(tr("rename payee (optional)"))
-                            .desired_width(260.0),
-                    );
-                    if primary_button(ui, tr("Add rule")).clicked() {
-                        add = true;
-                    }
-                });
-                ui.add_space(6.0);
-                if ui.button(tr("▶ Apply now to uncategorized transactions")).clicked() {
-                    apply = true;
-                }
-            });
-            ui.add_space(12.0);
-            card(ui, |ui| {
-                ui.set_width(ui.available_width());
-                egui::Grid::new("rules").striped(true).num_columns(4).min_col_width(80.0).spacing([16.0, 8.0]).show(ui, |ui| {
-                    for h in [tr("Keywords"), tr("Category"), tr("Rename to"), ""] {
-                        ui.label(RichText::new(h.to_uppercase()).size(11.0).color(MUTED));
-                    }
-                    ui.end_row();
-                    for r in &rules {
-                        ui.label(r.pattern.replace('|', " · "));
-                        ui.label(RichText::new(&r.category).color(ACCENT));
-                        ui.label(RichText::new(&r.rename_payee).color(MUTED));
-                        if ui.small_button("🗑").clicked() {
-                            del = Some(r.id);
-                        }
-                        ui.end_row();
-                    }
-                });
-            });
-        });
-        if add {
-            if let Some(c) = self.new_rule.1 {
-                let r = self.db.add_rule(&self.new_rule.0, c, &self.new_rule.2).map(|_| tr("Rule added").to_string());
-                if r.is_ok() {
-                    self.new_rule = (String::new(), None, String::new());
-                }
-                self.act(ui, r);
-            } else {
-                self.notify(ui, tr("Choose the category of the rule"));
-            }
-        }
-        if apply {
-            let r =
-                self.db.apply_rules().map(|n| trn(n, "{n} transaction categorized", "{n} transactions categorized"));
-            self.act(ui, r);
-        }
-        if let Some(id) = del {
-            let r = self.db.delete_rule(id).map(|_| tr("Rule deleted").to_string());
-            self.act(ui, r);
         }
     }
 
@@ -1279,6 +1234,13 @@ impl App {
             self.act(ui, r);
         }
     }
+}
+
+/// The button that makes a rule of a transaction; whether it was clicked.
+fn rule_button(ui: &mut Ui) -> bool {
+    ui.button(tr("⚙ Always categorize like this…"))
+        .on_hover_text(tr("Makes a rule for the transactions like this one, those that will be imported too."))
+        .clicked()
 }
 
 /// The button that turns a transaction into a transfer, or separates one; whether it was clicked.
