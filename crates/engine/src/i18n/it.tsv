@@ -83,6 +83,7 @@ Cinema and books	Cinema e libri
 Class	Classe
 Cleared	Verificato
 Close	Chiudi
+close the data file in every program, on every computer, and repeat with --nobody-has-it-open	chiudi l'archivio in ogni programma, su ogni computer, e ripeti con --nobody-has-it-open
 Clothes Shop	Negozio Abbigliamento
 Clothing	Abbigliamento
 Code	Codice
@@ -219,13 +220,12 @@ Next	Prossima
 No budget set.	Nessun budget impostato.
 No budgets: add one below.	Nessun budget: aggiungine uno qui sotto.
 No expenses this month.	Nessuna spesa questo mese.
-No program has it open, on any computer: use its log	Nessun programma lo ha aperto, su nessun computer: usa il suo registro
+No program has it open, on any computer	Nessun programma lo ha aperto, su nessun computer
 No scheduled transactions.	Nessun movimento pianificato.
 No transactions in this period.	Nessun movimento in questo periodo.
 None	Nessuna
 Notes	Note
 Nothing has been recorded yet.	Non è ancora stato registrato nulla.
-nothing was done: the data was changed on another computer, and ids may be of other things. Read it again (revision {revision})	non è stato fatto nulla: i dati sono cambiati su un altro computer e gli id possono essere di altre cose. Leggili di nuovo (revisione {revision})
 November	novembre
 October	ottobre
 Older	Meno recenti
@@ -264,7 +264,6 @@ Repeat every	Ripeti ogni
 Repetition	Ripetizione
 Reports	Report
 Restaurants and bars	Ristoranti e bar
-revision {revision}	revisione {revision}
 Rule added	Regola aggiunta
 Rule deleted	Regola eliminata
 Salary	Stipendio
@@ -294,6 +293,7 @@ Split over several accounts: amount and category cannot be changed here.	Suddivi
 Square Café	Bar Piazza
 Subscriptions	Abbonamenti
 System	Sistema
+Take its log away	Togli il suo registro
 The account "{name}" and all its transactions will be deleted. This cannot be undone.	Il conto "{name}" e tutti i suoi movimenti saranno eliminati. Non si può annullare.
 The books are sound: {entries} entries, {postings} postings	I conti quadrano: {entries} registrazioni, {postings} righe
 The changes are safe on this computer and will be written later. Data file: {status}	Le modifiche sono al sicuro su questo computer e saranno scritte più tardi. Archivio: {status}
@@ -307,23 +307,25 @@ the data file is changing	l'archivio sta cambiando
 the data file is damaged	l'archivio è danneggiato
 the data file is damaged, or has not been downloaded whole	l'archivio è danneggiato o non è stato scaricato per intero
 The data file is from now on used through a private copy, as it is in {service}. See `cashcraft-cli data status`.	D'ora in poi l'archivio si usa tramite una copia privata, perché è in {service}. Vedi `cashcraft-cli data status`.
-the data file is not complete without its log: {error}. Nothing was changed; copies are in {path}	l'archivio non è completo senza il suo registro: {error}. Non è cambiato nulla; le copie sono in {path}
+The data file is in {service} and is used where it is, as there is no private folder elsewhere: do not use it on two computers at once. CASHCRAFT_PRIVATE names another private folder.	L'archivio è in {service} e si usa dove si trova, perché non c'è una cartella privata altrove: non usarlo su due computer insieme. CASHCRAFT_PRIVATE indica un'altra cartella privata.
+the data file is not complete without its log: {error}. Both are left where they are; copies, and what they give together{beside}, are in {path}	l'archivio non è completo senza il suo registro: {error}. Restano entrambi dove sono; le copie, e quello che danno insieme{beside}, sono in {path}
 the data file is not there	l'archivio non c'è
 The data file is now {path}	L'archivio ora è {path}
-the data file is open in a program of this computer, or cannot be locked	l'archivio è aperto in un programma di questo computer, o non si può bloccare
+the data file is open in a program of this computer	l'archivio è aperto in un programma di questo computer
 the data file is used directly	l'archivio è usato direttamente
 The data file was changed on another computer too. Nothing was lost: the changes of this computer are in "{name}", beside it, and the data file now shows those of the other.	L'archivio è stato modificato anche su un altro computer. Non si è perso nulla: le modifiche di questo computer sono in "{name}", accanto all'archivio, che ora mostra quelle dell'altro.
+the data file was left as it is; what it is with the log is in "{name}", beside it: open it, and keep the one you want	l'archivio è rimasto com'era; com'è con il registro è in "{name}", accanto: aprilo, e tieni quello che vuoi
 the data file was moved to {path}	l'archivio è stato spostato in {path}
-The data was changed on another computer since it was last read here: ids may be of other things.	I dati sono cambiati su un altro computer dall'ultima lettura qui: gli id possono essere di altre cose.
+The data was changed on another computer.	I dati sono stati modificati su un altro computer.
 The entries are the same; something else is different, such as names, budgets or rules.	Le registrazioni sono le stesse; è diverso qualcos'altro, come nomi, budget o regole.
 the folder {path} is not there	la cartella {path} non c'è
-the log beside the data file was dealt with	il registro accanto all'archivio è stato sistemato
-the log may be of another version of the data file, which was left as it is; what the log would give is in "{name}", beside it	il registro può essere di un'altra versione dell'archivio, che è rimasto com'era; quello che il registro darebbe è in "{name}", accanto
+the log held nothing more: it is now in the private folder	il registro non conteneva altro: ora è nella cartella privata
 the old data file was changed or is open in another program: it was left where it is	il vecchio archivio è cambiato o è aperto in un altro programma: è rimasto dov'è
 The old one stays: {path}	Quello vecchio resta: {path}
 The other side of its transfers stays in the other account, against the opening balances: no other balance changes.	L'altro lato dei suoi giroconti resta nell'altro conto, contro i saldi iniziali: nessun altro saldo cambia.
 the path has characters that cannot be remembered	il percorso ha caratteri che non si possono ricordare
 The picture cannot be saved: {error}	Errore nel salvare l'immagine: {error}
+The private copy could not be read: it is kept in {path}, and the data file was taken again.	La copia privata non si poteva leggere: è conservata in {path}, e l'archivio è stato ripreso.
 the private folder {path} is in {service}: name one on this computer in CASHCRAFT_PRIVATE	la cartella privata {path} è in {service}: indicane una di questo computer in CASHCRAFT_PRIVATE
 The two files hold the same.	I due file contengono le stesse cose.
 the working copy {path} cannot be read	la copia di lavoro {path} non si può leggere

@@ -58,11 +58,6 @@ pub fn is_whole(bytes: &[u8]) -> bool {
     len >= page && len % page == 0 && (!counted || len >= pages * page)
 }
 
-/// Whether a file says that its changes go through a write-ahead log.
-pub fn uses_log(bytes: &[u8]) -> bool {
-    bytes.get(18) == Some(&2)
-}
-
 /// A hash of all that the database holds, whatever the pages it lies on.
 pub fn fingerprint(conn: &Connection) -> Result<String> {
     let tx = conn.unchecked_transaction()?;
@@ -148,45 +143,47 @@ pub fn settle(conn: Connection, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether every row of `old` is in `new`. Totals that triggers keep are not compared.
-pub fn contains(new: &Connection, old: &Connection) -> Result<bool> {
-    let names = |c: &Connection| -> Result<Vec<String>> {
-        let sql = "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
-                   AND name<>'ledger_turnover' ORDER BY name";
-        Ok(c.prepare(sql)?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)
-    };
-    let tables = names(old)?;
-    if format(new)? != format(old)? || names(new)? != tables {
-        return Ok(false);
+/// Whether a program of this computer has the file, or what SQLite keeps beside it, open. Told from the locks of the
+/// system, without SQLite: to open a database is to change what lies beside it.
+pub fn in_use(path: &Path) -> Result<bool> {
+    let files = [path.to_path_buf(), log(path, "-shm"), log(path, "-wal")];
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // Where it cannot be told, it is.
+        let Ok(locks) = std::fs::read_to_string("/proc/locks") else { return Ok(true) };
+        let nodes: Vec<u64> = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.ino()).collect();
+        Ok(locked_nodes(&locks).any(|n| nodes.contains(&n)))
     }
-    for table in tables {
-        let mut counts = std::collections::HashMap::<String, i64>::new();
-        for (conn, by) in [(new, 1), (old, -1)] {
-            let mut st = conn.prepare(&format!("SELECT * FROM \"{}\"", table.replace('"', "\"\"")))?;
-            let columns = st.column_count();
-            let mut rows = st.query([])?;
-            while let Some(row) = rows.next()? {
-                let mut key = String::new();
-                for i in 0..columns {
-                    key.push_str(&format!("{:?};", row.get_ref(i)?));
-                }
-                *counts.entry(key).or_insert(0) += by;
+    #[cfg(not(target_os = "linux"))]
+    {
+        // On macOS and Windows these locks and those of SQLite are the same.
+        for f in files {
+            let file = match std::fs::File::open(&f) {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Ok(true),
+            };
+            if file.try_lock().is_err() {
+                return Ok(true);
             }
+            file.unlock()?;
         }
-        if counts.values().any(|n| *n < 0) {
-            return Ok(false);
-        }
+        Ok(false)
     }
-    Ok(true)
 }
 
-/// Fails if any other program of this computer has the file open, and changes nothing of it: a log that lies beside it
-/// is not brought in.
-pub fn prove_alone(path: &Path) -> Result<()> {
-    let conn = open(path)?;
-    conn.busy_timeout(Duration::from_millis(500))?;
-    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
-    let _: String = conn.query_row("PRAGMA locking_mode = EXCLUSIVE", [], |r| r.get(0))?;
-    conn.execute_batch("BEGIN EXCLUSIVE; ROLLBACK;")?;
-    Ok(())
+/// The files that `/proc/locks` lists.
+#[cfg(any(test, target_os = "linux"))]
+fn locked_nodes(locks: &str) -> impl Iterator<Item = u64> {
+    locks
+        .lines()
+        .filter_map(|l| l.split_whitespace().find(|w| w.matches(':').count() == 2)?.rsplit(':').next()?.parse().ok())
+}
+
+#[cfg(test)]
+#[test]
+fn the_locks_of_the_system_are_read() {
+    let text = "1: POSIX  ADVISORY  READ 1234 08:20:4711 1073741826 1073742335\n1: -> FLOCK  ADVISORY  WRITE 9 00:1f:12 0 EOF\nx\n";
+    assert_eq!(locked_nodes(text).collect::<Vec<_>>(), [4711, 12]);
 }

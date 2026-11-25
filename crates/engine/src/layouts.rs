@@ -129,8 +129,14 @@ impl Db {
             self.conn
                 .execute("DELETE FROM csv_layouts WHERE signature=?1 AND account_id=?2", params![signature, account])?;
             self.conn.execute(
-                "INSERT INTO csv_layouts(account_id, signature, headers, settings) VALUES(?1,?2,?3,?4)",
-                params![account, signature, serde_json::to_string(&t.headers)?, serde_json::to_string(settings)?],
+                "INSERT INTO csv_layouts(id, account_id, signature, headers, settings) VALUES(?5,?1,?2,?3,?4)",
+                params![
+                    account,
+                    signature,
+                    serde_json::to_string(&t.headers)?,
+                    serde_json::to_string(settings)?,
+                    self.new_id("csv_layouts")?
+                ],
             )?;
             self.conn.execute(
                 "DELETE FROM csv_layouts WHERE id NOT IN (SELECT id FROM csv_layouts ORDER BY id DESC LIMIT ?1)",

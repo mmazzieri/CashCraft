@@ -9,7 +9,7 @@ use cashcraft_engine::i18n::{Lang, tr, trf, trn, with_lang};
 use cashcraft_engine::ledger::Class;
 use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount_with, parse_date};
 use cashcraft_engine::ops;
-use cashcraft_engine::store::{Home, Shared, Turn};
+use cashcraft_engine::store::{self, Home, Shared};
 use clap::{Args, Subcommand};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
@@ -659,41 +659,19 @@ fn v<T: serde::Serialize>(x: T) -> Option<Value> {
 pub enum Guard {
     /// Where it is.
     Open(Home, PathBuf),
-    /// Shared, for one command, with the revision the user expects.
-    Once(Shared, Turn, Option<String>),
-    /// Shared, for the MCP server, which carries the changes at each call.
-    Served(Shared),
+    Shared(Shared),
 }
 
 impl Guard {
-    /// Whether an operation may run on the data as it is now. A command that reads is what later ones are about.
-    fn check(&self, tool: &str, a: &Value) -> Result<()> {
-        let Guard::Once(shared, turn, expect) = self else { return Ok(()) };
-        let (reads, ids) = (ops::is_read(tool), ops::uses_ids(a));
-        let last = shared.last_read();
-        match expect {
-            Some(e) => {
-                if *e != turn.revision && (ids || !reads) {
-                    turn.check(reads, true, Some(e))?;
-                }
-            }
-            None => turn.check(reads, ids, Some(&last))?,
+    /// Runs an operation. On a shared file it is on what others wrote, and what it changed goes out; nothing is held
+    /// when it returns.
+    fn call(&self, db: &Db, tool: &str, a: &Value) -> Result<Value> {
+        let Guard::Shared(shared) = self else { return ops::call(db, tool, a, None) };
+        let (done, notices) = store::around(shared, || ops::call(db, tool, a, None))?;
+        for n in notices {
+            eprintln!("! {n}");
         }
-        if reads && !ids {
-            if last != turn.revision {
-                if !last.is_empty() {
-                    eprintln!(
-                        "! {}",
-                        tr(
-                            "The data was changed on another computer since it was last read here: ids may be of other things."
-                        )
-                    );
-                }
-                shared.set_last_read(&turn.revision)?;
-            }
-            eprintln!("# {}", trf("revision {revision}", &[("revision", &turn.revision)]));
-        }
-        Ok(())
+        done
     }
 }
 
@@ -720,8 +698,7 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
                     .map_err(|e| anyhow!(trf("the JSON arguments are not valid: {error}", &[("error", &e)])))?,
                 None => json!({}),
             };
-            guard.check(&tool, &a)?;
-            let r = ops::call(db, &tool, &a, None)?;
+            let r = guard.call(db, &tool, &a)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             return Ok(());
         }
@@ -948,15 +925,14 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
             ("export_csv", args(&[("path", v(file)), ("account", o(&account)), ("from", o(&from)), ("to", o(&to))]))
         }
     };
-    guard.check(tool, &a)?;
     // A remembered sign is told before anything is written.
     if tool == "import_csv" && !as_json && a.get("dry_run") == Some(&json!(false)) {
-        let seen = ops::call(db, "preview_csv", &a, None)?;
+        let seen = guard.call(db, "preview_csv", &a)?;
         for n in field(&seen, "notices").as_array().into_iter().flatten() {
             println!("! {}", st(n));
         }
     }
-    let r = ops::call(db, tool, &a, None)?;
+    let r = guard.call(db, tool, &a)?;
     if as_json {
         println!("{}", serde_json::to_string_pretty(&r)?);
     } else {

@@ -316,6 +316,8 @@ pub struct BudgetLine {
 pub struct Db {
     pub conn: Connection,
     pub path: Option<PathBuf>,
+    /// Whether the ids of new rows are unlike those of any other computer: see [`Db::new_id`].
+    pub(crate) spread_ids: bool,
 }
 
 /// Version of the data file format, kept in `PRAGMA user_version` (0 is CashCraft 0.1, 1 is 0.2.0 with
@@ -373,6 +375,11 @@ pub fn default_db_path() -> PathBuf {
     {
         return PathBuf::from(p);
     }
+    private_db_path()
+}
+
+/// The data file of a user who chose none.
+pub(crate) fn private_db_path() -> PathBuf {
     crate::paths::data_dir().join("CashCraft").join("cashcraft.db")
 }
 
@@ -400,6 +407,15 @@ impl Db {
 
     /// [`Db::open`] with the language of the categories and rules of a new file.
     pub fn open_seeding(path: &Path, seed: Lang) -> Result<(Db, bool)> {
+        Self::open_with(path, seed, false)
+    }
+
+    /// The working copy of a file that several computers change.
+    pub(crate) fn open_copy(path: &Path, seed: Lang) -> Result<(Db, bool)> {
+        Self::open_with(path, seed, true)
+    }
+
+    fn open_with(path: &Path, seed: Lang, spread_ids: bool) -> Result<(Db, bool)> {
         let is_new = !path.exists();
         if let Some(dir) = path.parent()
             && !dir.as_os_str().is_empty()
@@ -407,7 +423,7 @@ impl Db {
             std::fs::create_dir_all(dir).with_context(|| trf("cannot create {path}", &[("path", &dir.display())]))?;
         }
         let conn = Connection::open(path).with_context(|| trf("cannot open {path}", &[("path", &path.display())]))?;
-        let db = Db { conn, path: Some(path.to_path_buf()) };
+        let db = Db { conn, path: Some(path.to_path_buf()), spread_ids };
         db.init()?;
         if is_new {
             with_lang(seed, || db.seed_defaults())?;
@@ -416,7 +432,7 @@ impl Db {
     }
 
     pub fn open_in_memory() -> Result<Db> {
-        let db = Db { conn: Connection::open_in_memory()?, path: None };
+        let db = Db { conn: Connection::open_in_memory()?, path: None, spread_ids: false };
         db.init()?;
         db.seed_defaults()?;
         Ok(db)
@@ -470,6 +486,59 @@ impl Db {
             |r| r.get(0),
         )?;
         Ok(n > 0)
+    }
+
+    /// The id of a new row of a table, for its `INSERT`: `None` lets SQLite give the next number. In a file that several
+    /// computers change, a number that none of them gives, so that an id which somebody remembers is of the same row or
+    /// of none. It grows, as ids are the order in which rows were written: minutes since 2026, then eight random digits.
+    pub(crate) fn new_id(&self, table: &str) -> Result<Option<i64>> {
+        /// What a number of JSON holds exactly.
+        const MOST: i64 = 9_000_000_000_000_000;
+        const RANDOM: i64 = 100_000_000;
+        if !self.spread_ids {
+            return Ok(None);
+        }
+        let (last, random): (i64, i64) = self
+            .conn
+            .prepare_cached(&format!("SELECT COALESCE(MAX(id),0), random() FROM {table}"))?
+            .query_row([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let minutes = (chrono::Utc::now().timestamp() - 1_767_225_600).max(60) / 60;
+        let digits = random.rem_euclid(RANDOM);
+        let id = minutes.saturating_mul(RANDOM).saturating_add(digits).max(last.saturating_add(1 + digits));
+        if id <= MOST {
+            return Ok(Some(id));
+        }
+        // A clock, or a file, that went too far: any number that is free.
+        let mut id = random;
+        loop {
+            id = id.rem_euclid(MOST);
+            let sql = format!("SELECT COUNT(*) FROM {table} WHERE id=?1");
+            if id >= RANDOM && self.conn.query_row(&sql, [id], |r| r.get::<_, i64>(0))? == 0 {
+                return Ok(Some(id));
+            }
+            id = self.conn.query_row("SELECT random()", [], |r| r.get(0))?;
+        }
+    }
+
+    /// A new account or category, whose row in the chart a trigger has just added, gets its id there.
+    pub(crate) fn place_in_chart(&self, column: &str, id: i64) -> Result<()> {
+        if let Some(chart) = self.new_id("ledger_accounts")? {
+            self.conn.execute(&format!("UPDATE ledger_accounts SET id=?1 WHERE {column}=?2"), params![chart, id])?;
+        }
+        Ok(())
+    }
+
+    /// Adds a category.
+    pub(crate) fn insert_category(&self, name: &str, parent: Option<i64>, income: bool) -> Result<i64> {
+        self.atomically(|| {
+            self.conn.execute(
+                "INSERT INTO categories(id,name,parent_id,is_income) VALUES(?1,?2,?3,?4)",
+                params![self.new_id("categories")?, name, parent, income as i64],
+            )?;
+            let id = self.conn.last_insert_rowid();
+            self.place_in_chart("category_id", id)?;
+            Ok(id)
+        })
     }
 
     /// Cambia ogni volta che un altro processo (CLI, MCP) modifica l'archivio.
@@ -590,11 +659,12 @@ impl Db {
         self.atomically(|| {
             self.conn
                 .execute(
-                    "INSERT INTO accounts(name,kind,currency,iban) VALUES(?1,?2,?3,?4)",
-                    params![name, kind.code(), currency, iban],
+                    "INSERT INTO accounts(id,name,kind,currency,iban) VALUES(?1,?2,?3,?4,?5)",
+                    params![self.new_id("accounts")?, name, kind.code(), currency, iban],
                 )
                 .with_context(|| trf("is there already an account named \"{name}\"?", &[("name", &name)]))?;
             let id = self.conn.last_insert_rowid();
+            self.place_in_chart("money_account_id", id)?;
             self.set_opening(id, opening)?;
             Ok(id)
         })
@@ -696,13 +766,7 @@ impl Db {
                 .optional()?;
             parent = Some(match found {
                 Some(id) => id,
-                None if create => {
-                    self.conn.execute(
-                        "INSERT INTO categories(name,parent_id,is_income) VALUES(?1,?2,?3)",
-                        params![part, parent, is_income as i64],
-                    )?;
-                    self.conn.last_insert_rowid()
-                }
+                None if create => self.insert_category(part, parent, is_income)?,
                 None => bail!(trf("category \"{name}\" not found", &[("name", &path)])),
             });
         }
@@ -1305,8 +1369,8 @@ impl Db {
             self.check_transfer(s.account_id, to)?;
         }
         self.conn.execute(
-            "INSERT INTO scheduled_items(account_id,to_account_id,amount,payee,memo,category_id,next_date,every,unit)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO scheduled_items(account_id,to_account_id,amount,payee,memo,category_id,next_date,every,unit,id)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
                 s.account_id,
                 s.to_account_id,
@@ -1316,7 +1380,8 @@ impl Db {
                 s.category_id,
                 d2s(s.next_date),
                 s.every,
-                unit
+                unit,
+                self.new_id("scheduled_items")?
             ],
         )?;
         Ok(self.conn.last_insert_rowid())

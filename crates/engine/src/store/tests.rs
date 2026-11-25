@@ -70,7 +70,7 @@ fn payees_of(path: &Path) -> BTreeSet<String> {
     let copy = dir.0.join("x.db");
     let bytes = std::fs::read(path).unwrap();
     assert!(content::is_whole(&bytes), "{}", path.display());
-    assert!(!content::uses_log(&bytes), "{}", path.display());
+    assert!(bytes[18] == 1, "{}", path.display());
     std::fs::write(&copy, bytes).unwrap();
     assert!(content::is_sound(&content::open(&copy).unwrap()).unwrap());
     let (db, _) = Db::open(&copy).unwrap();
@@ -96,10 +96,10 @@ fn what_one_computer_writes_the_other_sees() {
         add(&b, &format!("b{i}"));
         sb.sync().unwrap();
         // The other has it open: its connection sees the change.
-        let before = (a.data_version(), sa.revision());
+        let before = a.data_version();
         assert!(sa.looks_changed());
         assert!(sa.sync().unwrap().adopted);
-        assert!(!sa.looks_changed() && a.data_version() != before.0 && sa.revision() != before.1);
+        assert!(!sa.looks_changed() && a.data_version() != before);
         add(&a, &format!("a{i}"));
         sa.sync().unwrap();
         assert!(sb.sync().unwrap().adopted);
@@ -203,8 +203,9 @@ fn the_same_content_is_no_conflict() {
 fn die_at(shared: &Shared, n: usize) -> (Shared, Arc<AtomicUsize>) {
     let count = Arc::new(AtomicUsize::new(0));
     let c = count.clone();
-    let faults: Faults = Arc::new(move |_| {
-        if c.fetch_add(1, Ordering::Relaxed) == n {
+    let faults: Faults = Arc::new(move |step| {
+        // A read is no change.
+        if step != "read" && c.fetch_add(1, Ordering::Relaxed) == n {
             bail!("killed");
         }
         Ok(())
@@ -480,6 +481,14 @@ fn with_log(p: &Place) -> (PathBuf, Db) {
     (wal, db)
 }
 
+fn both(p: &Place) -> Vec<(String, Vec<u8>)> {
+    p.names()
+        .into_iter()
+        .filter(|n| n.starts_with("books.db"))
+        .map(|n| (n.clone(), std::fs::read(p.folder().join(n)).unwrap()))
+        .collect()
+}
+
 #[test]
 fn a_log_is_in_use_until_the_user_says_otherwise() {
     let p = Place::new();
@@ -491,23 +500,22 @@ fn a_log_is_in_use_until_the_user_says_otherwise() {
     }
     let home = p.home("one");
     let start = || open(&home, &p.file(), Use::Shared, Lang::En, false);
-    let bytes = || (std::fs::read(p.file()).unwrap(), std::fs::read(&wal).ok());
-    let before = bytes();
-    assert!(start().is_err() && bytes() == before);
+    let before = both(&p);
+    assert!(start().is_err() && both(&p) == before);
     let shared = Shared::new(&home, &p.file());
-    // A program of this computer has it open, whatever the user says.
-    let reader = content::open(&p.file()).unwrap();
-    reader.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true).unwrap();
-    reader.query_row("SELECT COUNT(*) FROM meta", [], |_| Ok(())).unwrap();
-    assert!(shared.recover().is_err() && bytes() == before);
-    drop(reader);
-    assert_eq!(shared.recover().unwrap(), Recovered::Joined);
-    assert_eq!(payees_of(&p.file()), set(&["in the file", "in the log"]));
-    assert_eq!(p.names(), ["books.db"]);
+    let Recovered::Beside(name) = shared.recover().unwrap() else { panic!("the same") };
+    assert!(name.starts_with("books (recovered one "), "{name}");
+    // The file is byte for byte what it was.
+    assert_eq!(std::fs::read(p.file()).unwrap(), before[0].1);
+    assert_eq!(payees_of(&p.folder().join(&name)), set(&["in the file", "in the log"]));
+    assert_eq!(p.names(), [name.as_str(), "books.db"]);
     assert_eq!(shared.recover().unwrap(), Recovered::Nothing);
-    let kept = shared.dir.join("recovered-1");
-    assert!(kept.join("before.db").exists() && kept.join("before.db-wal").exists());
+    for (name, bytes) in &before {
+        let kept = shared.dir.join("recovered-1").join(name.replace("books.db", "before.db"));
+        assert_eq!(&std::fs::read(kept).unwrap(), bytes);
+    }
     let o = start().unwrap();
+    assert_eq!(payees(&o.db), set(&["in the file"]));
     // A log that appears later: changes wait.
     let old = std::fs::read(p.file()).unwrap();
     std::fs::write(content::log(&p.file(), "-journal"), "").unwrap();
@@ -516,105 +524,136 @@ fn a_log_is_in_use_until_the_user_says_otherwise() {
     let report = shared.sync().unwrap();
     assert_eq!((report.status, report.pending), (Status::InUse, true));
     assert_eq!(std::fs::read(p.file()).unwrap(), old);
-    assert_eq!(shared.recover().unwrap(), Recovered::Joined);
+    assert_eq!(shared.recover().unwrap(), Recovered::Same);
     assert_eq!(shared.sync().unwrap().status, Status::Saved);
-    assert_eq!((payees_of(&p.file()).len(), p.names()), (3, vec!["books.db".into()]));
+    assert_eq!(payees_of(&p.file()), set(&["in the file", "later"]));
 }
 
+/// The operating system is asked, and SQLite is not opened. Elsewhere a second program is needed: see the command line.
+#[cfg(target_os = "linux")]
 #[test]
-fn the_log_of_another_version_is_never_played_onto_the_file() {
-    // An older log beside a file that went on, with the same header.
+fn a_program_of_this_computer_is_seen_by_its_locks() {
     let p = Place::new();
-    let (wal, live) = with_log(&p);
-    live.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())).unwrap();
-    add(&live, "newer 1");
-    add(&live, "newer 2");
-    live.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())).unwrap();
-    std::fs::copy(live.path.as_ref().unwrap(), p.file()).unwrap();
+    let (_, _live) = with_log(&p);
+    let shared = Shared::new(&p.home("one"), &p.file());
+    let reader = content::open(&p.file()).unwrap();
+    reader.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true).unwrap();
+    reader.execute_batch("BEGIN; SELECT * FROM meta;").unwrap();
     let before = std::fs::read(p.file()).unwrap();
-    assert!(content::uses_log(&before) && wal.exists());
-    let shared = Shared::new(&p.home("one"), &p.file());
-    let done = shared.recover();
-    assert_eq!(std::fs::read(p.file()).unwrap(), before, "{done:?}");
-    // What the log gives is a version of its own, when it gives one.
-    for v in shared.versions() {
-        payees_of(&v);
-    }
-    assert!(done.is_ok() && !wal.exists());
-    assert!(shared.dir.join("recovered-1").join("before.db-wal").exists());
-    let (db, _, _) = p.start("one");
-    assert_eq!(payees(&db), set(&["in the file", "in the log", "newer 1", "newer 2"]));
-    drop(live);
-
-    // A file that was rewritten without logs since.
-    let p = Place::new();
-    let (wal, _live) = with_log(&p);
-    let c = content::open(&p.file()).unwrap();
-    drop(c);
-    let other = p.0.join("other.db");
-    let (db, _) = Db::open(&other).unwrap();
-    add(&db, "alien");
-    let (bytes, _) = snapshot(&other, &p.0.join("alone.db")).unwrap();
-    std::fs::write(p.file(), &bytes).unwrap();
-    std::fs::copy(content::log(&p.0.join("live.db"), "-wal"), &wal).unwrap();
-    let shared = Shared::new(&p.home("one"), &p.file());
-    let done = shared.recover();
-    assert_eq!(std::fs::read(p.file()).unwrap(), bytes, "{done:?}");
-    assert!(shared.dir.join("recovered-1").join("before.db-wal").exists());
-}
-
-#[test]
-fn a_log_that_changes_or_deletes_is_put_beside() {
-    let p = Place::new();
-    let live = p.0.join("live.db");
-    let db = left_open(&live);
-    db.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())).unwrap();
-    let id = db.transactions(&Default::default()).unwrap()[0].id;
-    db.delete_transaction(id).unwrap();
-    std::fs::copy(&live, p.file()).unwrap();
-    std::fs::copy(content::log(&live, "-wal"), content::log(&p.file(), "-wal")).unwrap();
-    let before = std::fs::read(p.file()).unwrap();
-    let shared = Shared::new(&p.home("one"), &p.file());
-    let Recovered::Beside(name) = shared.recover().unwrap() else { panic!("joined") };
-    assert!(name.starts_with("books (recovered one "), "{name}");
+    // On Linux the locks of this very process are listed. Elsewhere they are seen by others too.
+    assert!(content::in_use(&p.file()).unwrap());
+    assert!(shared.recover().is_err());
     assert_eq!(std::fs::read(p.file()).unwrap(), before);
-    assert_eq!(payees_of(&p.folder().join(name)).len(), 1);
-    assert_eq!(p.names().len(), 2);
-    assert_eq!(payees(&p.start("one").0).len(), 2);
+    drop(reader);
+    assert!(!content::in_use(&p.file()).unwrap());
+    assert!(!content::in_use(&p.folder().join("absent.db")).unwrap());
+}
+
+/// A journal as a program that dies in the middle of a change leaves it, and the file it had half written.
+fn hot_journal(file: &Path, out: &Path) -> (Vec<u8>, Vec<u8>) {
+    std::fs::copy(file, out).unwrap();
+    let c = content::open(out).unwrap();
+    c.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA cache_size=1; PRAGMA cache_spill=1; BEGIN IMMEDIATE;").unwrap();
+    c.execute_batch("UPDATE entries SET payee=payee||'x'; CREATE TABLE zz(a);").unwrap();
+    for _ in 0..400 {
+        c.execute("INSERT INTO zz VALUES(zeroblob(4000))", []).unwrap();
+    }
+    let seen = (std::fs::read(out).unwrap(), std::fs::read(content::log(out, "-journal")).unwrap());
+    c.execute_batch("ROLLBACK").unwrap();
+    seen
+}
+
+/// Whatever lies beside the file, no command opens it by SQLite: it would roll back a journal, or bring a log in.
+#[test]
+fn nothing_opens_the_shared_file_in_place() {
+    let p = Place::new();
+    let (a, sa, _) = p.start("one");
+    add(&a, "first");
+    sa.sync().unwrap();
+    let (_, journal) = hot_journal(&p.file(), &p.0.join("work.db"));
+    for payee in ["later 1", "later 2"] {
+        add(&a, payee);
+        sa.sync().unwrap();
+    }
+    // A journal of an older file.
+    std::fs::write(content::log(&p.file(), "-journal"), &journal).unwrap();
+    let before = both(&p);
+    let home = p.home("two");
+    assert!(open(&home, &p.file(), Use::Shared, Lang::En, false).is_err());
+    add(&a, "waits");
+    let there = sa.sync().unwrap();
+    assert_eq!(there.status, Status::InUse);
+    assert!(sa.put_back().is_err());
+    let _ = sa.differences(&p.file()).unwrap();
+    let _ = sa.allow_direct(&p.file());
+    let _ = home.unsaved();
+    assert_eq!(both(&p), before);
+    let two = Shared::new(&home, &p.file());
+    let done = two.recover().unwrap();
+    assert_eq!(std::fs::read(p.file()).unwrap(), before[0].1, "{done:?}");
+    assert_eq!(std::fs::read(two.dir.join("recovered-1").join("before.db-journal")).unwrap(), journal);
+    assert_eq!(payees_of(&p.file()), set(&["first", "later 1", "later 2"]));
+    let sources = [
+        include_str!("../store.rs"),
+        include_str!("content.rs"),
+        include_str!("compare.rs"),
+        include_str!("presence.rs"),
+    ];
+    for s in sources {
+        for opening in ["content::open(", "Connection::open(", "Db::open(", "snapshot("] {
+            for path in ["&self.path", "self.path()", "shared.path()", "&shared.path", "&target", "other)", "second)"] {
+                assert!(!s.contains(&format!("{opening}{path}")), "{opening}{path}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_file_that_is_torn_is_left_with_its_journal() {
+    let p = Place::new();
+    let (a, sa, _) = p.start("one");
+    for i in 0..300 {
+        add(&a, &format!("p{i}"));
+    }
+    sa.sync().unwrap();
+    drop(a);
+    let (torn, journal) = hot_journal(&p.file(), &p.0.join("work.db"));
+    std::fs::write(p.file(), &torn).unwrap();
+    std::fs::write(content::log(&p.file(), "-journal"), &journal).unwrap();
+    let before = both(&p);
+    let two = Shared::new(&p.home("two"), &p.file());
+    // Not complete without its journal, or not seen to be: nothing is lost either way.
+    let done = two.recover();
+    assert_eq!(std::fs::read(p.file()).unwrap(), torn);
+    let beside = two.versions();
+    assert_eq!(beside.len(), 1, "{done:?}");
+    assert_eq!(payees_of(&beside[0]).len(), 300);
+    if done.is_err() {
+        assert_eq!(both(&p), before);
+    }
 }
 
 #[test]
 fn killed_while_a_log_is_dealt_with_nothing_is_lost() {
-    for deletes in [false, true] {
-        let mut steps = 0;
-        for n in 0.. {
-            let p = Place::new();
-            let (wal, live) = with_log(&p);
-            if deletes {
-                let id = live.transactions(&Default::default()).unwrap()[0].id;
-                live.delete_transaction(id).unwrap();
-                std::fs::copy(content::log(live.path.as_ref().unwrap(), "-wal"), &wal).unwrap();
-            }
-            let shared = Shared::new(&p.home("one"), &p.file());
-            let died = die_at(&shared, n).0.recover().is_err();
-            let whole = std::fs::read(p.file()).unwrap();
-            assert!(content::is_whole(&whole));
-            // The file and its log are there, or both are in the private folder.
-            assert!(wal.exists() || shared.dir.join("recovered-1").join("before.db-wal").exists());
-            shared.recover().unwrap();
-            let (db, _, _) = p.start("one");
-            let mut all = payees(&db);
-            all.extend(shared.versions().iter().flat_map(|v| payees_of(v)));
-            assert!(all.contains("in the file") || deletes, "{n}");
-            assert!(all.contains("in the log") || deletes, "{n}");
-            assert!(p.names().iter().all(|f| f.ends_with(".db")), "{:?}", p.names());
-            if !died {
-                break;
-            }
-            steps += 1;
+    let mut steps = 0;
+    for n in 0.. {
+        let p = Place::new();
+        let (wal, _live) = with_log(&p);
+        let file = std::fs::read(p.file()).unwrap();
+        let shared = Shared::new(&p.home("one"), &p.file());
+        let died = die_at(&shared, n).0.recover().is_err();
+        assert_eq!(std::fs::read(p.file()).unwrap(), file);
+        assert!(wal.exists() || shared.dir.join("recovered-1").join("before.db-wal").exists());
+        shared.recover().unwrap();
+        assert_eq!(std::fs::read(p.file()).unwrap(), file);
+        assert!(shared.versions().iter().any(|v| payees_of(v).contains("in the log")), "{n}");
+        assert!(p.names().iter().all(|f| f.ends_with(".db")), "{:?}", p.names());
+        if !died {
+            break;
         }
-        assert!(steps >= 3, "{steps}");
+        steps += 1;
     }
+    assert!(steps >= 6, "{steps}");
 }
 
 #[test]
@@ -674,28 +713,243 @@ fn putting_back_forgets_nothing_when_it_fails() {
     assert!(steps >= 4 && payees_of(&p.file()) == set(&["x", "theirs"]), "{steps}");
 }
 
+/// The tables whose ids are seen.
+const WITH_IDS: [&str; 9] = [
+    "accounts",
+    "categories",
+    "ledger_accounts",
+    "entries",
+    "book_postings",
+    "scheduled_items",
+    "transaction_rules",
+    "rule_runs",
+    "csv_layouts",
+];
+
+fn ids(db: &Db, table: &str) -> Vec<i64> {
+    let mut st = db.conn.prepare(&format!("SELECT id FROM {table} ORDER BY id")).unwrap();
+    st.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+}
+
 #[test]
-fn an_operation_does_not_run_on_ids_of_another_content() {
+fn every_new_row_of_a_shared_file_has_an_id_of_its_own() {
+    let p = Place::new();
+    let (db, _, _) = p.start("one");
+    let seeded: Vec<(&str, Vec<i64>)> = WITH_IDS.iter().map(|t| (*t, ids(&db, t))).collect();
+    let call = |tool: &str, a: serde_json::Value| crate::ops::call(&db, tool, &a, None).unwrap();
+    let json = |v: &str| serde_json::from_str::<serde_json::Value>(v).unwrap();
+    call("create_account", json(r#"{"name":"Bank","opening_balance":10}"#));
+    call("create_account", json(r#"{"name":"Card","kind":"credit_card"}"#));
+    call("create_category", json(r#"{"path":"Sub:New"}"#));
+    call("create_ledger_account", json(r#"{"name":"Equipment","class":"asset"}"#));
+    call("create_ledger_account", json(r#"{"name":"Rents","class":"income"}"#));
+    call("add_transaction", json(r#"{"account":"Bank","amount":-5,"payee":"shop zoo"}"#));
+    let moved = call("add_transfer", json(r#"{"from":"Bank","to":"Card","amount":7}"#));
+    let side = db.transactions(&Default::default()).unwrap().iter().find(|t| t.transfer_peer.is_some()).unwrap().id;
+    call("separate_transfer", serde_json::json!({"id": side}));
+    call("add_scheduled", json(r#"{"account":"Bank","amount":-5,"payee":"rent","next_date":"2026-01-01"}"#));
+    call("post_scheduled", json(r#"{"until":"2026-03-01"}"#));
+    call("add_rule", json(r#"{"keywords":"zoo","category":"Leisure"}"#));
+    let seen = call("preview_rules", json(r#"{"scope":"all","overwrite":true}"#));
+    call("apply_rules", serde_json::json!({"scope": "all", "overwrite": true, "token": seen["token"]}));
+    let csv = p.0.join("a.csv");
+    std::fs::write(&csv, "Data;Descrizione;Importo\n05/01/2026;one;-1,20\n06/01/2026;two;-1,30\n").unwrap();
+    call("import_csv", serde_json::json!({"path": csv, "account": "Bank"}));
+    db.record_card_statement(db.find_account("Card").unwrap().id, crate::db::today(), crate::db::today(), 5, "k")
+        .unwrap();
+    assert!(!moved.is_null());
+    for (table, before) in seeded.iter().map(|(t, b)| (*t, b.clone())).chain([("card_statements", vec![])]) {
+        let all = ids(&db, table);
+        let new: Vec<i64> = all.iter().copied().filter(|i| !before.contains(i)).collect();
+        assert!(!new.is_empty(), "{table}");
+        assert!(new.iter().all(|i| *i > 1_000_000_000_000 && *i < 1 << 53), "{table} {new:?}");
+    }
+    // But for the two that every file has.
+    assert!(
+        seeded
+            .iter()
+            .all(|(t, b)| b.iter().filter(|i| **i < 1_000_000_000_000).count()
+                <= 2 * usize::from(*t == "ledger_accounts"))
+    );
+    assert_sound(&db, "ids");
+    // Every INSERT of these tables names its id; triggers and migrations are not of a shared copy.
+    let sources = [
+        include_str!("../db.rs"),
+        include_str!("../ledger.rs"),
+        include_str!("../rules.rs"),
+        include_str!("../cards.rs"),
+        include_str!("../layouts.rs"),
+        include_str!("../transfers.rs"),
+        include_str!("../importer.rs"),
+        include_str!("../duplicates.rs"),
+    ];
+    let mut found = 0;
+    for table in WITH_IDS.iter().chain(&["card_statements"]) {
+        for s in sources {
+            // Not the triggers.
+            for (at, _) in s.match_indices(&format!("\"INSERT INTO {table}(")) {
+                found += 1;
+                let columns = s[at..].split_once('(').unwrap().1.split_once(')').unwrap().0;
+                assert!(columns.split(',').any(|c| c.trim() == "id"), "{table}: {columns}");
+            }
+        }
+    }
+    assert!(found >= 9, "{found}");
+}
+
+#[test]
+fn an_id_of_before_is_of_the_same_row_or_of_none() {
     let p = Place::new();
     let (a, sa, _) = p.start("one");
     let (b, sb, _) = p.start("two");
+    add(&a, "common");
+    sa.sync().unwrap();
+    sb.sync().unwrap();
+    // Both add at once, from the same file.
+    let last = |db: &Db| db.transactions(&Default::default()).unwrap().into_iter().max_by_key(|t| t.id).unwrap();
+    let common = last(&b).id;
     add(&a, "a");
-    sa.sync().unwrap();
-    let revision = sa.revision();
     add(&b, "b");
-    assert!(sb.sync().unwrap().conflict.is_some());
-    let run = |reads, ids, read: Option<&str>| around(&sb, |t| t.check(reads, ids, read)).unwrap().0.is_ok();
-    // Nothing is said of what was adopted before this call; ids are.
-    assert!(run(false, false, None) && run(true, false, None));
-    assert!(!run(false, true, None) && !run(true, true, Some(&revision)));
-    assert!(run(false, true, Some(&sb.revision())));
-    add(&a, "c");
-    assert!(sa.sync().unwrap().adopted || sa.sync().is_ok());
-    add(&a, "d");
+    let (of_a, of_b) = (last(&a), last(&b));
+    assert!(of_a.id != of_b.id && of_a.entry_id != of_b.entry_id && of_a.id > common);
     sa.sync().unwrap();
-    let known = sb.revision();
-    assert!(!run(false, false, None));
-    assert!(run(false, false, None) && !run(false, true, Some(&known)));
+    assert!(sb.sync().unwrap().conflict.is_some());
+    let error = b.delete_transaction(of_b.id).unwrap_err();
+    assert!(error.to_string().contains("not found"), "{error}");
+    assert_eq!(b.transaction(common).unwrap().payee, "common");
+    // One that is deleted elsewhere is not given again.
+    a.delete_transaction(of_a.id).unwrap();
+    add(&a, "rent");
+    sa.sync().unwrap();
+    sb.sync().unwrap();
+    assert!(b.transaction(of_a.id).is_err());
+    // Nor those of accounts, categories and their rows in the chart.
+    for (db, name) in [(&a, "X"), (&b, "Y")] {
+        db.add_account(name, AccountKind::Bank, "EUR", 0, "").unwrap();
+        db.category_by_path(name, false, true).unwrap();
+    }
+    for table in ["accounts", "categories", "ledger_accounts"] {
+        let (of_a, of_b) = (ids(&a, table), ids(&b, table));
+        assert!(of_a.last() != of_b.last() && of_a.len() == of_b.len(), "{table}");
+    }
+    let ((), notices) = around(&sb, || add(&b, "goes on")).unwrap();
+    assert!(notices.is_empty(), "{notices:?}");
+}
+
+#[test]
+fn ids_grow_and_stay_exact_whatever_the_clock_and_the_file() {
+    let p = Place::new();
+    let (db, _, _) = p.start("one");
+    let mut last = 0;
+    for i in 0..200 {
+        add(&db, &format!("{i}"));
+        let id = *ids(&db, "book_postings").last().unwrap();
+        assert!(id > last);
+        last = id;
+    }
+    let order: Vec<String> = db.transactions(&Default::default()).unwrap().into_iter().map(|t| t.payee).collect();
+    assert!(
+        order.is_sorted_by_key(|p| p.parse::<i32>().unwrap())
+            || order.iter().rev().is_sorted_by_key(|p| p.parse::<i32>().unwrap())
+    );
+    for far in [9_000_000_000_000_000, i64::MAX - 1] {
+        db.conn.execute("INSERT INTO entries(id,date) VALUES(?1,'2026-01-01')", [far]).unwrap();
+        let id = db.new_id("entries").unwrap().unwrap();
+        assert!(
+            id > 0
+                && id < 1 << 53
+                && db.conn.query_row("SELECT COUNT(*) FROM entries WHERE id=?1", [id], |r| r.get::<_, i64>(0)).unwrap()
+                    == 0
+        );
+        db.conn.execute("DELETE FROM entries WHERE id=?1", [far]).unwrap();
+    }
+    // A file used directly has the numbers it always had.
+    let (direct, _) = Db::open(&p.0.join("direct.db")).unwrap();
+    add(&direct, "x");
+    assert!(ids(&direct, "book_postings") == [1, 2] && direct.new_id("entries").unwrap().is_none());
+}
+
+#[test]
+fn nothing_is_read_while_nothing_changes() {
+    let p = Place::new();
+    let (a, sa, _) = p.start("one");
+    add(&a, "x");
+    let report = sa.sync().unwrap();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let r = reads.clone();
+    let faults: Faults = Arc::new(move |s| {
+        r.fetch_add(usize::from(s == "read"), Ordering::Relaxed);
+        Ok(())
+    });
+    let watched = Shared { faults: Some(faults), ..sa.clone() };
+    for _ in 0..5 {
+        assert!(!watched.wants_sync(&report) && !watched.is_missing());
+        let _ = (watched.conflicts(), watched.versions());
+    }
+    assert_eq!(reads.load(Ordering::Relaxed), 0);
+    let (b, sb, _) = p.start("two");
+    add(&b, "y");
+    sb.sync().unwrap();
+    assert!(watched.wants_sync(&report));
+    watched.sync().unwrap();
+    assert!(reads.load(Ordering::Relaxed) > 0);
+    std::fs::write(content::log(&p.file(), "-wal"), "").unwrap();
+    assert!(watched.wants_sync(&report));
+}
+
+#[test]
+fn a_working_copy_that_cannot_be_read_makes_place() {
+    let p = Place::new();
+    let (a, sa, _) = p.start("one");
+    add(&a, "x");
+    sa.sync().unwrap();
+    drop(a);
+    for (n, bytes) in [b"garbagegarbage".to_vec(), vec![7; 8192]].into_iter().enumerate() {
+        content::remove_with_logs(&sa.copy());
+        std::fs::write(sa.copy(), &bytes).unwrap();
+        let o = open(&p.home("one"), &p.file(), Use::Shared, Lang::En, true).unwrap();
+        assert_eq!(payees(&o.db), set(&["x"]));
+        let aside = o.shared.unwrap().1.set_aside.unwrap();
+        assert!(aside.parent().unwrap().ends_with(format!("unreadable-{}", n + 1)));
+        assert_eq!(std::fs::read(aside).unwrap(), bytes);
+        assert_eq!(p.names(), ["books.db"]);
+    }
+    // Neither does it stop a direct use.
+    std::fs::write(sa.copy(), "garbage").unwrap();
+    content::remove_with_logs(&sa.dir.join("none"));
+    assert!(open(&p.home("one"), &p.file(), Use::Direct, Lang::En, true).is_ok());
+}
+
+#[test]
+fn copies_that_are_saved_are_not_read_again() {
+    let p = Place::new();
+    let (a, sa, _) = p.start("one");
+    add(&a, "x");
+    sa.sync().unwrap();
+    let home = p.home("one");
+    drop(a);
+    assert!(home.unsaved().is_empty());
+    // The same length and time, other bytes: nobody looks.
+    let m = std::fs::metadata(sa.copy()).unwrap();
+    std::fs::write(sa.copy(), vec![7; m.len() as usize]).unwrap();
+    OpenOptions::new().write(true).open(sa.copy()).unwrap().set_modified(m.modified().unwrap()).unwrap();
+    assert!(home.unsaved().is_empty());
+    OpenOptions::new().write(true).open(sa.copy()).unwrap().set_modified(SystemTime::UNIX_EPOCH).unwrap();
+    assert_eq!(home.unsaved().len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_folder_that_goes_away_keeps_its_path() {
+    let p = Place::new();
+    // As `/var` on macOS: a part of the path is a link.
+    let link = p.0.join("link");
+    std::os::unix::fs::symlink(p.0.join("."), &link).unwrap();
+    let through = link.join("folder").join("books.db");
+    let there = Shared::new(&p.home("one"), &through);
+    assert_eq!(there.path(), Shared::new(&p.home("one"), &p.file()).path());
+    std::fs::rename(p.folder(), p.0.join("away")).unwrap();
+    assert_eq!(Shared::new(&p.home("one"), &through).copy(), there.copy());
 }
 
 #[test]
@@ -772,7 +1026,12 @@ fn a_private_folder_that_is_synced_is_refused() {
     let Err(e) = open(&home, &p.file(), Use::Shared, Lang::En, false) else { panic!("opened") };
     assert!(e.to_string().contains("CASHCRAFT_PRIVATE"), "{e}");
     assert!(!p.file().exists());
-    assert!(open(&home, &p.file(), Use::Direct, Lang::En, false).is_ok());
+    // By itself it is used as it always was, and that is said.
+    let own = home.dir.join("cashcraft.db");
+    let o = open(&home, &own, Use::Auto, Lang::En, false).unwrap();
+    assert!(o.shared.is_none() && o.notices.iter().any(|n| n.contains("CASHCRAFT_PRIVATE")), "{:?}", o.notices);
+    // Nor is the file of a private folder shared, whatever the path looks like.
+    assert!(!way(&home, &own, Use::Auto).0);
 }
 
 #[test]
@@ -932,7 +1191,7 @@ fn programs_of_one_computer_share_the_copy() {
     let (other, so, _) = p.start("one");
     assert_eq!(window.path, other.path);
     add(&window, "w");
-    let ((), notices) = around(&so, |_| add(&other, "o")).unwrap();
+    let ((), notices) = around(&so, || add(&other, "o")).unwrap();
     assert!(notices.is_empty());
     assert_eq!(payees_of(&p.file()), set(&["w", "o"]));
     // All at once.
@@ -942,7 +1201,7 @@ fn programs_of_one_computer_share_the_copy() {
             s.spawn(move || {
                 let (db, shared, _) = p.start("one");
                 for i in 0..5 {
-                    let ((), notices) = around(&shared, |_| add(&db, &format!("{t}-{i}"))).unwrap();
+                    let ((), notices) = around(&shared, || add(&db, &format!("{t}-{i}"))).unwrap();
                     assert!(notices.is_empty(), "{notices:?}");
                 }
             });
@@ -957,7 +1216,7 @@ fn programs_of_one_computer_share_the_copy() {
     sb.sync().unwrap();
     let hold = sw.hold().unwrap();
     assert_eq!(sw.sync().unwrap().status, Status::Held);
-    assert!(around(&so, |_| add(&other, "refused")).is_err());
+    assert!(around(&so, || add(&other, "refused")).is_err());
     assert!(!payees(&window).contains("b") && !payees(&window).contains("refused"));
     drop(hold);
     assert!(sw.sync().unwrap().adopted);

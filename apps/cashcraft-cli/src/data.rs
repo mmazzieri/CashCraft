@@ -32,9 +32,12 @@ pub enum DataCmd {
     Use { file: Option<PathBuf> },
     /// Write a shared data file again where it was removed
     PutBack,
-    /// Deal with a log that a program left beside a shared data file. Only when no program has the file open, on any
-    /// computer
-    Recover,
+    /// Take away a log that a program left beside a shared data file, and put what it holds in a file beside
+    Recover {
+        /// No program has the file open, on any computer
+        #[arg(long)]
+        nobody_has_it_open: bool,
+    },
     /// Speak no more of the conflict files; they stay where they are
     Dismiss,
 }
@@ -71,7 +74,6 @@ pub fn run(home: &Home, path: &Path, asked: Use, cmd: DataCmd, as_json: bool) ->
                     "conflict": report.as_ref().and_then(|r| r.conflict.clone()),
                     "conflicts": s.as_ref().map(|s| names(s.conflicts())),
                     "versions": s.as_ref().map(|s| names(s.versions())),
-                    "revision": s.as_ref().map(Shared::revision),
                     "open_on": others,
                     "unsaved": unsaved,
                 });
@@ -90,7 +92,6 @@ pub fn run(home: &Home, path: &Path, asked: Use, cmd: DataCmd, as_json: bool) ->
             if let (Some(s), Some(r)) = (&s, &report) {
                 println!("{}", trf("Private copy: {path}", &[("path", &s.copy().display())]));
                 println!("{}", r.status.text());
-                println!("{}", trf("revision {revision}", &[("revision", &r.revision)]));
                 for n in r.notices() {
                     println!("! {n}");
                 }
@@ -169,7 +170,10 @@ pub fn run(home: &Home, path: &Path, asked: Use, cmd: DataCmd, as_json: bool) ->
                 println!("{}", trf("The old one stays: {path}", &[("path", &path.display())]));
             }
         }
-        DataCmd::Recover => println!("{}", only_shared()?.recover()?.text()),
+        DataCmd::Recover { nobody_has_it_open } if !nobody_has_it_open => {
+            bail!(tr("close the data file in every program, on every computer, and repeat with --nobody-has-it-open"))
+        }
+        DataCmd::Recover { .. } => println!("{}", only_shared()?.recover()?.text()),
         DataCmd::Use { file } => {
             if let Some(f) = &file
                 && !f.exists()

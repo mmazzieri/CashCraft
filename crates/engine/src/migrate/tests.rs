@@ -680,7 +680,11 @@ fn without_a_backup_nothing_is_migrated() {
     let old = seed_v1(&dir.file(), 1, 8);
     let before = dump(&old);
     // The copy would go to a folder that is not there.
-    let db = Db { conn: Connection::open(dir.file()).unwrap(), path: Some(dir.0.join("gone").join("books.db")) };
+    let db = Db {
+        conn: Connection::open(dir.file()).unwrap(),
+        path: Some(dir.0.join("gone").join("books.db")),
+        spread_ids: false,
+    };
     assert!(db.init().is_err());
     drop(db);
     assert_eq!(dump(&old), before);

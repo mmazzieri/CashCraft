@@ -1028,9 +1028,9 @@ impl Db {
                 bail!(trf("there are too many rules: at most {n}", &[("n", &MAX_RULES)]));
             }
             self.conn.execute(
-                "INSERT INTO transaction_rules(position,pattern,payee,memo,is_regex,amount_min,amount_max,sign,
+                "INSERT INTO transaction_rules(id,position,pattern,payee,memo,is_regex,amount_min,amount_max,sign,
                                                account_id,category_id,tags,rename_payee)
-                 VALUES(0,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                 VALUES(?12,0,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                 params![
                     r.pattern,
                     r.payee,
@@ -1042,7 +1042,8 @@ impl Db {
                     r.account_id,
                     r.category_id,
                     r.tags.join(","),
-                    r.rename_payee
+                    r.rename_payee,
+                    self.new_id("transaction_rules")?
                 ],
             )?;
             let id = self.conn.last_insert_rowid();
@@ -1272,8 +1273,8 @@ impl Db {
             }
             self.conn.execute("DELETE FROM rule_runs", [])?;
             self.conn.execute(
-                "INSERT INTO rule_runs(made_at) VALUES(?1)",
-                [Local::now().format("%Y-%m-%d %H:%M:%S").to_string()],
+                "INSERT INTO rule_runs(id,made_at) VALUES(?1,?2)",
+                params![self.new_id("rule_runs")?, Local::now().format("%Y-%m-%d %H:%M:%S").to_string()],
             )?;
             let run = self.conn.last_insert_rowid();
             out.run = Some(run);

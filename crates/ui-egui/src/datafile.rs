@@ -1,7 +1,7 @@
 //! The data file in the window: its status, other files, synced folders, conflicts. A shared file is read and written
 //! by a thread, so that a folder that does not answer never stops the window.
 
-use crate::gui::{AMBER, App, GREEN, MUTED, RED, View, error_text, primary_button};
+use crate::gui::{AMBER, App, GREEN, MUTED, RED, error_text, primary_button};
 use anyhow::Result;
 use cashcraft_engine::i18n::{self, Lang, lang, tr, trf};
 use cashcraft_engine::money::fmt_date;
@@ -20,7 +20,6 @@ const PAUSE: f64 = 1.0;
 /// How often the shared file is looked at.
 const LOOK: Duration = Duration::from_secs(3);
 const RETRY: Duration = Duration::from_secs(10);
-const FULL: Duration = Duration::from_secs(60);
 /// How long closing waits for a folder that does not answer. The changes are in the copy anyway.
 const LAST: Duration = Duration::from_secs(8);
 /// How many differences are drawn.
@@ -64,7 +63,7 @@ impl Syncer {
     pub fn start(shared: Shared, first: Report, redraw: impl Fn() + Send + 'static) -> Syncer {
         let (orders, receive) = mpsc::channel();
         let (tell, stopped) = mpsc::channel();
-        let news = first.conflict_notice().into_iter().collect();
+        let news = first.news();
         let seen = Arc::new(Mutex::new(Seen { report: Some(Ok(first)), news, ..Default::default() }));
         let shown = seen.clone();
         std::thread::spawn(move || {
@@ -105,9 +104,13 @@ impl Syncer {
                         (false, true)
                     }
                 };
-                let saved = matches!(&locked(&shown).report, Some(Ok(r)) if r.status == Status::Saved);
-                let every = if saved { FULL } else { RETRY };
-                if asked || looked.elapsed() >= every || (saved && shared.looks_changed()) {
+                // Of a file that did not change nothing is read.
+                let due = match locked(&shown).report.clone() {
+                    Some(Ok(r)) if r.status == Status::Saved => shared.wants_sync(&r),
+                    Some(Ok(r)) => shared.wants_sync(&r) && looked.elapsed() >= RETRY,
+                    _ => looked.elapsed() >= RETRY,
+                };
+                if asked || due {
                     locked(&shown).busy = true;
                     redraw();
                     let report = shared.sync().map_err(|e| format!("{e:#}"));
@@ -115,7 +118,7 @@ impl Syncer {
                     let mut s = locked(&shown);
                     s.busy = false;
                     if let Ok(r) = &report {
-                        s.news.extend(r.conflict_notice());
+                        s.news.extend(r.news());
                     }
                     s.report = Some(report);
                 }
@@ -156,6 +159,7 @@ impl Syncer {
 #[derive(Default)]
 pub struct FileWindow {
     moving: bool,
+    closed: bool,
     /// What was asked of the disk, beside the window.
     asking: Option<mpsc::Receiver<Info>>,
     info: Option<Info>,
@@ -202,7 +206,6 @@ pub struct DataFile {
     shared: Option<Shared>,
     syncer: Option<Syncer>,
     hold: Option<Hold>,
-    revision: String,
     writes: u64,
     changed_at: Option<f64>,
     unfocused: bool,
@@ -240,7 +243,6 @@ impl App {
             app.toast = Some((opened.notices.join("\n"), ctx.input(|i| i.time) + 30.0));
         }
         if let Some((shared, report)) = opened.shared {
-            app.file.revision = shared.revision();
             let ctx = ctx.clone();
             let syncer = Syncer::start(shared.clone(), report, move || ctx.request_repaint());
             if opened.is_new {
@@ -265,14 +267,9 @@ impl App {
             }
             steady = self.file.hold.is_some();
             let version = self.db.data_version();
-            let revision = if steady && version != self.data_version { shared.revision() } else { String::new() };
             if steady && version != self.data_version {
                 self.data_version = version;
-                if revision != self.file.revision {
-                    self.file.revision = revision;
-                    self.forget_ids();
-                    egui::Popup::close_all(ui.ctx());
-                }
+                egui::Popup::close_all(ui.ctx());
                 self.reload();
             }
         }
@@ -298,21 +295,6 @@ impl App {
             }
         }
         steady
-    }
-
-    /// All that was chosen by its id, when ids may be of other things.
-    fn forget_ids(&mut self) {
-        self.selected = None;
-        self.budget_edit = None;
-        self.new_budget.0 = None;
-        self.rename_cat = None;
-        self.new_cat.2 = None;
-        self.journal = None;
-        self.cat_filter = None;
-        self.dialog = None;
-        if matches!(self.view, View::Register(Some(_))) {
-            self.view = View::Register(None);
-        }
     }
 
     pub(crate) fn file_after(&mut self, ui: &Ui) {
@@ -497,8 +479,12 @@ impl App {
                 if locked(&syncer.seen).missing && ui.button(tr("Write it again where it was")).clicked() {
                     let _ = syncer.orders.send(Order::PutBack);
                 }
-                if syncer.has_log() && ui.button(tr("No program has it open, on any computer: use its log")).clicked() {
-                    let _ = syncer.orders.send(Order::Recover);
+                if syncer.has_log() {
+                    ui.checkbox(&mut w.closed, tr("No program has it open, on any computer"));
+                    if ui.add_enabled(w.closed, egui::Button::new(tr("Take its log away"))).clicked() {
+                        w.closed = false;
+                        let _ = syncer.orders.send(Order::Recover);
+                    }
                 }
             }
             ui.separator();
@@ -638,12 +624,23 @@ pub struct Start {
     pub app: Option<Box<App>>,
     /// A log lies beside the file.
     log: bool,
+    closed: bool,
     opening: Option<mpsc::Receiver<std::result::Result<Opened, (String, bool)>>>,
 }
 
 impl Start {
     pub fn new(home: Home, path: PathBuf, must_exist: bool, asked: Use) -> Start {
-        Start { home, path, must_exist, asked, error: String::new(), app: None, log: false, opening: None }
+        Start {
+            home,
+            path,
+            must_exist,
+            asked,
+            error: String::new(),
+            app: None,
+            log: false,
+            closed: false,
+            opening: None,
+        }
     }
 
     /// Opens the file beside the window; `first` is done before.
@@ -690,8 +687,12 @@ impl Start {
             if primary_button(ui, tr("Try again")).clicked() {
                 self.open(|_, _| Ok(()));
             }
-            if self.log && ui.button(tr("No program has it open, on any computer: use its log")).clicked() {
-                self.open(|home, path| Shared::new(home, path).recover().map(|_| ()));
+            if self.log {
+                ui.checkbox(&mut self.closed, tr("No program has it open, on any computer"));
+                if ui.add_enabled(self.closed, egui::Button::new(tr("Take its log away"))).clicked() {
+                    self.closed = false;
+                    self.open(|home, path| Shared::new(home, path).recover().map(|_| ()));
+                }
             }
             if ui.button(tr("📂 Open another data file…")).clicked()
                 && let Some(p) =
@@ -835,24 +836,18 @@ mod tests {
         assert!(app.file.hold.is_some());
         add(&two, "from two");
         other.sync().unwrap();
-        app.selected = Some(1);
-        app.view = View::Register(Some(1));
-        (app.cat_filter, app.new_cat.2, app.new_budget.0, app.journal) = (Some(1), Some(1), Some(1), Some((1, 0)));
         app.file.syncer.as_ref().unwrap().now();
         until("held", || {
             frame(&ctx, &mut app, 6.0, true);
             app.file.syncer.as_ref().unwrap().status().0.contains("close the form")
         });
-        assert!(!has(&app.db, "from two") && app.selected == Some(1));
+        assert!(!has(&app.db, "from two"));
         app.dialog = None;
         until("adopted", || {
             frame(&ctx, &mut app, 7.0, true);
             app.file.syncer.as_ref().unwrap().now();
             app.txs.iter().any(|t| t.payee == "from two")
         });
-        assert_eq!(app.selected, None);
-        assert_eq!((app.view, app.cat_filter, app.new_cat.2), (View::Register(None), None, None));
-        assert_eq!((app.new_budget.0, app.journal), (None, None));
         // Both change: the user is told, and nothing is lost.
         app.dialog = Some(Dialog::Tx(TxForm::default()));
         frame(&ctx, &mut app, 7.5, true);

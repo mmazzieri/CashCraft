@@ -27,9 +27,6 @@ struct Cli {
     /// Use the data file through a private copy, as in a synced folder
     #[arg(long, global = true)]
     shared: bool,
-    /// Of a data file in a synced folder: refuse to change anything if its revision is another one
-    #[arg(long, global = true)]
-    expect: Option<String>,
     /// Print the results as JSON
     #[arg(long, global = true)]
     json: bool,
@@ -62,24 +59,16 @@ fn main() {
             for n in &o.notices {
                 eprintln!("! {n}");
             }
-            let Some((shared, report)) = &o.shared else {
-                return cli::run(&o.db, &cli::Guard::Open(home.clone(), path.clone()), cmd, args.json);
+            let guard = match o.shared {
+                None => cli::Guard::Open(home.clone(), path.clone()),
+                Some((shared, report)) => {
+                    for n in report.news() {
+                        eprintln!("! {n}");
+                    }
+                    cli::Guard::Shared(shared)
+                }
             };
-            if let Some(n) = report.conflict_notice() {
-                eprintln!("! {n}");
-            }
-            if mcp {
-                return cli::run(&o.db, &cli::Guard::Served(shared.clone()), cmd, args.json);
-            }
-            let adopted = report.adopted;
-            let (done, notices) = store::around(shared, |turn| {
-                let turn = store::Turn { adopted: turn.adopted || adopted, ..turn.clone() };
-                cli::run(&o.db, &cli::Guard::Once(shared.clone(), turn, args.expect), cmd, args.json)
-            })?;
-            for n in notices {
-                eprintln!("! {n}");
-            }
-            done
+            cli::run(&o.db, &guard, cmd, args.json)
         }),
     };
     if let Err(e) = result {

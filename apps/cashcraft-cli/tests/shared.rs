@@ -48,7 +48,6 @@ mod tests {
             let out = self.run(computer, &all);
             let (text, notices) = (String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap());
             assert!(out.status.success(), "{args:?} {text} {notices}");
-            let notices = notices.lines().filter(|l| !l.starts_with("# revision ")).collect::<Vec<_>>().join("\n");
             (text, notices)
         }
         fn names(&self) -> BTreeSet<String> {
@@ -166,10 +165,11 @@ mod tests {
         d.ok("one", &["tx", "add", "--account", "Bank", "--amount=-1", "--payee", "from the terminal"]);
         // The server has been running since before.
         let seen = call("list_transactions", serde_json::json!({}));
-        assert!(
-            seen.to_string().contains("from the terminal")
-                && seen["result"]["structuredContent"]["data_file"].is_null()
-        );
+        assert!(seen.to_string().contains("from the terminal"));
+        let told = seen["result"]["structuredContent"]["data_file"].to_string();
+        assert!(told.contains("changed on another computer"), "{told}");
+        let again = call("list_transactions", serde_json::json!({}));
+        assert!(again["result"]["structuredContent"]["data_file"].is_null());
         let aside = d.0.join("aside");
         std::fs::rename(d.folder(), &aside).unwrap();
         let waiting = call("add_transaction", tx("later"));
@@ -251,94 +251,112 @@ mod tests {
     }
 
     #[test]
-    fn ids_of_another_content_are_refused() {
+    fn what_is_run_unattended_goes_on_after_others_changed_the_file() {
         let d = Dir::new("ids");
-        let file = d.file();
-        let run = |computer: &str, args: &[&str]| {
-            let out = d.run(computer, &[&["--db", file.to_str().unwrap()], args].concat());
-            (out.status.success(), String::from_utf8(out.stderr).unwrap())
-        };
-        let add = |c: &str, payee: &str| run(c, &["tx", "add", "--account", "Bank", "--amount=-1", "--payee", payee]);
         d.ok("one", &["accounts", "add", "Bank"]);
-        assert!(add("one", "first").0);
-        // The ids of nobody's list.
-        assert!(!run("two", &["tx", "delete", "1"]).0);
-        assert!(run("two", &["tx", "list"]).0);
-        assert!(run("two", &["tx", "show", "1"]).0);
-        // Taken in this very command: not even what names no id, then yes.
-        assert!(add("one", "second").0);
-        let (done, error) = add("two", "third");
-        assert!(!done && error.contains("nothing was done"), "{error}");
-        assert!(add("two", "third").0);
-        // Taken by a command before: ids are refused until the next list, which says so.
-        let (done, error) = run("two", &["tx", "delete", "1"]);
-        assert!(!done && error.contains("Read it again"), "{error}");
-        assert!(!run("two", &["call", "delete_transaction", "{\"id\":1}"]).0);
-        assert!(!run("two", &["accounts", "delete", "1"]).0);
-        let (done, told) = run("two", &["tx", "list"]);
-        assert!(done && told.contains("since it was last read"), "{told}");
-        let revision = told.lines().find_map(|l| l.strip_prefix("# revision ")).unwrap().to_string();
-        let list = d.ok("two", &["tx", "list"]).0;
-        assert!(list.contains("first") && list.contains("second") && list.contains("third"));
-        // By the revision of a list, whatever was listed since.
-        assert!(!run("two", &["--expect", "other", "tx", "delete", "1"]).0);
-        assert!(run("two", &["--expect", &revision, "tx", "delete", "1"]).0);
-        assert!(run("one", &["tx", "list"]).0);
-        assert!(add("one", "fourth").0);
-        assert!(run("two", &["tx", "list"]).0);
-        assert!(!run("two", &["--expect", &revision, "tx", "delete", "3"]).0);
-        assert!(run("two", &["tx", "delete", "3"]).0);
+        let csv = d.0.join("a.csv");
+        std::fs::write(&csv, "Data;Descrizione;Importo\n05/01/2026;imported;-1,20\n").unwrap();
+        let add = |c: &str, payee: &str| d.ok(c, &["tx", "add", "--account", "Bank", "--amount=-1", "--payee", payee]);
+        for i in 0..3 {
+            add("one", &format!("one-{i}"));
+            let (_, notice) = add("two", &format!("two-{i}"));
+            assert!(notice.contains("changed on another computer") || i == 0, "{notice}");
+        }
+        add("one", "more");
+        d.ok("two", &["import", csv.to_str().unwrap(), "--account", "Bank"]);
+        let list = |c: &str| -> Vec<(String, i64)> {
+            let v: serde_json::Value = serde_json::from_str(&d.ok(c, &["--json", "tx", "list"]).0).unwrap();
+            let all = v["transactions"].as_array().unwrap().iter();
+            all.map(|t| (t["payee"].as_str().unwrap().to_string(), t["id"].as_i64().unwrap())).collect()
+        };
+        let before = list("one");
+        assert_eq!(before.len(), 8);
+        // Ids of a list of before: the same thing or nothing.
+        let id = |payee: &str| before.iter().find(|t| t.0 == payee).unwrap().1.to_string();
+        d.ok("two", &["tx", "delete", &id("one-0")]);
+        add("two", "RENT");
+        let file = d.file();
+        let gone = d.run("one", &["--db", file.to_str().unwrap(), "tx", "delete", &id("one-0")]);
+        assert!(!gone.status.success() && String::from_utf8_lossy(&gone.stderr).contains("not found"));
+        d.ok("one", &["tx", "delete", &id("one-1")]);
+        let after: BTreeSet<String> = list("two").into_iter().map(|t| t.0).collect();
+        assert!(after.contains("RENT") && !after.contains("one-1") && !after.contains("one-0") && after.len() == 7);
+        assert_eq!(d.names(), ["books.db".to_string()].into());
     }
 
     #[test]
-    fn an_agent_reads_again_before_it_changes() {
+    fn a_server_is_told_where_its_file_went() {
         let d = Dir::new("agent");
-        d.ok("one", &["accounts", "add", "Bank"]);
-        d.ok("one", &["tx", "add", "--account", "Bank", "--amount=-1", "--payee", "first"]);
         let root = d.0.to_str().unwrap().to_string();
-        let args = ["--shared", "mcp", "--automation-read-root", &root, "--automation-write-root", &root];
-        let serve = |file: PathBuf, shared: bool| {
-            let args = if shared { &args[..] } else { &args[1..] };
-            let child = d
-                .command("two", &[&["--db", file.to_str().unwrap()], args].concat())
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap();
-            let mut server = Server(child);
-            let mut stdin = server.0.stdin.take().unwrap();
-            let mut lines = std::io::BufRead::lines(std::io::BufReader::new(server.0.stdout.take().unwrap()));
-            move |tool: &str, arguments: serde_json::Value| -> serde_json::Value {
-                let _server = &server;
-                let params = serde_json::json!({"name": tool, "arguments": arguments});
-                let msg = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params});
-                writeln!(stdin, "{msg}").unwrap();
-                serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap()
-            }
-        };
-        let mut call = serve(d.file(), true);
-        let refused =
-            |v: &serde_json::Value| v["result"]["isError"] == true && v.to_string().contains("nothing was done");
-        let delete = || serde_json::json!({"id": 1});
-        assert!(refused(&call("delete_transaction", delete())));
-        call("list_transactions", serde_json::json!({}));
-        d.ok("one", &["tx", "add", "--account", "Bank", "--amount=-1", "--payee", "second"]);
-        assert!(refused(&call("delete_transaction", delete())));
-        // Also the call after the one that took the changes.
-        assert!(refused(&call("delete_transaction", delete())));
-        let told = call("list_transactions", serde_json::json!({}));
-        assert!(told["result"]["structuredContent"]["data_file"].to_string().contains("ids read before"), "{told}");
-        assert_eq!(call("delete_transaction", delete())["result"]["isError"], false);
-        // A file that is moved under a server.
         let local = d.0.join("local.db");
-        assert!(d.run("two", &["--db", local.to_str().unwrap(), "accounts", "add", "Bank"]).status.success());
-        let mut old = serve(local.clone(), false);
-        assert_eq!(old("list_accounts", serde_json::json!({}))["result"]["isError"], false);
+        let at = local.to_str().unwrap();
+        assert!(d.run("two", &["--db", at, "accounts", "add", "Bank"]).status.success());
+        let args = ["--db", at, "mcp", "--automation-read-root", &root, "--automation-write-root", &root];
+        let mut server = Server(d.command("two", &args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap());
+        let mut stdin = server.0.stdin.take().unwrap();
+        let mut lines = std::io::BufRead::lines(std::io::BufReader::new(server.0.stdout.take().unwrap()));
+        let mut call = |tool: &str, arguments: serde_json::Value| -> serde_json::Value {
+            let params = serde_json::json!({"name": tool, "arguments": arguments});
+            let msg = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params});
+            writeln!(stdin, "{msg}").unwrap();
+            serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap()
+        };
+        assert_eq!(call("list_accounts", serde_json::json!({}))["result"]["isError"], false);
         let folder = d.folder();
-        let keep = ["--db", local.to_str().unwrap(), "data", "keep", folder.to_str().unwrap()];
+        let keep = ["--db", at, "data", "keep", folder.to_str().unwrap()];
         assert!(d.run("two", &keep).status.success());
-        let late = old("create_account", serde_json::json!({"name": "Late"}));
+        let late = call("create_account", serde_json::json!({"name": "Late"}));
         assert!(late.to_string().contains("was moved to"), "{late}");
+    }
+
+    #[test]
+    fn a_log_is_not_taken_from_a_program_that_is_open() {
+        let d = Dir::new("open");
+        let root = d.0.to_str().unwrap().to_string();
+        let file = d.file();
+        let at = file.to_str().unwrap();
+        let args = ["--db", at, "--direct", "mcp", "--automation-read-root", &root, "--automation-write-root", &root];
+        let mut server = Server(d.command("one", &args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap());
+        let params = serde_json::json!({"name": "create_account", "arguments": {"name": "Bank"}});
+        let msg = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params});
+        let mut stdin = server.0.stdin.take().unwrap();
+        writeln!(stdin, "{msg}").unwrap();
+        let mut line = String::new();
+        let mut out = std::io::BufReader::new(server.0.stdout.take().unwrap());
+        std::io::BufRead::read_line(&mut out, &mut line).unwrap();
+        assert!(d.names().contains("books.db-wal"));
+        let before = d.names();
+        for args in [&["tx", "list"][..], &["data", "recover", "--nobody-has-it-open"]] {
+            let out = d.run("two", &[&["--db", at], args].concat());
+            assert!(!out.status.success(), "{args:?}");
+            assert_eq!(d.names(), before);
+        }
+        drop(stdin);
+        server.0.wait().unwrap();
+        // It brought its log in and left.
+        assert!(d.ok("two", &["accounts", "list"]).0.contains("Bank"));
+    }
+
+    /// A reader that stops reading, as `less` does, keeps nobody waiting.
+    #[test]
+    fn nothing_is_held_while_it_is_printed() {
+        let d = Dir::new("pipe");
+        d.ok("one", &["accounts", "add", "Bank"]);
+        let csv = d.0.join("big.csv");
+        let rows: String = (0..3000).map(|i| format!("05/01/2026;payee number {i} of many;-{i},20\n")).collect();
+        std::fs::write(&csv, format!("Data;Descrizione;Importo\n{rows}")).unwrap();
+        d.ok("one", &["import", csv.to_str().unwrap(), "--account", "Bank"]);
+        d.ok("two", &["tx", "list"]);
+        let file = d.file();
+        let args = ["--db", file.to_str().unwrap(), "--json", "tx", "list", "--limit", "3000"];
+        let child = d.command("one", &args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        let mut stuck = Server(child);
+        // It has printed, and the pipe is full.
+        let mut first = [0; 1];
+        std::io::Read::read_exact(stuck.0.stdout.as_mut().unwrap(), &mut first).unwrap();
+        d.ok("two", &["tx", "add", "--account", "Bank", "--amount=-1", "--payee", "theirs"]);
+        assert!(d.ok("one", &["tx", "list", "--search", "theirs"]).0.contains("theirs"));
+        assert!(stuck.0.try_wait().unwrap().is_none());
     }
 
     #[test]
@@ -350,7 +368,9 @@ mod tests {
         std::fs::write(d.folder().join("books.db-wal"), "").unwrap();
         let (_, notice) = d.ok("one", &["tx", "add", "--account", "Bank", "--amount=-1", "--payee", "second"]);
         assert!(notice.contains("data recover") && std::fs::read(d.file()).unwrap() == before, "{notice}");
-        d.ok("one", &["data", "recover"]);
+        let refused = d.run("one", &["--db", d.file().to_str().unwrap(), "data", "recover"]);
+        assert!(!refused.status.success() && d.folder().join("books.db-wal").exists());
+        d.ok("one", &["data", "recover", "--nobody-has-it-open"]);
         assert_eq!(d.names(), ["books.db".to_string()].into());
         d.ok("one", &["tx", "list"]);
         assert!(d.ok("two", &["tx", "list"]).0.contains("second"));

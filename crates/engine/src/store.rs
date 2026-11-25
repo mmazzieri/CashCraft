@@ -177,26 +177,38 @@ impl Home {
         Some(PathBuf::from(text)).filter(|p| !p.as_os_str().is_empty())
     }
 
-    /// Working copies with changes that are not in their file, whatever file this is.
+    /// Working copies with changes that are not in their file, whatever file this is. One that was seen to be saved, and
+    /// has the length and the time it had then, is not read.
     pub fn unsaved(&self) -> Vec<(String, PathBuf)> {
         let mut out = Vec::new();
         for dir in std::fs::read_dir(self.dir.join("copies")).into_iter().flatten().flatten() {
-            let state = State::load(&dir.path());
-            let copy = dir.path().join(COPY);
-            if !copy.exists() {
+            let dir = dir.path();
+            let copy = dir.join(COPY);
+            let stamp = stamp(&copy);
+            if stamp.is_empty() || std::fs::read_to_string(dir.join("saved")).is_ok_and(|s| s == stamp) {
                 continue;
             }
+            let state = State::load(&dir);
             // One that cannot be read is worth saying too.
-            let Ok(print) = copy_print(&copy) else {
-                out.push((state.path, copy));
-                continue;
-            };
-            if print.is_some() && print != state.base.map(|b| b.print) {
+            if copy_print(&copy).is_ok_and(|p| p.is_none() || p == state.base.map(|b| b.print)) {
+                // Not one that changed meanwhile.
+                let _ = replace(&dir.join("saved"), stamp.as_bytes());
+            } else {
                 out.push((state.path, copy));
             }
         }
         out.sort();
         out
+    }
+}
+
+/// The length and the time of a working copy and of its log; empty when there is none.
+fn stamp(copy: &Path) -> String {
+    let of = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
+    match of(copy) {
+        None => String::new(),
+        // An empty log comes and goes as the copy is opened.
+        here => format!("{here:?} {:?}", of(&content::log(copy, "-wal")).filter(|l| l.0 > 0)),
     }
 }
 
@@ -262,13 +274,19 @@ fn real_names(path: &Path) -> PathBuf {
     out
 }
 
-/// The path of the file itself: links are followed, for a shared file is replaced whole.
+/// The path of the file itself: links are followed, for a shared file is replaced whole. Of what is not there, the part
+/// that is: the path stays the same when a folder goes away, unless a link to it does.
 pub fn resolved(path: &Path) -> PathBuf {
-    let found = std::fs::canonicalize(path).ok().or_else(|| {
-        let dir = std::fs::canonicalize(parent(path)).ok()?;
-        Some(dir.join(path.file_name()?))
-    });
-    let found = found.or_else(|| std::path::absolute(path).ok()).unwrap_or_else(|| path.to_path_buf());
+    let whole = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut found = None;
+    for here in whole.ancestors() {
+        if let Ok(real) = std::fs::canonicalize(here) {
+            let rest = whole.strip_prefix(here).unwrap_or(Path::new(""));
+            found = Some(if rest.as_os_str().is_empty() { real } else { real.join(rest) });
+            break;
+        }
+    }
+    let found = found.unwrap_or(whole);
     let found = if cfg!(target_os = "linux") { real_names(&found) } else { found };
     match found.to_str() {
         Some(text) if cfg!(windows) => {
@@ -287,8 +305,9 @@ pub fn way(home: &Home, path: &Path, asked: Use) -> (bool, Option<Service>) {
     let shared = match choice {
         // Once shared, whatever the environment says next time.
         Use::Auto if Shared::new(home, path).copy().exists() => true,
-        // A home folder on a network has no local place for a copy: as it always was.
-        Use::Auto if service == Some(Service::Network) => of(&home.dir.join(COPY)) != Some(Service::Network),
+        // There is no place for a copy that is not carried too, and the private folder is not shared with anybody.
+        Use::Auto if of(&home.dir.join(COPY)).is_some() || resolved(path).starts_with(resolved(&home.dir)) => false,
+        Use::Auto if resolved(path) == resolved(&crate::db::private_db_path()) => false,
         Use::Auto => service.is_some(),
         Use::Direct => false,
         Use::Shared => true,
@@ -311,7 +330,7 @@ pub fn open(home: &Home, path: &Path, asked: Use, seed: Lang, must_exist: bool) 
     let mut notices = Vec::new();
     let missing = || anyhow!(trf("{path} is not there", &[("path", &path.display())]));
     let shared = Shared::new(home, path);
-    let has_copy = copy_print(&shared.copy())?.is_some();
+    let has_copy = shared.copy().exists() && !matches!(copy_print(&shared.copy()), Ok(None));
     // A file that is known, or a link to one, is never replaced by an empty one.
     let known = has_copy
         || std::fs::symlink_metadata(path).is_ok()
@@ -334,10 +353,16 @@ pub fn open(home: &Home, path: &Path, asked: Use, seed: Lang, must_exist: bool) 
             return Err(missing());
         }
         shared.allow_direct(path)?;
+        if let (Use::Auto, Use::Auto, Some(s)) = (asked, home.choice(path), service) {
+            notices.push(trf(
+                "The data file is in {service} and is used where it is, as there is no private folder elsewhere: do not use it on two computers at once. CASHCRAFT_PRIVATE names another private folder.",
+                &[("service", &s.label())],
+            ));
+        }
         let (db, is_new) = Db::open_seeding(path, seed)?;
         return Ok(Opened { db, is_new, shared: None, notices });
     }
-    if let Some(s) = service_of(&resolved(&home.dir.join(COPY)), &System::here()) {
+    if !has_copy && let Some(s) = service_of(&resolved(&home.dir.join(COPY)), &System::here()) {
         bail!(trf(
             "the private folder {path} is in {service}: name one on this computer in CASHCRAFT_PRIVATE",
             &[("path", &home.dir.display()), ("service", &s.label())]
@@ -350,14 +375,14 @@ pub fn open(home: &Home, path: &Path, asked: Use, seed: Lang, must_exist: bool) 
     }
     let mut report = shared.sync()?;
     let hold = shared.hold()?;
-    if !has_copy && copy_print(&shared.copy())?.is_none() {
+    if copy_print(&shared.copy())?.is_none() {
         match &report.status {
             Status::Absent if !must_exist => {}
             Status::Absent => return Err(missing()),
             other => bail!("{}", other.text()),
         }
     }
-    let (db, is_new) = Db::open_seeding(&shared.copy(), seed)?;
+    let (db, is_new) = Db::open_copy(&shared.copy(), seed)?;
     drop(hold);
     if is_new {
         report = shared.sync()?;
@@ -409,10 +434,8 @@ pub struct Report {
     pub adopted: bool,
     /// The name of the file that now has the changes of this computer, because another had changed the shared one.
     pub conflict: Option<String>,
-    /// Of the content the copy had at the end.
-    pub revision: String,
-    /// What to say once, when the file is opened.
-    pub first: Vec<String>,
+    /// A working copy that could not be read, where it was put.
+    pub set_aside: Option<PathBuf>,
 }
 
 impl Report {
@@ -424,9 +447,26 @@ impl Report {
         ))
     }
 
+    /// What came in.
+    pub fn news(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(to) = &self.set_aside {
+            out.push(trf(
+                "The private copy could not be read: it is kept in {path}, and the data file was taken again.",
+                &[("path", &to.display())],
+            ));
+        }
+        match self.conflict_notice() {
+            Some(text) => out.push(text),
+            None if self.adopted => out.push(tr("The data was changed on another computer.").into()),
+            None => {}
+        }
+        out
+    }
+
     /// What people should know; nothing when all is saved.
     pub fn notices(&self) -> Vec<String> {
-        let mut out: Vec<String> = self.conflict_notice().into_iter().collect();
+        let mut out = self.news();
         if self.status != Status::Saved {
             out.push(match self.pending {
                 true => trf(
@@ -438,11 +478,6 @@ impl Report {
         }
         out
     }
-}
-
-fn new_revision(of: &str) -> String {
-    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos();
-    content::sha256(format!("{now} {} {of}", std::process::id()).as_bytes()).chars().take(10).collect()
 }
 
 const COPY: &str = "copy.db";
@@ -465,8 +500,6 @@ struct State {
     kept: Option<String>,
     /// Conflict files that the user has not dismissed.
     conflicts: Vec<String>,
-    /// Changes when the copy takes another content: ids of before may be of other things.
-    revision: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -553,15 +586,6 @@ enum Unread {
     Later(String),
 }
 
-impl Unread {
-    fn text(&self) -> String {
-        match self {
-            Unread::Missing => tr("the data file is not there").into(),
-            Unread::Later(why) => why.clone(),
-        }
-    }
-}
-
 /// What became of a write.
 enum Written {
     Done,
@@ -569,6 +593,14 @@ enum Written {
     Changed,
     InUse,
     Failed(String),
+}
+
+/// What became of a working copy that cannot be read.
+enum Aside {
+    Fine,
+    /// Somebody is using it.
+    Held,
+    Moved(PathBuf),
 }
 
 /// Keeps the working copy as it is while it lives: nothing of other computers comes in.
@@ -669,29 +701,20 @@ impl Shared {
         Ok(None)
     }
 
-    /// Changes when the copy takes what another computer wrote: ids may mean other things since.
-    pub fn revision(&self) -> String {
-        State::load(&self.dir).revision
-    }
-
-    /// The revision that the command line of this computer last read; empty when it read none.
-    pub fn last_read(&self) -> String {
-        std::fs::read_to_string(self.dir.join("read")).unwrap_or_default()
-    }
-
-    pub fn set_last_read(&self, revision: &str) -> Result<()> {
-        replace(&self.dir.join("read"), revision.as_bytes())
-    }
-
     /// What waits in a private copy would be forgotten, if the file were changed where it is.
     fn allow_direct(&self, path: &Path) -> Result<()> {
+        if matches!(self.set_aside()?, Aside::Held) {
+            bail!("{}", Status::Held.text());
+        }
         let Some(print) = copy_print(&self.copy())? else { return Ok(()) };
         let base = State::load(&self.dir).base.map(|b| b.print);
         let same = if base.is_some() {
             base == Some(print)
         } else {
+            // Read, never opened.
             let scratch = self.home.scratch()?;
-            path.exists() && snapshot(path, &scratch.0.join("there.db")).is_ok_and(|(_, p)| p == print)
+            let there = scratch.0.join("there.db");
+            std::fs::copy(path, &there).is_ok() && copy_print(&there).is_ok_and(|p| p == Some(print))
         };
         if !same {
             bail!(trf(
@@ -747,9 +770,15 @@ impl Shared {
         differences(&self.home, &here, other)
     }
 
-    /// Whether the folder is there and the file is not.
+    /// Whether the folder is there and the file is not. Nothing is read.
     pub fn is_missing(&self) -> bool {
-        matches!(self.read_whole(), Err(Unread::Missing))
+        self.look().is_err_and(|e| matches!(e, Unread::Missing))
+    }
+
+    /// Whether there is something to do, for a window that looks every few seconds. Of a file that has the length and
+    /// the time it had nothing is read.
+    pub fn wants_sync(&self, last: &Report) -> bool {
+        last.status != Status::Saved || last.pending || self.looks_changed() || self.has_log()
     }
 
     /// Writes the file again where it was and is not any more. What is known of it stays until that is done.
@@ -782,18 +811,16 @@ impl Shared {
         lock.lock()?;
         let mut st = State::load(&self.dir);
         st.path = self.path.display().to_string();
-        let mut report = Report {
-            status: Status::Saved,
-            pending: false,
-            adopted: false,
-            conflict: None,
-            revision: String::new(),
-            first: Vec::new(),
+        let mut report =
+            Report { status: Status::Saved, pending: false, adopted: false, conflict: None, set_aside: None };
+        report.set_aside = match self.set_aside()? {
+            Aside::Fine => None,
+            Aside::Held => {
+                report.status = Status::Held;
+                return Ok(report);
+            }
+            Aside::Moved(to) => Some(to),
         };
-        if st.revision.is_empty() {
-            st.revision = new_revision("");
-            st.save(&self.dir)?;
-        }
         // A shared file that changes all the time is for the next turn.
         for _ in 0..4 {
             report.status = match self.turn(&mut st, &mut report)? {
@@ -801,14 +828,33 @@ impl Shared {
                 None => continue,
             };
             let print = copy_print(&self.copy())?;
-            report.revision = st.revision;
             report.pending = print.is_some() && print != st.base.map(|b| b.print);
             return Ok(report);
         }
         report.status = Status::Waiting(tr("the data file is changing").into());
         report.pending = true;
-        report.revision = st.revision;
         Ok(report)
+    }
+
+    /// A working copy that is damaged makes place for the shared file; it is kept.
+    fn set_aside(&self) -> Result<Aside> {
+        let Err(e) = copy_print(&self.copy()) else { return Ok(Aside::Fine) };
+        use rusqlite::ErrorCode::{DatabaseCorrupt, NotADatabase};
+        let code =
+            e.chain().find_map(|c| c.downcast_ref::<rusqlite::Error>()).and_then(rusqlite::Error::sqlite_error_code);
+        if !matches!(code, Some(DatabaseCorrupt | NotADatabase)) {
+            return Err(e);
+        }
+        let Some(_alone) = self.alone()? else { return Ok(Aside::Held) };
+        let dir = self.new_folder("unreadable")?;
+        for suffix in ["-wal", "-shm", "-journal", ""] {
+            let from = content::log(&self.copy(), suffix);
+            match std::fs::rename(&from, content::log(&dir.join(COPY), suffix)) {
+                Err(e) if e.kind() != ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+        }
+        Ok(Aside::Moved(dir.join(COPY)))
     }
 
     /// One look at the two files. `None` when it must be done again.
@@ -910,8 +956,6 @@ impl Shared {
                     Err(why) => return Ok(Some(Status::Waiting(why))),
                 }
             }
-            // Said before it happens: a revision that changes for nothing only asks to read again.
-            st.revision = new_revision(&base.sha);
             st.taking = Some((base.clone(), content::fingerprint(&content::open(&file)?)?));
             st.save(&self.dir)?;
             self.step("adopting")?;
@@ -1189,9 +1233,10 @@ impl Shared {
         Err(last)
     }
 
-    fn read_whole(&self) -> std::result::Result<Fetched, Unread> {
+    /// What can be told without reading.
+    fn look(&self) -> std::result::Result<std::fs::Metadata, Unread> {
         let later = |e: std::io::Error| Unread::Later(e.to_string());
-        let before = match std::fs::metadata(&self.path) {
+        let found = match std::fs::metadata(&self.path) {
             Ok(m) => m,
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 // A folder that is away, or a file that iCloud has not downloaded.
@@ -1208,9 +1253,17 @@ impl Shared {
             }
             Err(e) => return Err(later(e)),
         };
-        if !before.is_file() || before.len() > MAX_FILE {
+        if !found.is_file() || found.len() > MAX_FILE {
             return Err(Unread::Later(tr("it is not a data file of CashCraft").into()));
         }
+        Ok(found)
+    }
+
+    fn read_whole(&self) -> std::result::Result<Fetched, Unread> {
+        let later = |e: std::io::Error| Unread::Later(e.to_string());
+        let before = self.look()?;
+        // Counted, in the tests.
+        self.step("read").map_err(|e| Unread::Later(e.to_string()))?;
         let mut bytes = Vec::new();
         File::open(&self.path).and_then(|f| f.take(MAX_FILE + 1).read_to_end(&mut bytes)).map_err(later)?;
         let after = std::fs::metadata(&self.path).map_err(later)?;
@@ -1232,86 +1285,80 @@ impl Shared {
         ["-wal", "-journal"].iter().any(|s| std::fs::symlink_metadata(content::log(&self.path, s)).is_ok())
     }
 
-    /// Deals with a log that a program left beside the shared file, when the user says that nobody has it open. The log
-    /// is brought into the file only if nothing that is in the file changes or goes; else what it would give is put
-    /// beside as another version, and the file stays as it is.
+    /// Deals with a log that a program left beside the shared file, when the user says that nobody has it open on any
+    /// computer. The file is never opened by SQLite, nor changed: the file and the log are copied, what they give together
+    /// is put beside as another version unless it is the same, and the log goes away.
     pub fn recover(&self) -> Result<Recovered> {
         let lock = self.lock_file("sync.lock")?;
         lock.lock()?;
         let mut st = State::load(&self.dir);
         self.sweep(&mut st)?;
-        if !self.has_log() {
+        let logs: Vec<&str> = ["-wal", "-journal"]
+            .into_iter()
+            .filter(|suffix| std::fs::symlink_metadata(content::log(&self.path, suffix)).is_ok())
+            .collect();
+        if logs.is_empty() {
             return Ok(Recovered::Nothing);
         }
-        content::prove_alone(&self.path)
-            .with_context(|| tr("the data file is open in a program of this computer, or cannot be locked"))?;
-        // Everything is kept before anything is tried.
+        if content::in_use(&self.path)? {
+            bail!(tr("the data file is open in a program of this computer"));
+        }
         let dir = self.new_folder("recovered")?;
-        let (before, plain, tried) = (dir.join("before.db"), dir.join("file.db"), dir.join("with-log.db"));
-        let Fetched { bytes, .. } = self.fetch().map_err(|e| anyhow!("{}", e.text()))?;
-        let logs: Vec<(&str, Vec<u8>)> = ["-wal", "-journal"]
-            .into_iter()
-            .filter_map(|suffix| match std::fs::read(content::log(&self.path, suffix)) {
-                Err(e) if e.kind() == ErrorKind::NotFound => None,
-                read => Some(read.map(|b| (suffix, b))),
-            })
-            .collect::<std::io::Result<_>>()?;
-        std::fs::write(&plain, &bytes)?;
-        for target in [&before, &tried] {
-            std::fs::write(target, &bytes)?;
-            for (suffix, log) in &logs {
-                std::fs::write(content::log(target, suffix), log)?;
+        // Byte for byte, before anything.
+        for suffix in [""].iter().chain(&logs) {
+            let from = content::log(&self.path, suffix);
+            let bytes = std::fs::read(&from).with_context(|| from.display().to_string())?;
+            for name in ["before.db", "with-log.db"] {
+                let to = content::log(&dir.join(name), suffix);
+                let mut f = File::create(&to)?;
+                f.write_all(&bytes)?;
+                f.sync_all()?;
             }
+            if suffix.is_empty() {
+                std::fs::write(dir.join("file.db"), &bytes)?;
+            }
+            self.step("copied")?;
         }
-        self.step("log kept")?;
-        let file = self.tested(&plain);
-        let with = self.tested(&tried);
-        if let Err(e) = &file {
-            // The file needs its log, and whether this is it cannot be told.
-            bail!(trf(
-                "the data file is not complete without its log: {error}. Nothing was changed; copies are in {path}",
-                &[("error", &format_args!("{e:#}")), ("path", &dir.display())]
-            ));
-        }
-        let owns = content::uses_log(&bytes) && logs.iter().all(|(s, _)| *s == "-wal");
-        let sure = owns && with.is_ok() && content::contains(&content::open(&tried)?, &content::open(&plain)?)?;
-        let version = match &with {
-            Ok(print) if !sure && file.as_ref().ok() != Some(print) => {
-                let (bytes, _) = snapshot(&tried, &dir.join("version.db"))?;
-                match self.beside(&mut st, "recovered", &bytes)? {
-                    Ok(name) => {
-                        st.conflicts.push(name.clone());
-                        st.save(&self.dir)?;
-                        Some(name)
-                    }
-                    Err(why) => bail!(why),
+        let same = || -> Result<()> {
+            for suffix in [""].iter().chain(&logs) {
+                let there = std::fs::read(content::log(&self.path, suffix))?;
+                if there != std::fs::read(content::log(&dir.join("before.db"), suffix))? {
+                    bail!(tr("the data file is changing"));
                 }
+            }
+            Ok(())
+        };
+        same()?;
+        let file = self.tested(&dir.join("file.db"));
+        let with = self.tested(&dir.join("with-log.db"));
+        let version = match &with {
+            Ok(print) if file.as_ref().ok() != Some(print) => {
+                let (bytes, _) = snapshot(&dir.join("with-log.db"), &dir.join("version.db"))?;
+                let name = self.beside(&mut st, "recovered", &bytes)?.map_err(|why| anyhow!(why))?;
+                st.conflicts.push(name.clone());
+                st.save(&self.dir)?;
+                Some(name)
             }
             _ => None,
         };
-        self.step("log tried")?;
-        // Nothing may have moved since it was read.
-        let now = self.read_whole().map_err(|e| anyhow!("{}", e.text()))?;
-        let same = logs.iter().all(|(s, l)| std::fs::read(content::log(&self.path, s)).is_ok_and(|b| b == *l));
-        if now.bytes != bytes || !same {
-            bail!(tr("the data file is changing"));
+        self.step("tried")?;
+        if let Err(e) = &file {
+            let beside = version.map(|n| format!(" ({n})")).unwrap_or_default();
+            bail!(trf(
+                "the data file is not complete without its log: {error}. Both are left where they are; copies, and what they give together{beside}, are in {path}",
+                &[("error", &format_args!("{e:#}")), ("beside", &beside), ("path", &dir.display())]
+            ));
         }
-        if sure {
-            let conn = content::open(&self.path)?;
-            conn.busy_timeout(Duration::from_millis(500))?;
-            content::settle(conn, &self.path)?;
-        } else {
-            for (suffix, _) in &logs {
-                std::fs::remove_file(content::log(&self.path, suffix))?;
-                self.step("log removed")?;
-            }
-            // What SQLite rebuilds.
-            let _ = std::fs::remove_file(content::log(&self.path, "-shm"));
+        same()?;
+        for suffix in &logs {
+            std::fs::remove_file(content::log(&self.path, suffix))?;
+            self.step("removed")?;
         }
-        self.step("log done")?;
+        // What SQLite makes again.
+        let _ = std::fs::remove_file(content::log(&self.path, "-shm"));
         Ok(match version {
             Some(name) => Recovered::Beside(name),
-            None => Recovered::Joined,
+            None => Recovered::Same,
         })
     }
 
@@ -1356,8 +1403,8 @@ impl Shared {
 pub enum Recovered {
     /// There is none.
     Nothing,
-    /// The file has it, or it held nothing.
-    Joined,
+    /// With it the file is the same, or it cannot be used: it is in the private folder.
+    Same,
     /// What it would give is in this file, beside.
     Beside(String),
 }
@@ -1366,9 +1413,9 @@ impl Recovered {
     pub fn text(&self) -> String {
         match self {
             Recovered::Nothing => tr("there is no log beside the data file").into(),
-            Recovered::Joined => tr("the log beside the data file was dealt with").into(),
+            Recovered::Same => tr("the log held nothing more: it is now in the private folder").into(),
             Recovered::Beside(name) => trf(
-                "the log may be of another version of the data file, which was left as it is; what the log would give is in \"{name}\", beside it",
+                "the data file was left as it is; what it is with the log is in \"{name}\", beside it: open it, and keep the one you want",
                 &[("name", name)],
             ),
         }
@@ -1399,42 +1446,17 @@ fn snapshot(from: &Path, out: &Path) -> Result<(Vec<u8>, String)> {
     Ok((bytes, print))
 }
 
-/// How the data stands when an operation is about to run.
-#[derive(Clone, Debug)]
-pub struct Turn {
-    /// It took what another computer wrote just now.
-    pub adopted: bool,
-    pub revision: String,
-}
-
-impl Turn {
-    /// Refuses what was decided on another content: `read` is the revision that was last read, if any. What changes
-    /// something does not run just after the content changed; what names things by their ids runs only on the
-    /// revision they were read from.
-    pub fn check(&self, reads: bool, ids: bool, read: Option<&str>) -> Result<()> {
-        if (ids && read != Some(self.revision.as_str())) || (!reads && self.adopted) {
-            bail!(trf(
-                "nothing was done: the data was changed on another computer, and ids may be of other things. Read it again (revision {revision})",
-                &[("revision", &self.revision)]
-            ));
-        }
-        Ok(())
-    }
-}
-
 /// Runs an operation on a shared file: what others wrote comes in before, what it changed goes out after. Also gives
-/// what people should know. The operation asks `Turn::check` whether it may run.
-pub fn around<T>(shared: &Shared, f: impl FnOnce(&Turn) -> T) -> Result<(T, Vec<String>)> {
+/// what people should know. Nothing is held once it returns: what is to be printed is printed then.
+pub fn around<T>(shared: &Shared, f: impl FnOnce() -> T) -> Result<(T, Vec<String>)> {
     let before = shared.sync()?;
     if before.status == Status::Held {
         bail!("{}", before.status.text());
     }
     let hold = shared.hold()?;
-    // Under the hold: what another program of this computer took meanwhile counts too.
-    let turn = Turn { adopted: before.adopted || before.revision != shared.revision(), revision: shared.revision() };
-    let out = f(&turn);
+    let out = f();
     drop(hold);
-    let mut notices: Vec<String> = before.conflict_notice().into_iter().collect();
+    let mut notices = before.news();
     match shared.sync() {
         Ok(after) => notices.extend(after.notices()),
         Err(e) => notices.push(trf("Error: {error}", &[("error", &format_args!("{e:#}"))])),

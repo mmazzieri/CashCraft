@@ -16,7 +16,7 @@ use std::io::{BufRead, Write};
 const PROTOCOL: &str = "2025-06-18";
 
 pub fn serve(db: &Db, guard: &Guard, roots: &ops::Roots) -> Result<()> {
-    let mut session = Session::new(guard);
+    let session = Session::new(guard);
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -54,15 +54,13 @@ fn failed(msg: &Value, error: &str) -> Option<Value> {
 /// What the agent knows of the data file.
 pub struct Session<'a> {
     guard: &'a Guard,
-    /// The revision it last read.
-    read: Option<String>,
     /// The file had been moved before.
     moved: bool,
 }
 
 impl<'a> Session<'a> {
     pub fn new(guard: &'a Guard) -> Self {
-        let mut session = Session { guard, read: None, moved: false };
+        let mut session = Session { guard, moved: false };
         session.moved = session.moved_to().is_some();
         session
     }
@@ -70,13 +68,13 @@ impl<'a> Session<'a> {
     fn moved_to(&self) -> Option<std::path::PathBuf> {
         match self.guard {
             Guard::Open(home, path) => home.moved(path),
-            Guard::Once(s, ..) | Guard::Served(s) => s.home().moved(s.path()),
+            Guard::Shared(s) => s.home().moved(s.path()),
         }
     }
 
     /// [`handle`], and on a shared file what others wrote comes in before a call, what it changed goes out after. What
     /// the user should know is in `data_file`, and in the text.
-    pub fn answer(&mut self, db: &Db, msg: &Value, roots: &ops::Roots) -> Option<Value> {
+    pub fn answer(&self, db: &Db, msg: &Value, roots: &ops::Roots) -> Option<Value> {
         if msg.get("method").and_then(Value::as_str) != Some("tools/call") {
             return handle(db, msg, roots);
         }
@@ -86,31 +84,11 @@ impl<'a> Session<'a> {
             {
                 return failed(msg, &format!("the data file was moved to {}: start the server again", now.display()));
             }
-            let Guard::Served(shared) = self.guard else { return handle(db, msg, roots) };
-            let params = msg.get("params");
-            let tool = params.and_then(|p| p.get("name")).and_then(Value::as_str).unwrap_or_default();
-            let args = params.and_then(|p| p.get("arguments")).unwrap_or(&Value::Null);
-            let (reads, ids) = (ops::is_read(tool), ops::uses_ids(args));
-            let before = self.read.clone();
-            let done = store::around(shared, |turn| {
-                turn.check(reads, ids, self.read.as_deref())?;
-                if reads && !ids {
-                    self.read = Some(turn.revision.clone());
-                }
-                anyhow::Ok(handle(db, msg, roots))
-            });
-            let (reply, mut notices) = match done {
-                Ok((Ok(reply), notices)) => (reply, notices),
-                Ok((Err(e), notices)) => {
-                    let text: Vec<String> = std::iter::once(format!("{e:#}")).chain(notices).collect();
-                    return failed(msg, &text.join("\n"));
-                }
+            let Guard::Shared(shared) = self.guard else { return handle(db, msg, roots) };
+            let (reply, notices) = match store::around(shared, || handle(db, msg, roots)) {
+                Ok(done) => done,
                 Err(e) => return failed(msg, &format!("{e:#}")),
             };
-            if before.is_some() && before != self.read {
-                notices
-                    .push("The data was changed on another computer: ids read before may be of other things.".into());
-            }
             let mut reply = reply?;
             let result = reply.get_mut("result").and_then(Value::as_object_mut);
             if let Some(result) = result.filter(|_| !notices.is_empty()) {

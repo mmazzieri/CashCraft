@@ -32,8 +32,8 @@ Not recognized, use `--shared`: folders with other names, Windows drive letters 
 
 Paths are compared with links followed and, on a disk that does not tell cases apart, with the names of the disk. A file
 with several hard links is used with a notice: the other names keep what it had. `CASHCRAFT_PRIVATE` names another private
-folder; one that is itself synced or on a network is refused for shared use (on a network home, files on the network
-are used directly, as before).
+folder; with one that is itself synced or on a network, files are used directly, as in 0.3.0, with a notice, and the shared way is
+refused. The default file is never shared by itself. A working copy that cannot be read is kept in `unreadable-<n>` and the file taken again.
 
 The private folder is `copies/<hash of the path>` in the user data folder of CashCraft (`%LOCALAPPDATA%` on Windows, which
 does not follow the user to other computers): `copy.db` (the working copy), `state.json` (length, time, SHA-256 and content
@@ -52,12 +52,10 @@ read. A program that dies leaves the old file or the new one, and the next start
 to write is found by comparing the contents, not by a mark that could be wrong. The same content in other bytes is no
 conflict. Files of passage have the permissions of the shared file from the start, 0600 for a new one.
 
-**Ids.** The ids of a row may be of another thing after the copy took what another computer wrote. The content has a *revision*,
-which changes then. An operation that changes something does not run in the call that took it; one that names anything by an id
-(`ops::uses_ids`) runs only on the revision last read: by the MCP session, or by the command line of this computer, where
-reading at a new revision says so. A command that reads prints its revision (`# revision …` on standard error), and
-`--expect <revision>` refuses any change on another one: for scripts, and for two terminals, which share what was "last read".
-The window forgets what was chosen by id.
+**Ids.** In a working copy every new row has a number that no other computer gives (`Db::new_id`: minutes since 2026 and eight
+random digits, growing, exact in JSON), in every table whose ids are seen. An id that was read before another computer's changes came
+in is of the same row, or of none. Rows written while the file was used directly keep their small ids, which all copies of it share.
+Operations run on what has just come in, and say so.
 
 **Waiting.** When the folder is away, the file can only be read or is gone, or a `-wal` or `-journal` lies beside it, changes stay
 in the copy, the program goes on and says so. A shared file that disappears is written again only if the user asks
@@ -82,11 +80,10 @@ nobody has it open and it still holds the same. An MCP server that had it open s
 ## Files that 0.3.0 left
 
 0.3.0 opened the file where it was. A log beside the file means that it is in use, however old the log is: CashCraft waits, or
-does not open the file for the first time. When nobody has it open on any computer the user says so (`data recover`, or the
-button in the window). It is refused if a program of this computer has the file open. The file and the log are first kept in
-`recovered-<n>` and tried there. SQLite brings the log into the file only if the result is sound, its books balance and every row
-of the file is in it, unchanged. Otherwise what the log gives is put beside as `name (recovered …).db`, the log goes
-only to the private folder, and the file stays as it is. A file that is not complete without its log, and not sure with it, is left alone.
+does not open the file for the first time. `data recover --nobody-has-it-open`, or the window, once the user says that no program
+has it open, copies file and log byte for byte into `recovered-<n>`, tries them there, puts what they give together beside as
+`name (recovered …).db` if it is not the same, and takes the log away. The file itself is never opened by SQLite nor changed. It is
+refused while a program of this computer has the file open, and a file that is not complete without its log is left with it.
 
 A file of an older format is updated in the private folder, and its backup (`<name>.v7-backup.db`) is there too, not
 beside the shared file; `data status` prints the folder.
