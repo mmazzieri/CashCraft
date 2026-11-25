@@ -159,6 +159,8 @@ final class Worker: @unchecked Sendable {
             let copy = besides(defaults.string(forKey: "name") ?? "cashcraft.db")
             try Core.ask("settle", ["path": try work().path])
             try write(try Data(contentsOf: try work()), url.appendingPathComponent(copy), replacing: nil)
+            // With no base: if the person stays with the old file, it is read again as it is.
+            defaults.set("", forKey: "base")
             dirty = false
             shown.notice = copy
         }
@@ -192,6 +194,8 @@ final class Worker: @unchecked Sendable {
         defaults.synchronize()
         folder = url
         self.name = name
+        // What the other file held is never shown as this one's.
+        try? manager.removeItem(at: try work())
         try adopt(bytes)
         defaults.set(hash(bytes), forKey: "base")
         let notice = shown.notice

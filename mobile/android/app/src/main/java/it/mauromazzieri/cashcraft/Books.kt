@@ -133,7 +133,8 @@ object Books {
         val copy = besides(prefs().getString("name", null) ?: NEW_NAME)
         Core.ask("settle") { put("path", work().path) }
         Place(app.contentResolver, tree, copy).make(work().readBytes())
-        prefs().edit().putBoolean("dirty", false).commit()
+        // With no base: if the person stays with the old file, it is read again as it is.
+        prefs().edit().putString("base", "").putBoolean("dirty", false).commit()
         mutableState.update { it.copy(notice = copy) }
     }
 
@@ -151,6 +152,8 @@ object Books {
             .putString("base", "").putBoolean("dirty", false).commit()
         place = chosen
         pending().delete()
+        // What the other file held is never shown as this one's.
+        work().delete()
         adopt(bytes)
         prefs().edit().putString("base", hash(bytes)).commit()
         mutableState.update { BooksState(ready = true, open = true, notice = it.notice) }
@@ -266,6 +269,8 @@ object Books {
     private fun fetch(shared: Place): ByteArray {
         val bytes = shared.read()
         if (!pending().exists()) return bytes
+        // Not over a computer that has the file open: it waits.
+        if (mutableState.value.inUse) throw IOException("the file is in use")
         val ours = pending().readBytes()
         // A write starts by emptying the file: what stopped halfway is the beginning of ours.
         val torn = bytes.size < ours.size && ours.copyOf(bytes.size).contentEquals(bytes)
