@@ -148,6 +148,12 @@ pub struct DataFile {
     old: Option<(PathBuf, PathBuf)>,
 }
 
+/// The end of a long path.
+fn tail(path: &str, n: usize) -> String {
+    let extra = path.chars().count().saturating_sub(n);
+    if extra == 0 { path.into() } else { format!("…{}", path.chars().skip(extra + 1).collect::<String>()) }
+}
+
 /// Opens a data file; a new one gets the sample data.
 pub fn open(home: &Home, path: &std::path::Path, asked: Use, must_exist: bool) -> Result<Opened> {
     let opened = store::open(home, path, asked, lang(), must_exist)?;
@@ -284,6 +290,10 @@ impl App {
         self.notify(ui, text);
     }
 
+    pub(crate) fn is_shared(&self) -> bool {
+        self.file.shared.is_some()
+    }
+
     /// The footer.
     pub fn file_status(&mut self, ui: &mut Ui) {
         let path = match (&self.file.shared, &self.db.path) {
@@ -291,7 +301,7 @@ impl App {
             (None, Some(p)) => p.display().to_string(),
             (None, None) => tr("trial data in memory").into(),
         };
-        let text = RichText::new(trf("Data file: {path}", &[("path", &path)])).size(11.5).color(MUTED);
+        let text = RichText::new(trf("Data file: {path}", &[("path", &tail(&path, 90))])).size(11.5).color(MUTED);
         if self.file.home.is_none() {
             ui.label(text);
             return;
@@ -301,8 +311,11 @@ impl App {
             self.file.window = Some(FileWindow::default());
         }
         let small = |ui: &mut Ui, text: String, color| {
-            ui.label(RichText::new(text).size(11.5).color(color));
+            ui.add(egui::Label::new(RichText::new(&text).size(11.5).color(color)).truncate()).on_hover_text(text);
         };
+        if self.conflicts().next().is_some() {
+            small(ui, tr("conflict").into(), RED);
+        }
         if let Some(s) = &self.file.syncer {
             let (text, color) = match self.file.changed_at {
                 Some(_) => (tr("to be saved").to_string(), MUTED),
@@ -313,9 +326,6 @@ impl App {
             if !others.is_empty() {
                 small(ui, trf("Also open on {computer}", &[("computer", &others)]), AMBER);
             }
-        }
-        if self.conflicts().next().is_some() {
-            small(ui, tr("conflict").into(), RED);
         }
     }
 

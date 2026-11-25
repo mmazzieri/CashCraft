@@ -276,6 +276,10 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     self.file_status(ui);
+                    if self.is_shared() {
+                        // The room is for the status.
+                        return;
+                    }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
                             RichText::new(tr(
