@@ -5,7 +5,8 @@
 use anyhow::{Result, anyhow};
 use cashcraft_engine::db::Db;
 use cashcraft_engine::i18n::{Lang, tr, trf, trn, with_lang};
-use cashcraft_engine::money::{fmt_date, fmt_eur, parse_date};
+use cashcraft_engine::ledger::Class;
+use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount_with, parse_date};
 use cashcraft_engine::ops;
 use clap::{Args, Subcommand};
 use serde_json::{Map, Value, json};
@@ -80,6 +81,9 @@ pub enum Cmd {
     /// Scheduled (recurring) transactions
     #[command(subcommand, visible_alias = "pianificati")]
     Scheduled(SchedCmd),
+    /// Double-entry ledger: chart of accounts, entries, trial balance
+    #[command(subcommand, visible_alias = "contabilita")]
+    Ledger(LedgerCmd),
     /// Export transactions to CSV, in the layout of the language in use
     #[command(visible_alias = "esporta")]
     Export {
@@ -157,7 +161,12 @@ pub enum AccountsCmd {
         opening: String,
         #[arg(long)]
         iban: Option<String>,
+        /// Three-letter code
+        #[arg(long, default_value = "EUR")]
+        currency: String,
     },
+    /// Change the currency of an account, amounts unchanged
+    Currency { account: String, currency: String },
     /// Delete an account and its transactions
     Delete { account: String },
 }
@@ -314,6 +323,83 @@ pub enum SchedCmd {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum LedgerCmd {
+    /// List the chart of accounts with the balances
+    Accounts,
+    /// Add an account to the chart (income and expense accounts are categories)
+    Add {
+        name: String,
+        /// asset, liability, equity, income, expense (default: that of the parent)
+        #[arg(long)]
+        class: Option<String>,
+        /// Account above it: code, id, path or name
+        #[arg(long)]
+        parent: Option<String>,
+        #[arg(long)]
+        code: Option<String>,
+        #[arg(long)]
+        currency: Option<String>,
+    },
+    /// Rename an account added by hand
+    Rename { account: String, name: String },
+    /// Delete an account added by hand, when nothing is on it
+    Remove { account: String },
+    /// Give a posting of an entry another category (none: uncategorized)
+    Categorize { posting_id: i64, category: Option<String> },
+    /// Post an entry; debits (positive) and credits (negative) must be equal
+    Post {
+        /// "Account=amount", at least twice
+        #[arg(long = "line", short, required = true)]
+        lines: Vec<String>,
+        #[arg(long, short)]
+        payee: Option<String>,
+        #[arg(long)]
+        date: Option<String>,
+        #[arg(long)]
+        memo: Option<String>,
+    },
+    /// Show an entry
+    Show { id: i64 },
+    /// List the entries, newest first
+    Entries {
+        #[arg(long, short)]
+        account: Option<String>,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// How many to skip
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Delete an entry, every side of it
+    Delete { id: i64 },
+    /// Trial balance, up to a date
+    #[command(visible_alias = "bilancio")]
+    TrialBalance {
+        #[arg(long)]
+        date: Option<String>,
+    },
+    /// Check that the books are sound
+    Verify,
+}
+
+/// Postings written as "Account=amount".
+fn posting_args(lines: &[String]) -> Result<Value> {
+    lines
+        .iter()
+        .map(|l| {
+            let (account, amount) = l
+                .rsplit_once('=')
+                .ok_or_else(|| anyhow!(trf("\"{line}\" is not written as Account=amount", &[("line", l)])))?;
+            Ok(json!({"account": account, "amount": amount}))
+        })
+        .collect()
+}
+
 fn args(pairs: &[(&str, Option<Value>)]) -> Value {
     let mut m = Map::new();
     for (k, v) in pairs {
@@ -364,10 +450,19 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
         }
         Cmd::Accounts(c) => match c {
             AccountsCmd::List { all } => ("list_accounts", args(&[("include_archived", v(all))])),
-            AccountsCmd::Add { name, kind, opening, iban } => (
+            AccountsCmd::Add { name, kind, opening, iban, currency } => (
                 "create_account",
-                args(&[("name", v(name)), ("kind", v(kind)), ("opening_balance", v(opening)), ("iban", o(&iban))]),
+                args(&[
+                    ("name", v(name)),
+                    ("kind", v(kind)),
+                    ("opening_balance", v(opening)),
+                    ("iban", o(&iban)),
+                    ("currency", v(currency)),
+                ]),
             ),
+            AccountsCmd::Currency { account, currency } => {
+                ("set_account_currency", args(&[("account", v(account)), ("currency", v(currency))]))
+            }
             AccountsCmd::Delete { account } => ("delete_account", args(&[("account", v(account))])),
         },
         Cmd::Tx(c) => match c {
@@ -473,6 +568,49 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
             SchedCmd::Delete { id } => ("delete_scheduled", args(&[("id", v(id))])),
             SchedCmd::Post { until } => ("post_scheduled", args(&[("until", o(&until))])),
         },
+        Cmd::Ledger(c) => match c {
+            LedgerCmd::Accounts => ("list_ledger_accounts", json!({})),
+            LedgerCmd::Add { name, class, parent, code, currency } => (
+                "create_ledger_account",
+                args(&[
+                    ("name", v(name)),
+                    ("class", o(&class)),
+                    ("parent", o(&parent)),
+                    ("code", o(&code)),
+                    ("currency", o(&currency)),
+                ]),
+            ),
+            LedgerCmd::Post { lines, payee, date, memo } => (
+                "post_entry",
+                args(&[
+                    ("postings", Some(posting_args(&lines)?)),
+                    ("payee", o(&payee)),
+                    ("date", o(&date)),
+                    ("memo", o(&memo)),
+                ]),
+            ),
+            LedgerCmd::Show { id } => ("get_entry", args(&[("id", v(id))])),
+            LedgerCmd::Entries { account, from, to, limit, offset } => (
+                "list_entries",
+                args(&[
+                    ("ledger_account", o(&account)),
+                    ("from", o(&from)),
+                    ("to", o(&to)),
+                    ("limit", v(limit)),
+                    ("offset", v(offset)),
+                ]),
+            ),
+            LedgerCmd::Rename { account, name } => {
+                ("rename_ledger_account", args(&[("ledger_account", v(account)), ("name", v(name))]))
+            }
+            LedgerCmd::Remove { account } => ("delete_ledger_account", args(&[("ledger_account", v(account))])),
+            LedgerCmd::Categorize { posting_id, category } => {
+                ("set_posting_category", args(&[("posting_id", v(posting_id)), ("category", o(&category))]))
+            }
+            LedgerCmd::Delete { id } => ("delete_entry", args(&[("id", v(id))])),
+            LedgerCmd::TrialBalance { date } => ("trial_balance", args(&[("date", o(&date))])),
+            LedgerCmd::Verify => ("verify_ledger", json!({})),
+        },
         Cmd::Export { file, account, from, to } => {
             ("export_csv", args(&[("path", v(file)), ("account", o(&account)), ("from", o(&from)), ("to", o(&to))]))
         }
@@ -488,6 +626,29 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
 
 fn eur(v: &Value) -> String {
     v.as_f64().map(|f| fmt_eur((f * 100.0).round() as i64)).unwrap_or_default()
+}
+
+/// An exact amount of the ledger, written as in the language in use, with its currency.
+fn exact(v: &Value, currency: &Value) -> String {
+    let n = parse_amount_with(&st(v), Some(false)).map(fmt_plain).unwrap_or_else(|_| st(v));
+    format!("{n} {}", st(currency))
+}
+
+fn print_entry(e: &Value) {
+    let when = if field(e, "opening").as_bool().unwrap_or(false) {
+        tr("Opening balance").to_string()
+    } else {
+        date(field(e, "date"))
+    };
+    println!("{:>5}  {}  {}", st(field(e, "id")), when, st(field(e, "payee")));
+    for p in field(e, "postings").as_array().into_iter().flatten() {
+        println!(
+            "  {:>5} {:<44} {:>20}",
+            st(field(p, "id")),
+            cut(&st(field(p, "account")), 44),
+            exact(field(p, "amount"), field(p, "currency"))
+        );
+    }
 }
 
 fn st(v: &Value) -> String {
@@ -640,6 +801,50 @@ fn print_human(tool: &str, r: &Value) {
                     eur(field(&x, "amount")),
                     cashcraft_engine::db::unit_label(&st(field(&x, "unit")), field(&x, "every").as_i64().unwrap_or(1))
                 );
+            }
+        }
+        "list_ledger_accounts" => {
+            println!("{:>4}  {:<8} {:<44} {}", "ID", head(tr("Code")), head(tr("Account")), head(tr("Balance")));
+            let all = arr("accounts");
+            for class in Class::ALL {
+                println!("{}", class.label());
+                for a in all.iter().filter(|a| st(field(a, "class")) == class.code()) {
+                    let balances: Vec<String> = field(a, "balances")
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|b| exact(field(b, "amount"), field(b, "currency")))
+                        .collect();
+                    println!(
+                        "{:>4}  {:<8} {:<44} {}",
+                        st(field(a, "ledger_account_id")),
+                        cut(&st(field(a, "code")), 8),
+                        cut(&st(field(a, "path")), 44),
+                        balances.join(", ")
+                    );
+                }
+            }
+        }
+        "get_entry" => print_entry(field(r, "entry")),
+        "list_entries" => arr("entries").iter().for_each(print_entry),
+        "trial_balance" => {
+            println!("{:<44} {:>20} {:>20}", head(tr("Account")), head(tr("Debit")), head(tr("Credit")));
+            let total = tr("Total").to_string();
+            for l in arr("lines").iter().chain(&arr("totals")) {
+                let name = l.get("account").map_or_else(|| total.clone(), st);
+                let cur = field(l, "currency");
+                println!(
+                    "{:<44} {:>20} {:>20}",
+                    cut(&name, 44),
+                    exact(field(l, "debit"), cur),
+                    exact(field(l, "credit"), cur)
+                );
+            }
+        }
+        "verify_ledger" => {
+            println!("{}", st(field(r, "message")));
+            for p in arr("problems") {
+                println!("  {}", st(&p));
             }
         }
         "preview_csv" | "import_csv" => {

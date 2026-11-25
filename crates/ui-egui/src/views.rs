@@ -4,13 +4,13 @@
 use crate::gui::{
     ACCENT, ACCENT_SOFT, AMBER, AccountForm, App, BLUE, BORDER, CARD, Dialog, GREEN, LANGUAGES, MUTED, Period, RED,
     SIDEBAR, SchedForm, TEXT, TRACK, TransferForm, View, ZEBRA, amount_color, bars_chart, budget_color, card,
-    category_combo, cut, donut, hbars, kind_icon, language_name, legend, line_chart, money, nav_item, or_report,
-    palette, primary_button, progress, section_title, small_caps,
+    category_combo, cut, donut, has_category, hbars, kind_icon, language_name, legend, line_chart, money, nav_item,
+    or_report, palette, primary_button, progress, section_title, small_caps,
 };
-use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Transaction};
+use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Transaction, TxKind};
 use cashcraft_engine::i18n::{tr, trf, trn};
 use cashcraft_engine::money::{
-    fmt_date, fmt_day, fmt_eur, fmt_number, fmt_plain, month_and_year, month_name, parse_amount,
+    fmt_date, fmt_day, fmt_eur, fmt_number, fmt_plain, month_and_year, month_name, parse_amount, total,
 };
 use chrono::{Datelike, Months};
 use egui::{
@@ -57,7 +57,7 @@ impl App {
                                 continue;
                             }
                             ui.add_space(10.0);
-                            let total: Cents = group.iter().map(|a| a.balance).sum();
+                            let total = total(group.iter().map(|a| a.balance));
                             ui.horizontal(|ui| {
                                 small_caps(ui, kind.group_label());
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -83,6 +83,8 @@ impl App {
                                             name: a2.name.clone(),
                                             kind: a2.kind,
                                             opening: fmt_plain(a2.opening_balance),
+                                            currency: a2.currency.clone(),
+                                            old_currency: a2.currency.clone(),
                                             iban: a2.iban.clone(),
                                             archived: a2.archived,
                                             error: String::new(),
@@ -108,6 +110,8 @@ impl App {
                                 name: String::new(),
                                 kind: AccountKind::Bank,
                                 opening: fmt_plain(0),
+                                currency: "EUR".into(),
+                                old_currency: String::new(),
                                 iban: String::new(),
                                 archived: false,
                                 error: String::new(),
@@ -132,9 +136,12 @@ impl App {
                         if nav_item(ui, self.view == View::Rules, "⚙", tr("Automatic rules"), None).clicked() {
                             self.go(View::Rules);
                         }
+                        if nav_item(ui, self.view == View::Ledger, "📖", tr("Chart of accounts"), None).clicked() {
+                            self.go(View::Ledger);
+                        }
                     });
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    let total: Cents = self.accounts.iter().filter(|a| !a.archived).map(|a| a.balance).sum();
+                    let total = self.net_worth;
                     ui.label(RichText::new(fmt_eur(total)).size(21.0).strong().color(if total < 0 {
                         RED
                     } else {
@@ -185,6 +192,10 @@ impl App {
             View::Categories => (tr("Categories").into(), tr("How income and expenses are grouped").into()),
             View::Rules => (tr("Automatic rules").into(), tr("They categorize imported transactions").into()),
             View::Scheduled => (tr("Scheduled").into(), tr("Recurring transactions and due dates").into()),
+            View::Ledger => (
+                tr("Chart of accounts").into(),
+                tr("Double-entry ledger: every amount has a debit and a credit").into(),
+            ),
         }
     }
 
@@ -289,8 +300,8 @@ impl App {
         self.ensure_dash();
         let Some(d) = self.dash.take() else { return };
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let net: Cents = self.accounts.iter().filter(|a| !a.archived).map(|a| a.balance).sum();
-            let saving = d.month_income - d.month_expense;
+            let net = self.net_worth;
+            let saving = d.month_income.saturating_sub(d.month_expense);
             let mname = month_name(db::today().month()).to_string();
             let cards = [
                 (tr("Net worth"), fmt_eur(net), if net < 0 { RED } else { TEXT }, tr("all accounts").to_string()),
@@ -512,18 +523,15 @@ impl App {
             self.reload_txs();
         }
         ui.add_space(4.0);
-        let income: Cents =
-            self.txs.iter().filter(|t| t.amount > 0 && t.transfer_peer.is_none()).map(|t| t.amount).sum();
-        let expense: Cents =
-            self.txs.iter().filter(|t| t.amount < 0 && t.transfer_peer.is_none()).map(|t| t.amount).sum();
+        let (income, expense) = self.tx_totals;
         ui.horizontal(|ui| {
             ui.label(RichText::new(trn(self.txs.len(), "{n} transaction", "{n} transactions")).color(MUTED));
             ui.label(RichText::new(tr("· Income")).color(MUTED));
             ui.label(money(income));
             ui.label(RichText::new(tr("· Expenses")).color(MUTED));
-            ui.label(money(expense));
+            ui.label(money(expense.saturating_neg()));
             ui.label(RichText::new(tr("· Difference")).color(MUTED));
-            ui.label(money(income + expense));
+            ui.label(money(income.saturating_sub(expense)));
         });
         ui.add_space(6.0);
 
@@ -535,7 +543,8 @@ impl App {
         let table_h = (avail.y - bottom_bar).max(120.0);
         let mut open_edit: Option<Transaction> = None;
         let mut toggle_cleared: Option<(i64, bool)> = None;
-        let mut delete: Option<i64> = None;
+        let mut delete: Option<Transaction> = None;
+        let mut open_entry: Option<i64> = None;
         let mut set_cat: Option<(i64, Option<i64>)> = None;
         let mut want_import = false;
         let cats = self.categories.clone();
@@ -632,7 +641,7 @@ impl App {
                             cell(
                                 cols[2].1,
                                 &t.category,
-                                if t.transfer_peer.is_some() { BLUE } else { TEXT },
+                                if t.kind == TxKind::Category { TEXT } else { BLUE },
                                 false,
                                 13.0,
                             );
@@ -669,7 +678,7 @@ impl App {
                             if ui.button(lbl).clicked() {
                                 toggle_cleared = Some((tc.id, !tc.cleared));
                             }
-                            if tc.transfer_peer.is_none() {
+                            if has_category(&tc) {
                                 ui.menu_button(tr("🏷 Category"), |ui| {
                                     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                                         if ui.button(tr("None")).clicked() {
@@ -683,9 +692,12 @@ impl App {
                                     });
                                 });
                             }
+                            if !has_category(&tc) && ui.button(tr("📖 Entry…")).clicked() {
+                                open_entry = Some(tc.entry_id);
+                            }
                             ui.separator();
                             if ui.button(RichText::new(tr("🗑 Delete")).color(RED)).clicked() {
-                                delete = Some(tc.id);
+                                delete = Some(tc.clone());
                             }
                         });
                     }
@@ -701,17 +713,20 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("{} · {}", fmt_date(t.date), cut(&t.payee, 40))).strong());
                 ui.label(money(t.amount));
-                if t.transfer_peer.is_none() {
+                if has_category(&t) {
                     let mut c = t.category_id;
                     if category_combo(ui, "selcat", &cats, &mut c, tr("Uncategorized")) {
                         set_cat = Some((t.id, c));
                     }
                 }
+                if !has_category(&t) && ui.button(tr("📖 Entry…")).clicked() {
+                    open_entry = Some(t.entry_id);
+                }
                 if ui.button(tr("✏ Edit")).clicked() {
                     open_edit = Some(t.clone());
                 }
                 if ui.button(RichText::new(tr("🗑 Delete")).color(RED)).clicked() {
-                    delete = Some(t.id);
+                    delete = Some(t.clone());
                 }
             });
         }
@@ -730,8 +745,13 @@ impl App {
             let r = self.db.set_category(id, c).map(|_| tr("Category updated").to_string());
             self.act(ui, r);
         }
-        if let Some(id) = delete {
-            let r = self.db.delete_transaction(id).map(|_| tr("Transaction deleted").to_string());
+        if let Some(id) = open_entry {
+            self.dialog = Some(Dialog::EntryDetail(id));
+        }
+        if let Some(t) = delete
+            && !self.confirm_split(&t)
+        {
+            let r = self.db.delete_transaction(t.id).map(|_| tr("Transaction deleted").to_string());
             self.selected = None;
             self.act(ui, r);
         }
@@ -755,9 +775,8 @@ impl App {
         self.ensure_report();
         let Some(r) = self.report.take() else { return };
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let income: Cents = r.totals.iter().filter(|c| c.total > 0).map(|c| c.total).sum();
-            let expense: Cents = -r.totals.iter().filter(|c| c.total < 0).map(|c| c.total).sum::<Cents>();
-            let net = income - expense;
+            let (income, expense) = or_report(db::CategoryTotal::income_and_expense(&r.totals), &mut self.toast);
+            let net = income.saturating_sub(expense);
             let gap = 14.0;
             let cw = (ui.available_width() - gap * 3.0) / 4.0;
             ui.horizontal(|ui| {
@@ -788,7 +807,7 @@ impl App {
                 r.totals.iter().filter(|c| c.total < 0).map(|c| (c.category.clone(), -c.total)).collect();
             exp.sort_by_key(|x| -x.1);
             let mut top: Vec<(String, Cents)> = exp.iter().take(8).cloned().collect();
-            let rest: Cents = exp.iter().skip(8).map(|x| x.1).sum();
+            let rest = total(exp.iter().skip(8).map(|x| x.1));
             if rest > 0 {
                 top.push((tr("Other").into(), rest));
             }
@@ -887,8 +906,8 @@ impl App {
         });
         ui.add_space(10.0);
         let lines = or_report(self.db.budget_status(self.budget_month), &mut self.toast);
-        let total_b: Cents = lines.iter().map(|l| l.budget).sum();
-        let total_s: Cents = lines.iter().map(|l| l.spent).sum();
+        let total_b = total(lines.iter().map(|l| l.budget));
+        let total_s = total(lines.iter().map(|l| l.spent));
         let mut save: Option<(i64, Cents)> = None;
         let mut remove: Option<i64> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -1234,10 +1253,7 @@ impl App {
             });
         });
         if post {
-            let r = self
-                .db
-                .post_scheduled(db::today())
-                .map(|n| trn(n, "{n} transaction recorded", "{n} transactions recorded"));
+            let r = self.db.post_scheduled(db::today()).map(|p| p.message());
             self.act(ui, r);
         }
         if let Some(id) = del {

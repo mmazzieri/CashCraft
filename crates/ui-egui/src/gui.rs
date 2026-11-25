@@ -1,11 +1,12 @@
 //! Finestra di CashCraft (eframe/egui): avvio, stato, stile e widget comuni.
 //! Le singole schermate sono in `views.rs`, le finestre di dialogo in `dialogs.rs`.
 
+use crate::ledger::{EntryForm, LedgerAccountForm, LedgerData};
 use anyhow::Result;
-use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Db, Scheduled, Transaction, TxFilter};
+use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Db, Scheduled, Transaction, TxFilter, TxKind};
 use cashcraft_engine::i18n::{self, Lang, lang, tr, trf};
 use cashcraft_engine::importer::{self, ImportResult, Mapping, ParsedRow, Table};
-use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_number, month_short};
+use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_number, month_short, total};
 use cashcraft_engine::{demo, ops};
 use chrono::{Datelike, NaiveDate};
 use egui::{self, Align2, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
@@ -66,6 +67,11 @@ pub fn or_report<T: Default>(r: Result<T>, toast: &mut Option<(String, f64)>) ->
     })
 }
 
+/// Whether a transaction has one category, or may be given one.
+pub fn has_category(t: &Transaction) -> bool {
+    matches!(t.kind, TxKind::Category | TxKind::Uncategorized)
+}
+
 /// The colour of the `i`-th series of a chart.
 pub fn palette(i: usize) -> Color32 {
     PALETTE.get(i % PALETTE.len()).copied().unwrap_or(ACCENT)
@@ -103,6 +109,7 @@ pub enum View {
     Categories,
     Rules,
     Scheduled,
+    Ledger,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -156,6 +163,9 @@ pub struct TxForm {
     pub category: Option<i64>,
     pub cleared: bool,
     pub is_transfer: bool,
+    /// Whether the category can be chosen.
+    pub has_category: bool,
+    pub is_split: bool,
     pub error: String,
 }
 
@@ -176,6 +186,9 @@ pub struct AccountForm {
     pub kind: AccountKind,
     pub opening: String,
     pub iban: String,
+    pub currency: String,
+    /// The currency it has now.
+    pub old_currency: String,
     pub archived: bool,
     pub error: String,
 }
@@ -240,6 +253,14 @@ pub enum Dialog {
     Account(AccountForm),
     Import(Box<ImportState>),
     Scheduled(SchedForm),
+    Entry(EntryForm),
+    LedgerAccount(LedgerAccountForm),
+    RenameLedgerAccount(i64, String, String),
+    ConfirmDeleteLedgerAccount(i64, String),
+    /// An entry with its postings.
+    EntryDetail(i64),
+    /// The entry, and how many lines it has.
+    ConfirmDeleteEntry(i64, usize),
     ConfirmDeleteAccount(i64, String),
     ConfirmClearDemo,
 }
@@ -267,6 +288,9 @@ pub struct App {
     pub accounts: Vec<Account>,
     pub categories: Vec<Category>,
     pub txs: Vec<Transaction>,
+    /// Income and expense of `txs`.
+    pub tx_totals: (Cents, Cents),
+    pub net_worth: Cents,
     pub period: Period,
     pub search: String,
     pub cat_filter: Option<i64>,
@@ -283,6 +307,11 @@ pub struct App {
     pub rename_cat: Option<(i64, String)>,
     pub dash: Option<Dash>,
     pub report: Option<ReportData>,
+    pub ledger: Option<LedgerData>,
+    /// The trial balance up to this date, as it is typed.
+    pub ledger_date: String,
+    /// The account of the chart whose entries are shown, and the page.
+    pub journal: Option<(i64, usize)>,
     /// The language chosen in the window, `None` for the system's.
     pub language: Option<Lang>,
     data_version: i64,
@@ -403,6 +432,8 @@ impl App {
             accounts: vec![],
             categories: vec![],
             txs: vec![],
+            tx_totals: (0, 0),
+            net_worth: 0,
             period: Period::Last3,
             search: String::new(),
             cat_filter: None,
@@ -419,6 +450,9 @@ impl App {
             rename_cat: None,
             dash: None,
             report: None,
+            ledger: None,
+            ledger_date: String::new(),
+            journal: None,
             language,
             data_version: 0,
             last_check: 0.0,
@@ -441,11 +475,19 @@ impl App {
                 "categories" | "categorie" => View::Categories,
                 "rules" | "regole" => View::Rules,
                 "scheduled" | "pianificati" => View::Scheduled,
+                "ledger" | "entry" | "journal" => View::Ledger,
                 _ => View::Dashboard,
             };
             app.reload_txs();
             if v == "import" || v == "importa" {
                 app.open_import(None);
+            }
+            if v == "entry" {
+                app.open_entry();
+            }
+            if v == "journal" {
+                let all = or_report(app.db.ledger_accounts(), &mut app.toast);
+                app.journal = all.first().map(|l| (l.id, 0));
             }
         }
         app
@@ -466,11 +508,13 @@ impl App {
 
     pub fn reload(&mut self) {
         self.accounts = or_report(self.db.accounts(true), &mut self.toast);
+        self.net_worth = or_report(self.db.net_worth(None), &mut self.toast);
         self.categories = or_report(self.db.categories(), &mut self.toast);
         self.demo = self.db.meta("demo").as_deref() == Some("1");
         self.reload_txs();
         self.dash = None;
         self.report = None;
+        self.ledger = None;
     }
 
     pub fn reload_txs(&mut self) {
@@ -489,6 +533,7 @@ impl App {
             limit: None,
         };
         self.txs = or_report(self.db.transactions(&f), &mut self.toast);
+        self.tx_totals = or_report(self.db.register_totals(&self.txs, self.cat_filter), &mut self.toast);
     }
 
     pub fn notify(&mut self, ui: &Ui, msg: impl Into<String>) {
@@ -534,6 +579,7 @@ impl App {
             account: self.default_account(),
             date: fmt_date(db::today()),
             expense: true,
+            has_category: true,
             ..Default::default()
         }));
     }
@@ -550,6 +596,8 @@ impl App {
             category: t.category_id,
             cleared: t.cleared,
             is_transfer: t.transfer_peer.is_some(),
+            has_category: has_category(t),
+            is_split: t.kind == TxKind::Split,
             error: String::new(),
         }));
     }
@@ -570,8 +618,7 @@ impl App {
         let t = db::today();
         let (from, to) = db::month_range(t);
         let totals = or_report(self.db.category_totals(from, to), &mut self.toast);
-        let month_income = totals.iter().filter(|c| c.total > 0).map(|c| c.total).sum();
-        let month_expense = -totals.iter().filter(|c| c.total < 0).map(|c| c.total).sum::<Cents>();
+        let (month_income, month_expense) = or_report(db::CategoryTotal::income_and_expense(&totals), &mut self.toast);
         let mut top: Vec<(String, Cents)> =
             totals.iter().filter(|c| c.total < 0).map(|c| (c.category.clone(), -c.total)).collect();
         top.sort_by_key(|x| -x.1);
@@ -665,6 +712,9 @@ impl eframe::App for App {
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
                 self.open_new_tx();
             }
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::J)) {
+                self.open_entry();
+            }
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::I)) {
                 self.open_import(None);
             }
@@ -683,6 +733,7 @@ impl eframe::App for App {
                 View::Categories => self.categories_view(ui),
                 View::Rules => self.rules_view(ui),
                 View::Scheduled => self.scheduled_view(ui),
+                View::Ledger => self.ledger_view(ui),
             },
         );
         self.dialogs(&ctx);
@@ -790,6 +841,10 @@ pub fn category_combo(ui: &mut Ui, id: &str, cats: &[Category], value: &mut Opti
             }
         }
     });
+    if changed {
+        // Choosing with the keyboard leaves the list open.
+        egui::Popup::close_all(ui.ctx());
+    }
     changed
 }
 
@@ -962,7 +1017,7 @@ pub fn hbars(ui: &mut Ui, items: &[(String, Cents)]) {
 pub fn donut(ui: &mut Ui, items: &[(String, Cents)], size: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
     let p = ui.painter_at(rect);
-    let total: Cents = items.iter().map(|x| x.1).sum();
+    let total = total(items.iter().map(|x| x.1));
     let c = rect.center();
     let r_out = size / 2.0 - 4.0;
     let r_in = r_out * 0.62;

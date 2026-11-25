@@ -33,6 +33,8 @@
   net worth over time, monthly budgets per category with progress bars.
 - **Categories and rules**: nested categories and keyword rules that categorize new and imported
   transactions automatically.
+- **Double-entry ledger** underneath: chart of accounts with sub-accounts, entries with any number
+  of postings, trial balance. An entry that does not balance is refused. See [docs/ledger.md](docs/ledger.md).
 - **Scheduled transactions**: recurring payments and transfers, posted when due.
 - **Italian bank CSV and Excel 97 (`.xls`) import**, BPER's included: detects the encoding (UTF-8 or Windows-1252), the separator, the
   heading lines to skip and the columns by name (*Data contabile*, *Data valuta*, *Descrizione*,
@@ -51,7 +53,8 @@ styles can be typed in either language. Only one separator before exactly three 
 it: `1.234` is 1234 in Italian, `1,234` is 1234 in English. Bank statements are read the same in
 every language.
 
-Data stays on your computer in a single SQLite file.
+Data stays on your computer in a single SQLite file. A file of version 0.1 or 0.2 is updated when it
+is first opened, after a copy of it is saved beside it as `cashcraft.v1-backup.db`.
 
 ## Install
 
@@ -81,6 +84,8 @@ On macOS, drag CashCraft to Applications. Until a release is signed with a Devel
     cashcraft-cli report categories --month 2026-10
     cashcraft-cli budget set Groceries 400
     cashcraft-cli rules add "panificio|forno" Groceries
+    cashcraft-cli ledger post -l "Main account=1500" -l "Taxes=500" -l "Salary=-2000" -p "Pay"
+    cashcraft-cli ledger trial-balance
     cashcraft-cli tools                     # every operation, as in MCP
     cashcraft-cli call list_accounts '{}'   # any operation with JSON arguments
 

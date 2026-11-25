@@ -1,13 +1,21 @@
+"{amount}" has more than two decimals	"{amount}" ha più di due decimali
 "{amount}" is not a valid amount	importo "{amount}" non valido
 "{amount}" is too large	importo "{amount}" troppo grande
 "{date}" is not a valid date (use YYYY-MM-DD or DD/MM/YYYY)	data "{date}" non valida (usa AAAA-MM-GG o GG/MM/AAAA)
+"{key}" may be several things: write ledger:{key} for the id in the chart of accounts, code:{key} for the code	"{key}" può indicare più cose: scrivi ledger:{key} per l'id nel piano dei conti, code:{key} per il codice
+"{line}" is not written as Account=amount	"{line}" non è scritto come Conto=importo
 "{month}" is not a valid month (use YYYY-MM)	mese "{month}" non valido (usa AAAA-MM)
+"{name}" has no entries.	"{name}" non ha registrazioni.
+"{name}" not recorded: {error}	"{name}" non registrato: {error}
 "{path}" is not a folder	"{path}" non è una cartella
 % of total	% sul totale
 (none: top level)	(nessuna: principale)
 ({n} row skipped)	({n} riga saltata)
 ({n} rows skipped)	({n} righe saltate)
++ Account in the chart	+ Conto nel piano
++ Entry	+ Registrazione
 + Income	+ Entrata
++ Line	+ Riga
 + New account	+ Nuovo conto
 + New scheduled transaction	+ Nuovo pianificato
 + Transaction	+ Movimento
@@ -17,20 +25,25 @@ Account deleted	Conto eliminato
 Account fee	Canone conto
 Account maintenance	Spese tenuta conto
 Account updated	Conto aggiornato
+Accounts	Conti
 Add	Aggiungi
+Add an account under "{name}"	Aggiungi un conto sotto "{name}"
 Add rule	Aggiungi regola
 All	Tutto
 All accounts	Tutti i conti
 All categories	Tutte le categorie
+All of its {n} lines will be deleted, in every account they are on. This cannot be undone.	Verranno eliminate tutte le sue {n} righe, in ogni conto in cui compaiono. Non si può annullare.
 All transactions	Tutti i movimenti
 Amount	Importo
 Amount (signed)	Importo (con segno)
 Amount €	Importo €
+An income or expense account is a category.	Un conto di entrata o di uscita è una categoria.
 Analysis	Analisi
 Analyze	Analizza
 Apartment rent	Affitto appartamento
 April	aprile
 Archived (hidden from the sidebar)	Archiviato (nascosto dalla barra laterale)
+Assets	Attività
 August	agosto
 Automatic (rules)	Automatica (regole)
 Automatic rules	Regole automatiche
@@ -56,18 +69,23 @@ Category created	Categoria creata
 Category deleted	Categoria eliminata
 Category renamed	Categoria rinominata
 Category updated	Categoria aggiornata
+Chart of accounts	Piano dei conti
 Checked against the bank statement	Verificato sull'estratto conto
 Choose a category…	Scegli categoria…
 Choose an account…	Scegli un conto…
 Choose the category of the rule	Scegli la categoria della regola
 Cinema and books	Cinema e libri
+Class	Classe
 Cleared	Verificato
 Close	Chiudi
 Clothes Shop	Negozio Abbigliamento
 Clothing	Abbigliamento
+Code	Codice
 Column {n}	Colonna {n}
+Credit	Avere
 Credit card	Carta di credito
 Credit cards	Carte di credito
+Currency	Valuta
 Current account	Conto corrente
 Current accounts	Conti correnti
 Current balance	Saldo attuale
@@ -75,18 +93,24 @@ Current month	Mese corrente
 Current net worth: {amount}	Patrimonio netto attuale: {amount}
 Data file: {path}	Archivio: {path}
 Date	Data
+Debit	Dare
+Debits and credits must be equal.	Il totale dare e il totale avere devono essere uguali.
 December	dicembre
 Delete	Elimina
+Delete "{name}"	Elimina "{name}"
 Delete (its transactions stay, uncategorized)	Elimina (i movimenti restano senza categoria)
 Delete and start	Elimina e inizia
 Delete it and start with your own accounts	Eliminali e inizia con i tuoi conti
 Delete the account?	Eliminare il conto?
+Delete the entry?	Eliminare la registrazione?
 Delete the sample data?	Eliminare i dati di esempio?
 Deposit account	Conto deposito
 Description	Descrizione
 Details	Dettagli
 Details by category	Dettaglio per categoria
+Difference: {amount}	Differenza: {amount}
 Dinner	Cena
+Double-entry ledger: every amount has a debit and a credit	Partita doppia: ogni importo è in dare e in avere
 Downtown Supermarket	Supermercato Centro
 Edit account	Modifica conto
 Edit amount	Modifica importo
@@ -94,6 +118,10 @@ Edit transaction	Modifica movimento
 Education	Istruzione
 Electricity	Energia Elettrica
 Encoding {encoding} · separator «{separator}» · decimals with «{decimal}» · header {header}	Codifica {encoding} · separatore «{separator}» · decimali con «{decimal}» · intestazione {header}
+Entry	Registrazione
+Entry deleted	Registrazione eliminata
+Entry posted	Registrazione salvata
+Equity	Patrimonio netto
 Error: {error}	Errore: {error}
 Expenses	Uscite
 Expenses / debits	Uscite / Addebiti
@@ -133,6 +161,7 @@ Invert the sign (credit cards)	Inverti segno (carte di credito)
 Investment	Investimento
 Investments	Investimenti
 It works with CSV files exported from online banking: columns, separator, dates and Italian amounts are recognized. Transactions already imported are skipped.	Funziona con i CSV esportati dall'home banking: colonne, separatore, date e importi all'italiana vengono riconosciuti da soli. I movimenti già importati vengono saltati.
+Its {n} line will be deleted. This cannot be undone.	La sua riga verrà eliminata ({n}). Non si può annullare.
 January	gennaio
 July	luglio
 June	giugno
@@ -145,6 +174,7 @@ Last month	Mese scorso
 Latest transactions	Ultimi movimenti
 Left	Restano
 Leisure	Svago
+Liabilities	Passività
 Loan / mortgage	Prestito / mutuo
 Loans and mortgages	Prestiti e mutui
 Manage	Gestisci
@@ -164,11 +194,15 @@ Net worth	Patrimonio netto
 Net worth over time (12 months)	Andamento del patrimonio netto (12 mesi)
 Net worth: {amount}	Patrimonio netto: {amount}
 New account	Nuovo conto
+New account in the chart	Nuovo conto nel piano
 New budget:	Nuovo budget:
 New category:	Nuova categoria:
+New entry	Nuova registrazione
+New entry in the ledger (⌘J)	Nuova registrazione in partita doppia (⌘J)
 New scheduled transaction	Nuovo movimento pianificato
 New transaction	Nuovo movimento
 New transaction (⌘N)	Nuovo movimento (⌘N)
+Newer	Più recenti
 Next	Prossima
 No budget set.	Nessun budget impostato.
 No budgets: add one below.	Nessun budget: aggiungine uno qui sotto.
@@ -177,23 +211,32 @@ No scheduled transactions.	Nessun movimento pianificato.
 No transactions in this period.	Nessun movimento in questo periodo.
 None	Nessuna
 Notes	Note
+Nothing has been recorded yet.	Non è ancora stato registrato nulla.
 November	novembre
 October	ottobre
+Older	Meno recenti
 Only uncategorized	Solo senza categoria
+Opening balance	Saldo iniziale
 Opening balance €	Saldo iniziale €
+Opening balances	Saldi iniziali
 Organize	Organizza
 Other	Altro
 Other expenses	Altre spese
 Other income	Altre entrate
 Overview	Panoramica
+Page {n}	Pagina {n}
 Payee	Beneficiario
+Post	Registra
 Ready: create your first account or import a CSV	Pronto: crea il tuo primo conto o importa un CSV
 Record	Registra
 Recurring transactions and due dates	Movimenti ricorrenti e scadenze
 Refueling	Rifornimento
 Refunds	Rimborsi
 Remove budget	Rimuovi budget
+Remove the line	Togli la riga
 Rename	Rinomina
+Rename "{name}"	Rinomina "{name}"
+Rename the account	Rinomina il conto
 Rename to	Rinomina in
 Repeat every	Ripeti ogni
 Repetition	Ripetizione
@@ -216,12 +259,18 @@ Scheduled transaction deleted	Pianificato eliminato
 See all	Vedi tutti
 See the transactions	Vedi i movimenti
 September	settembre
+Show its entries	Mostra le sue registrazioni
+Show the entry	Mostra la registrazione
 Sort them out	Sistemali
 Spent	Speso
+Split	Suddiviso
+Split over several accounts: amount and category cannot be changed here.	Suddiviso su più conti: importo e categoria non si possono modificare qui.
 Square Café	Bar Piazza
 Subscriptions	Abbonamenti
 System	Sistema
 The account "{name}" and all its transactions will be deleted. This cannot be undone.	Il conto "{name}" e tutti i suoi movimenti saranno eliminati. Non si può annullare.
+The books are sound: {entries} entries, {postings} postings	I conti quadrano: {entries} registrazioni, {postings} righe
+The other side of its transfers stays in the other account, against the opening balances: no other balance changes.	L'altro lato dei suoi giroconti resta nell'altro conto, contro i saldi iniziali: nessun altro saldo cambia.
 The picture cannot be saved: {error}	Errore nel salvare l'immagine: {error}
 They categorize imported transactions	Assegnano la categoria ai movimenti importati
 This month	Questo mese
@@ -243,9 +292,11 @@ Transport:Car	Trasporti:Auto
 Transport:Fuel	Trasporti:Carburante
 Transport:Public transport	Trasporti:Mezzi pubblici
 Travel	Viaggi
+Trial balance	Bilancio di verifica
 Two-monthly bill	Bolletta bimestrale
 Type	Tipo
 Uncategorized	Senza categoria
+Under	Sotto
 Upcoming	Prossime scadenze
 Video streaming	Streaming Video
 Wallet	Portafoglio
@@ -254,27 +305,50 @@ When the payee or the description contains one of the keywords (separated by | )
 Where your money goes	Dove vanno i tuoi soldi
 Works from the terminal (cashcraft-cli --help) and over MCP (cashcraft-cli mcp)	Pilotabile da terminale (cashcraft-cli --help) e da MCP (cashcraft-cli mcp)
 [Transfer] {account}	[Giroconto] {account}
+a line is in debit or in credit, not both	una riga è in dare o in avere, non entrambi
+a posting in {currency} on an account in another currency	riga in {currency} su un conto in un'altra valuta
+a transfer between accounts in different currencies ({from} and {to}) is not supported	i giroconti tra conti in valute diverse ({from} e {to}) non sono possibili
 access denied: "{path}" is outside the allowed read folder	accesso negato: "{path}" è fuori dalla cartella di lettura consentita
 access denied: "{path}" is outside the allowed write folder	accesso negato: "{path}" è fuori dalla cartella di scrittura consentita
 account "{name}" deleted	conto "{name}" eliminato
+account "{name}" is not in the chart of accounts	il conto "{name}" non è nel piano dei conti
 account "{name}" not found	conto "{name}" non trovato
 account created	conto creato
+account of the chart deleted	conto del piano eliminato
+account renamed	conto rinominato
+account {id} has no proper account in the chart	il conto {id} non ha il suo conto nel piano
+account {id} of the chart of accounts not found	conto {id} del piano dei conti non trovato
+account {id} of the chart of accounts stands for nothing	il conto {id} del piano dei conti non corrisponde a nulla
 all accounts	tutti i conti
 amount a month	importo al mese
+an account has the class of the one above it	un conto ha la classe di quello che lo contiene
+an entry has at most {n} postings	una registrazione ha al massimo {n} righe
+an entry in several currencies needs the currency of each posting	in una registrazione in più valute va indicata la valuta di ogni riga
+an entry needs at least two postings	una registrazione ha almeno due righe
+an income or expense account has no currency of its own	un conto di entrata o di uscita non ha una valuta propria
 budget of "{category}": {amount} a month	budget di "{category}": {amount} al mese
 cannot create {path}	impossibile creare {path}
 cannot open {path}	impossibile aprire {path}
 cannot read {path}	impossibile leggere {path}
 category "{name}" deleted	categoria "{name}" eliminata
 category "{name}" not found	categoria "{name}" non trovata
+category {id} has no proper account in the chart	la categoria {id} non ha il suo conto nel piano
 choose an account	scegli un conto
 choose the account	scegli il conto
 choose the account to transfer from	scegli il conto di origine
 choose the account to transfer to	scegli il conto di destinazione
 column "{name}" is not in the file	colonna "{name}" non trovata nel file
+currency of "{name}" changed	valuta di "{name}" modificata
 days	giorni
 e.g. Main account	es. Conto principale
 enter an amount	inserisci un importo
+entries across currencies are not supported: in {currency} debits are {debit} and credits {credit}	le registrazioni tra valute diverse non sono possibili: in {currency} il dare è {debit} e l'avere {credit}
+entry posted	registrazione salvata
+entry {id} deleted	registrazione {id} eliminata
+entry {id} does not balance	la registrazione {id} non quadra
+entry {id} has fewer than two postings	la registrazione {id} ha meno di due righe
+entry {id} is not a sound opening balance	la registrazione {id} non è un saldo iniziale corretto
+entry {id} not found	registrazione {id} non trovata
 every day	ogni giorno
 every month	ogni mese
 every week	ogni settimana
@@ -296,48 +370,79 @@ months	mesi
 name	nome
 no	no
 on row {n}	alla riga {n}
+only a posting on a category can be given another one	solo una riga su una categoria può cambiare categoria
+only accounts added to the chart by hand can be changed here	qui si modificano solo i conti aggiunti a mano al piano
 optional	facoltativo
 or into a new account:	oppure in un nuovo conto:
+posting {id} categorized	categoria della riga {id} aggiornata
+posting {id} has no entry or no account	la riga {id} non ha registrazione o non ha conto
+posting {id} is not in the currency of its account	la riga {id} non è nella valuta del suo conto
+posting {id} not found	riga {id} non trovata
 rename payee (optional)	rinomina beneficiario (facoltativo)
 rule deleted	regola eliminata
 scheduled transaction deleted	pianificato eliminato
+several accounts of the chart are called "{name}": {which}	più conti del piano si chiamano "{name}": {which}
 sum {amount}	somma {amount}
 the JSON arguments are not valid: {error}	argomenti JSON non validi: {error}
+the account is in use: it has entries or accounts under it	il conto è in uso: ha registrazioni o conti al suo interno
+the account needs a class or an account above it	indica la classe del conto o il conto che lo contiene
 the account needs a name	il nome del conto è obbligatorio
 the account to transfer from does not exist	conto di origine inesistente
 the account to transfer to does not exist	conto di destinazione inesistente
 the amount column was not found: give it with amount_column or credit_column/debit_column	non trovo la colonna dell'importo: indicala con amount_column o credit_column/debit_column
 the amount is empty	importo vuoto
 the amount is not valid	importo non valido
+the amount is too large	l'importo è troppo grande
+the amounts in the data file are too large	gli importi dell'archivio sono troppo grandi
+the backup copy is not sound	la copia di sicurezza non è integra
+the balance of "{name}" would change	il saldo di "{name}" cambierebbe
+the balance of an account would be too large	il saldo di un conto diventerebbe troppo grande
 the category needs a name	nome di categoria vuoto
+the code "{code}" is already in use	il codice "{code}" è già usato
+the currency "{currency}" is not a code of three letters, like EUR	la valuta "{currency}" non è un codice di tre lettere, come EUR
+the currency cannot be changed: entry {id} of {date} also moves another account	la valuta non si può cambiare: la registrazione {id} del {date} muove anche un altro conto
+the data file cannot be updated to the new format; nothing was changed	l'archivio non può essere aggiornato al nuovo formato; nulla è stato modificato
+the data file must be updated to a new format, but a backup copy of it cannot be made; nothing was changed	l'archivio va aggiornato a un nuovo formato, ma non se ne può fare una copia di sicurezza; nulla è stato modificato
 the data file was written by a newer version of CashCraft (format {version})	l'archivio è stato scritto da una versione più recente di CashCraft (formato {version})
 the date column was not found: give it with date_column	non trovo la colonna della data: indicala con date_column
 the date is not valid	data non valida
 the date is not valid (yyyy-mm-dd)	data non valida (gg/mm/aaaa)
+the entry does not balance: debits {debit}, credits {credit} ({currency})	la registrazione non quadra: dare {debit}, avere {credit} ({currency})
 the file "{path}" cannot be read: {error}	file "{path}" non leggibile: {error}
 the workbook is empty	la cartella di lavoro è vuota
 the file is empty or is not a CSV	il file è vuoto o non è un CSV
 the folder "{path}" cannot be used: {error}	cartella "{path}" non valida: {error}
 the folder of "{path}" cannot be used: {error}	cartella di "{path}" non valida: {error}
+the name of an account cannot contain a colon	il nome di un conto non può contenere i due punti
 the numeric parameter "{name}" is missing	manca il parametro numerico "{name}"
+the opening balance is changed in the account	il saldo iniziale si modifica nel conto
 the parameter "{name}" is missing	manca il parametro "{name}"
 the path "{path}" has no file name	percorso "{path}" senza nome di file
 the path "{path}" is not valid	percorso "{path}" non valido
 the picture is not valid	immagine non valida
 the repetition goes from 1 to 1000	la ripetizione va da 1 a 1000
 the rule needs a keyword	la parola chiave della regola è vuota
+the sum of the amounts is too large	la somma degli importi è troppo grande
+the sum of the postings is not the one on record	la somma delle righe non è quella annotata
+the transaction is split over several accounts: its amount and category cannot be changed here	il movimento è suddiviso su più conti: importo e categoria non si possono modificare qui
 the transaction was not saved	movimento non salvato
 the two accounts of the transfer are the same	il conto di origine e di destinazione coincidono
 the window cannot be opened: {error}	impossibile aprire la finestra: {error}
+there are too many backup copies	ci sono troppe copie di sicurezza
+there are too many levels of accounts	ci sono troppi livelli di conti
+this account cannot have accounts under it	questo conto non può contenerne altri
 to categorize	da categorizzare
+transaction {id}	movimento {id}
 transaction {id} deleted	movimento {id} eliminato
 transaction {id} not found	movimento {id} non trovato
 transaction {id} not found (or it is a transfer)	movimento {id} non trovato (o è un giroconto)
 transfer recorded	giroconto registrato
 trial data in memory	archivio di prova in memoria
 unknown account type "{kind}"	tipo di conto "{kind}" sconosciuto
+unknown class of account "{class}"	classe di conto "{class}" sconosciuta
 unknown operation "{name}"	operazione "{name}" sconosciuta
 unknown repetition unit "{unit}" (day, week, month, year)	unità di ripetizione "{unit}" sconosciuta (giorno, settimana, mese, anno)
+up to	fino al
 weeks	settimane
 write a description	scrivi una descrizione
 write the payee or a description	scrivi il beneficiario o una descrizione
@@ -350,6 +455,10 @@ yyyy-mm-dd	gg/mm/aaaa
 {amount} over budget	sforato di {amount}
 {n} already present (skipped)	{n} già presenti (saltati)
 {n} categorized automatically by the rules	{n} categorizzati automaticamente dalle regole
+{n} line of its entry	{n} riga della sua registrazione
+{n} lines of its entry	{n} righe della sua registrazione
+{n} problem found in the books	{n} problema nei conti
+{n} problems found in the books	{n} problemi nei conti
 {n} row was not a transaction (balances, totals…)	{n} riga non era un movimento (saldi, totali…)
 {n} rows were not transactions (balances, totals…)	{n} righe non erano movimenti (saldi, totali…)
 {n} transaction	{n} movimento
@@ -378,6 +487,7 @@ yyyy-mm-dd	gg/mm/aaaa
 ✏ Edit	✏ Modifica
 ✏ Edit account…	✏ Modifica conto…
 ✏ Edit…	✏ Modifica…
+✔ Check the books	✔ Verifica i conti
 ✔ Import completed	✔ Importazione completata
 ✔ Mark as cleared	✔ Segna come verificato
 ✔ Record what is due up to today ({n})	✔ Registra le scadenze fino a oggi ({n})
@@ -387,6 +497,7 @@ yyyy-mm-dd	gg/mm/aaaa
 ⬇ Import a CSV statement	⬇ Importa un estratto conto CSV
 🏷 Category	🏷 Categoria
 📂 Choose file…	📂 Scegli file…
+📖 Entry…	📖 Registrazione…
 🔁 Transfer	🔁 Giroconto
 🔍 Search payee, notes, amount…	🔍 Cerca beneficiario, note, importo…
 🗑 Delete	🗑 Elimina

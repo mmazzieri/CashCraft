@@ -6,6 +6,8 @@ pub mod db;
 pub mod demo;
 pub mod i18n;
 pub mod importer;
+pub mod ledger;
+mod migrate;
 pub mod money;
 pub mod ops;
 mod paths;

@@ -4,6 +4,7 @@ Notes for people and coding agents working on CashCraft. The shared rules for Cr
 
 - Layout: `crates/engine` (data file, bank statement import, operations; no window), `crates/ui-egui` (interface), `crates/icon` (the icon, drawn by code), `apps/cashcraft` (desktop shell), `apps/cashcraft-cli` (command line and MCP server), `xtask/`, `packaging/`.
 - **Amounts are exact.** `Cents` is an integer; no amount goes through floating point. Negative is money going out.
+- **Debits equal credits.** Every amount is a posting of the ledger ([docs/ledger.md](docs/ledger.md)); only `Db::save_entry` writes postings. A test that changes the books ends with `assert_sound`.
 - **All or nothing.** A change made of several writes runs inside `Db::atomically`.
 - The data file format is numbered in `PRAGMA user_version` (`SCHEMA_VERSION`). A change to the tables raises it, migrates older files and comes with a test that opens one. A file from a newer version is refused, never rewritten.
 - Every operation is in `ops.rs` as JSON in, JSON out, shared by the command line and MCP. `ops::Roots` confines MCP file access; the MCP server refuses to start without both roots.

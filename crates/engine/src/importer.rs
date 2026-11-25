@@ -541,9 +541,7 @@ pub fn import_rows(db: &Db, account_id: i64, rows: &[ParsedRow], skipped: usize)
             match id {
                 Some(id) => {
                     res.added += 1;
-                    let cat: Option<i64> =
-                        db.conn.query_row("SELECT category_id FROM transactions WHERE id=?1", [id], |r| r.get(0))?;
-                    if cat.is_some() {
+                    if db.category_of(id)?.is_some() {
                         res.categorized += 1;
                     }
                 }

@@ -3,6 +3,7 @@
 
 mod dialogs;
 pub mod gui;
+mod ledger;
 mod views;
 
 #[cfg(test)]
