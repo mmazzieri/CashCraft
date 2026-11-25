@@ -425,7 +425,10 @@ impl App {
     pub fn file_window(&mut self, ctx: &egui::Context) {
         let (Some(mut w), Some(home)) = (self.file.window.take(), self.file.home.clone()) else { return };
         if let Some(info) = w.asking.as_ref().and_then(|r| r.try_recv().ok()) {
-            w.error.clone_from(&info.error);
+            // What is said already stays.
+            if !info.error.is_empty() {
+                w.error.clone_from(&info.error);
+            }
             (w.asking, w.info) = (None, Some(info));
         }
         if w.asking.is_some() || self.file.opening.is_some() {
@@ -901,7 +904,12 @@ mod tests {
             app.file.shared.is_some()
         });
         assert!(has(&app.db, "x"));
-        until("removed", || !old.exists());
+        until("removed", || {
+            let toast = app.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+            frame(&ctx, &mut app, 1.2, true);
+            assert!(!toast.contains("left where"), "{toast}");
+            !old.exists()
+        });
         assert_eq!(home.recent(), Some(store::resolved(&p.file())));
         app.keep_in(&home, p.0.join("folder"), false);
         app.open_file_window();

@@ -319,6 +319,7 @@ the data file was moved to {path}	l'archivio è stato spostato in {path}
 The data was changed on another computer.	I dati sono stati modificati su un altro computer.
 The entries are the same; something else is different, such as names, budgets or rules.	Le registrazioni sono le stesse; è diverso qualcos'altro, come nomi, budget o regole.
 the folder {path} is not there	la cartella {path} non c'è
+the log does not go with the data file, which was left as it is: it is now in the private folder	il registro non va con l'archivio, che è rimasto com'era: ora è nella cartella privata
 the log held nothing more: it is now in the private folder	il registro non conteneva altro: ora è nella cartella privata
 the old data file was changed or is open in another program: it was left where it is	il vecchio archivio è cambiato o è aperto in un altro programma: è rimasto dov'è
 The old one stays: {path}	Quello vecchio resta: {path}

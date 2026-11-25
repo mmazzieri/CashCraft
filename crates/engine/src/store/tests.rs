@@ -591,6 +591,7 @@ fn nothing_opens_the_shared_file_in_place() {
     let two = Shared::new(&home, &p.file());
     let done = two.recover().unwrap();
     assert_eq!(std::fs::read(p.file()).unwrap(), before[0].1, "{done:?}");
+    assert_ne!(done, Recovered::Same);
     assert_eq!(std::fs::read(two.dir.join("recovered-1").join("before.db-journal")).unwrap(), journal);
     assert_eq!(payees_of(&p.file()), set(&["first", "later 1", "later 2"]));
     let sources = [

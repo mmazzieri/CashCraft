@@ -1358,7 +1358,8 @@ impl Shared {
         let _ = std::fs::remove_file(content::log(&self.path, "-shm"));
         Ok(match version {
             Some(name) => Recovered::Beside(name),
-            None => Recovered::Same,
+            None if with.is_ok() => Recovered::Same,
+            None => Recovered::Useless,
         })
     }
 
@@ -1403,8 +1404,10 @@ impl Shared {
 pub enum Recovered {
     /// There is none.
     Nothing,
-    /// With it the file is the same, or it cannot be used: it is in the private folder.
+    /// With it the file is the same.
     Same,
+    /// Nothing sound comes of it with this file.
+    Useless,
     /// What it would give is in this file, beside.
     Beside(String),
 }
@@ -1413,6 +1416,10 @@ impl Recovered {
     pub fn text(&self) -> String {
         match self {
             Recovered::Nothing => tr("there is no log beside the data file").into(),
+            Recovered::Useless => {
+                tr("the log does not go with the data file, which was left as it is: it is now in the private folder")
+                    .into()
+            }
             Recovered::Same => tr("the log held nothing more: it is now in the private folder").into(),
             Recovered::Beside(name) => trf(
                 "the data file was left as it is; what it is with the log is in \"{name}\", beside it: open it, and keep the one you want",
