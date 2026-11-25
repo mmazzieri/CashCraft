@@ -1,6 +1,7 @@
 //! CashCraft's interface.
 #![forbid(unsafe_code)]
 
+mod datafile;
 mod dialogs;
 pub mod gui;
 mod ledger;

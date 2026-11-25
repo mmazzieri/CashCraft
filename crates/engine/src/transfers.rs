@@ -258,8 +258,11 @@ impl Db {
                 [t.entry_id],
             )?;
             let spare = self.system_ledger(UNCATEGORIZED)?;
-            let last: i64 = self.conn.query_row("SELECT MAX(id) FROM book_postings", [], |r| r.get(0))?;
             // Ids above every other: that of the side that leaves must not be taken.
+            let last = match self.new_id("book_postings")? {
+                Some(id) => id,
+                None => self.conn.query_row("SELECT MAX(id) FROM book_postings", [], |r| r.get(0))?,
+            };
             let next = |n: i64| last.checked_add(n).ok_or_else(too_big);
             let alone = |l: &Line, entry: Option<i64>, counter: i64| -> Draft {
                 Draft {

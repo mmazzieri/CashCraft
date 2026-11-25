@@ -78,7 +78,9 @@ The server refuses to start without both folders:
 - Relative paths start from that folder. Paths that lead outside it, including through `..`
   or symbolic links, are refused with an error the agent can read.
 
-The data file itself is chosen by whoever starts the server (`--db` or `CASHCRAFT_DB`).
+The data file itself is chosen by whoever starts the server (`--db` or `CASHCRAFT_DB`, else the one chosen last). For one in a synced folder ([data-file.md](data-file.md)) each call first takes what
+other computers wrote and then writes what it changed; when something must be known, such as a conflict or changes that wait,
+the result has it in `data_file` and as text. Ids stay good when another computer changes the data. `cashcraft-cli data status` says more.
 
 ## Client configuration
 

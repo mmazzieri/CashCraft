@@ -446,8 +446,10 @@ impl Db {
                 }
                 None => {
                     self.conn
-                        .prepare_cached("INSERT INTO entries(date,payee,memo,opening_account_id) VALUES(?1,?2,?3,?4)")?
-                        .execute(params![d.date, d.payee, d.memo, d.opening])?;
+                        .prepare_cached(
+                            "INSERT INTO entries(id,date,payee,memo,opening_account_id) VALUES(?1,?2,?3,?4,?5)",
+                        )?
+                        .execute(params![self.new_id("entries")?, d.date, d.payee, d.memo, d.opening])?;
                     self.conn.last_insert_rowid()
                 }
             };
@@ -487,6 +489,7 @@ impl Db {
                         id
                     }
                     wanted => {
+                        let wanted = wanted.map_or_else(|| self.new_id("book_postings"), |id| Ok(Some(id)))?;
                         self.conn
                             .prepare_cached(
                                 "INSERT INTO book_postings(id,entry_id,ledger_account_id,amount,currency,cleared,
@@ -1125,11 +1128,8 @@ impl Db {
                 if currency.is_some_and(|c| !c.trim().is_empty()) {
                     bail!(tr("an income or expense account has no currency of its own"));
                 }
-                self.conn.execute(
-                    "INSERT INTO categories(name,parent_id,is_income) VALUES(?1,?2,?3)",
-                    params![name, above.and_then(|p| p.category_id), (class == Class::Income) as i64],
-                )?;
-                self.category_ledger(Some(self.conn.last_insert_rowid()))?
+                let parent = above.and_then(|p| p.category_id);
+                self.category_ledger(Some(self.insert_category(name, parent, class == Class::Income)?))?
             } else {
                 let inherited = above.and_then(|p| p.currency.clone());
                 let currency = match currency.filter(|c| !c.trim().is_empty()) {
@@ -1137,8 +1137,8 @@ impl Db {
                     None => check_currency(&inherited.unwrap_or_default())?,
                 };
                 self.conn.execute(
-                    "INSERT INTO ledger_accounts(class,parent_id,name,currency) VALUES(?1,?2,?3,?4)",
-                    params![class.code(), parent, name, currency],
+                    "INSERT INTO ledger_accounts(id,class,parent_id,name,currency) VALUES(?1,?2,?3,?4,?5)",
+                    params![self.new_id("ledger_accounts")?, class.code(), parent, name, currency],
                 )?;
                 self.conn.last_insert_rowid()
             };

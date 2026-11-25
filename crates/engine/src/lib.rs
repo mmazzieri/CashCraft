@@ -18,6 +18,7 @@ pub mod ops;
 mod paths;
 pub mod pdf;
 pub mod rules;
+pub mod store;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 pub mod transfers;
