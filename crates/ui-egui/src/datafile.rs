@@ -748,6 +748,7 @@ impl Start {
 impl eframe::App for Start {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.poll(ui.ctx());
+        crate::gui::set_dark(ui.visuals().dark_mode);
         match &mut self.app {
             Some(app) => app.ui(ui, frame),
             None => {

@@ -757,7 +757,7 @@ fn both_themes_keep_text_readable() {
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
     }
     for p in [&LIGHT, &DARK] {
-        for bg in [p.bg, p.card, p.sidebar, p.zebra] {
+        for bg in [p.bg, p.card, p.sidebar, p.zebra, p.accent_soft] {
             assert!(contrast(p.text, bg) >= 4.5);
             assert!(contrast(p.muted, bg) >= 4.5);
         }

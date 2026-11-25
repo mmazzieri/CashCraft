@@ -75,7 +75,7 @@ pub static LIGHT: Palette = Palette {
     field: Color32::WHITE,
     border: Color32::from_rgb(0xE1, 0xE5, 0xE4),
     text: Color32::from_rgb(0x22, 0x2B, 0x2A),
-    muted: Color32::from_rgb(0x63, 0x6E, 0x6C),
+    muted: Color32::from_rgb(0x60, 0x6B, 0x69),
     green: Color32::from_rgb(0x1B, 0x80, 0x47),
     green_fill: Color32::from_rgb(0x1B, 0x80, 0x47),
     red: Color32::from_rgb(0xC6, 0x3B, 0x34),
