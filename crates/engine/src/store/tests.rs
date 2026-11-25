@@ -653,7 +653,11 @@ fn putting_back_forgets_nothing_when_it_fails() {
     sb.sync().unwrap();
     let report = sa.sync().unwrap();
     assert_eq!((report.conflict, report.adopted), (None, true));
-    std::fs::remove_file(p.file()).unwrap();
+    // In the cloud, and not here.
+    let stub = p.folder().join(".books.db.icloud");
+    std::fs::rename(p.file(), &stub).unwrap();
+    assert!(!sa.is_missing() && sa.put_back().is_err() && !p.file().exists());
+    std::fs::remove_file(stub).unwrap();
     assert!(sa.is_missing());
     let mut steps = 0;
     for n in 0.. {
