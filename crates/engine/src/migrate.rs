@@ -6,6 +6,7 @@ use crate::db::{Cents, Db, RENAMED, SCHEMA, SCHEMA_VERSION};
 use crate::i18n::{tr, trf};
 use crate::layouts::LAYOUT_SCHEMA;
 use crate::ledger::{ADDED, CARD_ROW, Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
+use crate::rules::RULE_SCHEMA;
 use anyhow::{Context, Result, bail};
 use rusqlite::backup::Backup;
 use rusqlite::{Connection, OpenFlags, params};
@@ -119,16 +120,16 @@ impl Db {
     /// Turns the tables of an older format into the present one. Runs inside the transaction of `init`, which
     /// holds the write lock: nobody changes the file between the backup and the end.
     pub(crate) fn migrate(&self, version: i64) -> Result<()> {
-        // Format 7 gave the table of the postings another name.
-        let renamed = self.has_table("ledger_postings")?;
-        let again = renamed || self.has_table("postings")?;
+        // Formats 7 and 8 gave the table of the postings another name.
+        let renamed = self.has_table("book_postings")?;
+        let seventh = self.has_table("ledger_postings")?;
+        let again = renamed || seventh || self.has_table("postings")?;
         let dated = again && self.has_posting_column("date")?;
         let marked = dated && self.has_posting_column("origin")?;
         let cards = again && self.has_table("card_statements")?;
         // Format 4 had the statements, without the marks.
         let sound_cards = marked && cards && !self.has_column("card_statements", "payment_joined")?;
-        let current =
-            sound_cards && renamed && self.has_posting_column("other_hashes")? && self.has_table("csv_layouts")?;
+        let current = sound_cards && renamed && self.has_table("transaction_rules")?;
         if current && !self.has_leftovers()? {
             return self.drop_leftovers();
         }
@@ -136,6 +137,7 @@ impl Db {
         let from = match (again, dated, current) {
             (false, _, _) => 1,
             (_, false, _) => 2,
+            (_, _, false) if seventh => 7,
             (_, _, false) if sound_cards => 6,
             (_, _, false) if marked => 5,
             (_, _, false) if cards => 4,
@@ -154,18 +156,22 @@ impl Db {
             }
             if again && !renamed {
                 // A window of an older program that has the file open can read and write no posting from now on.
-                self.conn.execute_batch("ALTER TABLE postings RENAME TO ledger_postings")?;
+                let old = if seventh { "ledger_postings" } else { "postings" };
+                self.conn.execute_batch(&format!("ALTER TABLE {old} RENAME TO book_postings"))?;
             }
-            if again && !self.has_posting_column("other_hashes")? {
-                self.conn.execute_batch("ALTER TABLE ledger_postings ADD COLUMN other_hashes TEXT")?;
+            for name in ["other_hashes", "original_payee", "original_memo", "tags", "rules"] {
+                if again && !self.has_posting_column(name)? {
+                    self.conn.execute_batch(&format!("ALTER TABLE book_postings ADD COLUMN {name} TEXT"))?;
+                }
             }
             if again && !dated {
-                self.conn.execute_batch("ALTER TABLE ledger_postings ADD COLUMN date TEXT")?;
+                self.conn.execute_batch("ALTER TABLE book_postings ADD COLUMN date TEXT")?;
             }
             if again && !marked {
-                self.conn.execute_batch("ALTER TABLE ledger_postings ADD COLUMN origin TEXT")?;
+                self.conn.execute_batch("ALTER TABLE book_postings ADD COLUMN origin TEXT")?;
                 self.repair_dates()?;
             }
+            self.move_rules()?;
             if again && self.has_leftovers()? {
                 self.merge_leftovers()?;
             }
@@ -191,7 +197,28 @@ impl Db {
     }
 
     fn has_posting_column(&self, name: &str) -> Result<bool> {
-        Ok(self.has_column("postings", name)? || self.has_column("ledger_postings", name)?)
+        for table in ["postings", "ledger_postings", "book_postings"] {
+            if self.has_column(table, name)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The rules of formats 0 to 7, with their ids and in their order. The old table goes, so that an older
+    /// program with the file open can apply none.
+    fn move_rules(&self) -> Result<()> {
+        self.conn.execute_batch(RULE_SCHEMA)?;
+        if self.has_table("category_rules")? {
+            // A rule of a category that is not there assigned nothing.
+            self.conn.execute_batch(
+                "INSERT INTO transaction_rules(id, position, pattern, category_id, rename_payee)
+                 SELECT id, id, pattern, category_id, rename_payee FROM category_rules
+                 WHERE category_id IN (SELECT id FROM categories) ORDER BY id;
+                 DROP TABLE category_rules;",
+            )?;
+        }
+        Ok(())
     }
 
     fn has_column(&self, table: &str, name: &str) -> Result<bool> {
@@ -214,7 +241,7 @@ impl Db {
         }
         // Their rows cannot be told from others imported on those cards: none is proposed as a payment.
         let mut st = self.conn.prepare(
-            "SELECT DISTINCT p.entry_id FROM ledger_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+            "SELECT DISTINCT p.entry_id FROM book_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
              WHERE p.import_hash IS NOT NULL AND p.origin IS NULL
                AND l.money_account_id IN (SELECT account_id FROM card_statements)",
         )?;
@@ -239,7 +266,7 @@ impl Db {
 
     /// Format 3 left the date of a side that had lost the other one apart from the entry's.
     fn repair_dates(&self) -> Result<()> {
-        let mut st = self.conn.prepare("SELECT DISTINCT entry_id FROM ledger_postings WHERE date IS NOT NULL")?;
+        let mut st = self.conn.prepare("SELECT DISTINCT entry_id FROM book_postings WHERE date IS NOT NULL")?;
         let entries: Vec<i64> = st.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
         for id in entries {
             self.save_entry(&self.load_draft(id)?)?;
@@ -250,7 +277,7 @@ impl Db {
     /// Sides of transfers that were never imported.
     fn mark_added_sides(&self) -> Result<()> {
         let mut st = self.conn.prepare(
-            "SELECT entry_id FROM ledger_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+            "SELECT entry_id FROM book_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
              GROUP BY entry_id HAVING COUNT(*)=2 AND SUM(l.money_account_id IS NOT NULL)=2
                 AND COUNT(p.import_hash)<2 AND COUNT(p.payee)>0",
         )?;
@@ -287,14 +314,14 @@ impl Db {
     fn merge_leftovers(&self) -> Result<()> {
         let mut rows = self.old_rows()?;
         // Their ids are taken by now.
-        let used: i64 = self.conn.query_row("SELECT COALESCE(MAX(id),0) FROM ledger_postings", [], |r| r.get(0))?;
+        let used: i64 = self.conn.query_row("SELECT COALESCE(MAX(id),0) FROM book_postings", [], |r| r.get(0))?;
         for r in &mut rows {
             r.id = r.id.checked_add(used).ok_or_else(too_big)?;
             r.peer = r.peer.map(|p| p.checked_add(used).ok_or_else(too_big)).transpose()?;
         }
         // A statement imported by both is in the ledger already.
         let mut known = self.conn.prepare(
-            "SELECT 1 FROM ledger_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+            "SELECT 1 FROM book_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
              WHERE l.money_account_id=?1 AND p.import_hash=?2",
         )?;
         let mut kept = Vec::new();
@@ -306,9 +333,16 @@ impl Db {
         self.convert_rows(&kept)?;
         for (old, new) in RENAMED {
             if self.has_table(old)? {
+                if old == "rules" {
+                    self.conn.execute_batch(
+                        "INSERT INTO transaction_rules(position, pattern, category_id, rename_payee)
+                         SELECT (SELECT COALESCE(MAX(position), 0) FROM transaction_rules) + id, pattern, category_id,
+                                rename_payee FROM rules ORDER BY id",
+                    )?;
+                    continue;
+                }
                 let columns = match old {
                     "budgets" => "category_id, monthly",
-                    "rules" => "pattern, category_id, rename_payee",
                     _ => "account_id, to_account_id, amount, payee, memo, category_id, next_date, every, unit",
                 };
                 self.conn.execute_batch(&format!(
@@ -475,9 +509,7 @@ impl Db {
                         import_hash: p.import_hash.clone(),
                         payee: Some(p.payee.clone()),
                         memo: Some(p.memo.clone()).filter(|m| *m != r.memo),
-                        date: None,
-                        origin: None,
-                        other_hashes: None,
+                        ..Default::default()
                     });
                 }
                 None => {

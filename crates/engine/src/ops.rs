@@ -11,6 +11,7 @@ use crate::ledger::{
     Class, Entry, EntryFilter, MAX_LINES, NewEntry, NewLine, TrialBalance, find_ledger_account, too_big,
 };
 use crate::money::{DateOrder, checked_total, fmt_date, fmt_eur, fmt_machine, fmt_plain, parse_amount, parse_date};
+use crate::rules::{self, Place, Rule, Scope, Sign};
 use crate::transfers::OtherSide;
 use anyhow::{Result, anyhow, bail};
 use chrono::{Datelike, Months, NaiveDate};
@@ -45,7 +46,139 @@ const STATEMENT: &str =
 const DECIMALS: &str = "Decimal separator of the file: \",\", \".\" or \"auto\".";
 const DATES: &str = "Order of the dates of the file: dmy, mdy, ymd or auto.";
 const SAVED: &str = "Use and remember the columns of this layout in this account (default true); false starts from those detected and remembers nothing.";
+const TAGS: &str = "Tags separated by commas.";
+const SCOPE: &str = "uncategorized (default): transactions without a category; all: the others too, for tags, payees and the categories that rules set.";
+const OVERWRITE: &str = "With scope all, also categories and payees set by hand; only if the user asked.";
 const CATEGORY: &str = "Category: id, name or path \"Parent:Child\" (e.g. \"Home:Utilities\").";
+
+/// The parameters of a rule, with others.
+fn rule_properties(mut others: Value) -> Value {
+    let rule = json!({"keywords": s("Text to find in the payee or the notes: keywords separated by | (e.g. \"bakery|panificio\")."),
+        "payee": s("The same, in the payee alone."), "memo": s("The same, in the notes alone."),
+        "regex": b("The texts are regular expressions (whatever the case) instead of keywords."),
+        "min_amount": s("Smallest amount, whatever the sign, included."), "max_amount": s("Largest amount, included."),
+        "sign": s("any, in (money in) or out (money out)."), "account": s("Only transactions of this account: numeric id or name."),
+        "category": s(CATEGORY), "tags": s(TAGS),
+        "rename_payee": s("New name of the payee; with regex $1 or ${name} is what a group matched (of the payee's expression, else of the keywords', else of the notes'), $$ a dollar.")});
+    if let (Some(o), Value::Object(r)) = (others.as_object_mut(), rule) {
+        o.extend(r);
+    }
+    others
+}
+
+/// A rule with what the call gives.
+fn rule_arg(db: &Db, mut r: Rule, a: &Value) -> Result<Rule> {
+    for (k, slot) in [
+        ("keywords", &mut r.pattern),
+        ("payee", &mut r.payee),
+        ("memo", &mut r.memo),
+        ("rename_payee", &mut r.rename_payee),
+    ] {
+        if let Some(t) = opt_str(a, k) {
+            *slot = t;
+        }
+    }
+    if let Some(x) = given_bool(a, "regex")? {
+        r.regex = x;
+    }
+    for (k, slot) in [("min_amount", &mut r.amount_min), ("max_amount", &mut r.amount_max)] {
+        match a.get(k) {
+            None | Some(Value::Null) => {}
+            Some(Value::String(t)) if t.trim().is_empty() => *slot = None,
+            Some(v) => *slot = Some(exact_amount(v)?),
+        }
+    }
+    if let Some(t) = opt_str(a, "sign") {
+        r.sign = Sign::from_code(&t)
+            .ok_or_else(|| anyhow!(trf("\"{text}\" is not a sign: use any, in or out", &[("text", &t)])))?;
+    }
+    if let Some(t) = opt_str(a, "account") {
+        let found = if t.trim().is_empty() { None } else { Some(db.find_account(&t)?) };
+        r.account = found.as_ref().map(|x| x.name.clone()).unwrap_or_default();
+        r.account_id = found.map(|x| x.id);
+    }
+    if let Some(t) = opt_str(a, "category") {
+        let found = if t.trim().is_empty() { None } else { Some(db.find_category(&t)?) };
+        r.category = found.as_ref().map(|x| x.path.clone()).unwrap_or_default();
+        r.category_id = found.map(|x| x.id);
+    }
+    if let Some(tags) = tags_arg(a)? {
+        r.tags = tags;
+    }
+    Ok(r)
+}
+
+/// Text with commas, or a list.
+fn tags_arg(a: &Value) -> Result<Option<Vec<String>>> {
+    let wrong = || anyhow!(trf("the parameter \"{name}\" must be text", &[("name", &"tags")]));
+    let text = match a.get("tags") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(t)) => t.clone(),
+        Some(Value::Array(l)) => {
+            let all: Option<Vec<&str>> = l.iter().map(Value::as_str).collect();
+            all.ok_or_else(wrong)?.join(",")
+        }
+        Some(_) => return Err(wrong()),
+    };
+    rules::parse_tags(&text).map(Some)
+}
+
+/// A rule to start from: one that is there, one like a transaction, or an empty one.
+fn rule_base(db: &Db, a: &Value) -> Result<Rule> {
+    match (opt_i64_strict(a, "id")?, opt_i64_strict(a, "from_transaction")?) {
+        (Some(id), None) => db.rule(id),
+        (None, Some(t)) => db.rule_from(t),
+        (None, None) => Ok(Rule::default()),
+        _ => bail!(tr("give the rule or the transaction to start from, not both")),
+    }
+}
+
+/// Given after a transaction, the keywords take the place of its payee.
+fn rule_from_call(db: &Db, a: &Value) -> Result<Rule> {
+    let mut base = rule_base(db, a)?;
+    let given = |k: &str| opt_str(a, k).is_some_and(|t| !t.trim().is_empty());
+    if opt_i64_strict(a, "from_transaction")?.is_some() && ["keywords", "payee", "memo"].iter().any(|k| given(k)) {
+        (base.payee, base.memo, base.regex) = (String::new(), String::new(), false);
+    }
+    rule_arg(db, base, a)
+}
+
+/// With the amounts as exact decimal text.
+fn rule_json(r: &Rule) -> Value {
+    json!({"id": r.id, "pattern": r.pattern, "payee": r.payee, "memo": r.memo, "regex": r.regex,
+           "min_amount": r.amount_min.map(fmt_machine), "max_amount": r.amount_max.map(fmt_machine), "sign": r.sign,
+           "account_id": r.account_id, "account": r.account, "category_id": r.category_id, "category": r.category,
+           "tags": r.tags, "rename_payee": r.rename_payee, "problem": r.problem, "summary": r.summary()})
+}
+
+fn scope_arg(a: &Value) -> Result<Scope> {
+    let all = match opt_str(a, "scope").unwrap_or_default().trim() {
+        "" | "uncategorized" => false,
+        "all" => true,
+        x => bail!(trf("\"{text}\" is not a scope: use uncategorized or all", &[("text", &x)])),
+    };
+    let overwrite = opt_bool(a, "overwrite")?;
+    if overwrite && !all {
+        bail!(tr("what was set by hand is overwritten only with all the transactions"));
+    }
+    Ok(Scope { all, overwrite })
+}
+
+/// A transaction with the rules it comes from.
+fn transaction_json(db: &Db, id: i64) -> Result<Value> {
+    let t = db.transaction(id)?;
+    let all = db.rules()?;
+    let used: Vec<Value> = t
+        .rules
+        .ids()
+        .into_iter()
+        .map(|id| match all.iter().find(|r| r.id == id) {
+            Some(r) => json!({"id": id, "summary": r.summary()}),
+            None => json!({"id": id, "summary": tr("deleted")}),
+        })
+        .collect();
+    Ok(json!({"transaction": t, "rules": used}))
+}
 
 pub fn tools() -> Vec<ToolDef> {
     vec![
@@ -73,7 +206,7 @@ pub fn tools() -> Vec<ToolDef> {
             description: "Lists transactions, newest first, with optional filters.",
             schema: obj(
                 json!({"account": s(ACCOUNT), "category": s(CATEGORY), "from": s("From this day (included)."), "to": s("To this day (included)."),
-                "search": s("Text to look for in payee, notes and category."), "uncategorized": b("Only transactions without a category."),
+                "search": s("Text to look for in payee, notes, category, #tags, amount and the text of the bank."), "tag": s("Only transactions with this tag."), "uncategorized": b("Only transactions without a category."),
                 "limit": n("Maximum number of transactions (default 100).")}),
                 &[],
             ),
@@ -83,7 +216,7 @@ pub fn tools() -> Vec<ToolDef> {
             description: "Records a transaction. Without a category, the automatic rules are applied.",
             schema: obj(
                 json!({"account": s(ACCOUNT), "amount": s(AMOUNT), "payee": s("Payee or description."), "date": s(DATE),
-                "category": s(CATEGORY), "memo": s("Notes."), "cleared": b("Already checked against the bank statement.")}),
+                "category": s(CATEGORY), "memo": s("Notes."), "tags": s(TAGS), "cleared": b("Already checked against the bank statement.")}),
                 &["account", "amount", "payee"],
             ),
         },
@@ -92,9 +225,19 @@ pub fn tools() -> Vec<ToolDef> {
             description: "Changes a transaction; fields left out stay as they are. Empty category = no category.",
             schema: obj(
                 json!({"id": n("Id of the transaction."), "date": s(DATE), "amount": s(AMOUNT), "payee": s("Payee."), "memo": s("Notes."),
-                "category": s(CATEGORY), "cleared": b("Cleared.")}),
+                "category": s(CATEGORY), "tags": s("Tags separated by commas, instead of those it has; empty removes them."), "cleared": b("Cleared.")}),
                 &["id"],
             ),
+        },
+        ToolDef {
+            name: "get_transaction",
+            description: "One transaction, with what the bank wrote and the rules that set its category, payee or tags.",
+            schema: obj(json!({"id": n("Id of the transaction.")}), &["id"]),
+        },
+        ToolDef {
+            name: "list_tags",
+            description: "Lists the tags of the transactions, with how many have each.",
+            schema: obj(json!({}), &[]),
         },
         ToolDef {
             name: "delete_transaction",
@@ -247,26 +390,66 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_rules",
-            description: "Lists the automatic categorization rules.",
+            description: "Lists the automatic rules in the order they run; problem says why one is skipped.",
             schema: obj(json!({}), &[]),
         },
         ToolDef {
             name: "add_rule",
-            description: "Adds a rule: when the payee or the description contains one of the keywords (separated by |), it assigns the category.",
+            description: "Adds a rule: when all its conditions are met it gives a transaction a category, tags or a cleaner payee. The first rule that matches decides the category. With from_transaction, what is not given is taken from that transaction.",
             schema: obj(
-                json!({"keywords": s("Keywords separated by | (e.g. \"bakery|panificio\")."), "category": s(CATEGORY),
-                "rename_payee": s("New name of the payee (optional).")}),
-                &["keywords", "category"],
+                rule_properties(json!({"from_transaction": n("Id of a transaction to categorize others like."),
+                    "position": s("Where: last (default), or first (default with from_transaction).")})),
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "update_rule",
+            description: "Changes a rule; what is left out stays, empty text removes it.",
+            schema: obj(rule_properties(json!({"id": n("Id of the rule.")})), &["id"]),
+        },
+        ToolDef {
+            name: "move_rule",
+            description: "Moves a rule among the others.",
+            schema: obj(
+                json!({"id": n("Id of the rule."), "position": s("first, up, down or last.")}),
+                &["id", "position"],
+            ),
+        },
+        ToolDef {
+            name: "test_rule",
+            description: "How many transactions a rule would match, whatever the other rules say, and the newest of them. Takes the parameters of add_rule, or the id of a rule too, and saves nothing.",
+            schema: obj(
+                rule_properties(json!({"id": n("Id of a rule to start from."),
+                    "from_transaction": n("Id of a transaction to start from."),
+                    "limit": n("How many transactions to list (default 10).")})),
+                &[],
             ),
         },
         ToolDef {
             name: "delete_rule",
-            description: "Deletes a rule.",
+            description: "Deletes a rule. What it did to transactions stays.",
             schema: obj(json!({"id": n("Id of the rule.")}), &["id"]),
         },
         ToolDef {
+            name: "preview_rules",
+            description: "What apply_rules would change, transaction by transaction, with the rules; changes nothing. Show it to the user, then pass its token to apply_rules.",
+            schema: obj(
+                json!({"scope": s(SCOPE), "overwrite": b(OVERWRITE), "limit": n("How many changes to list (default 100).")}),
+                &[],
+            ),
+        },
+        ToolDef {
             name: "apply_rules",
-            description: "Applies the rules to every transaction without a category.",
+            description: "Applies the rules to the transactions without a category, or to all. Transfers and splits are left alone. undo_rules undoes the last time.",
+            schema: obj(
+                json!({"scope": s(SCOPE), "overwrite": b(OVERWRITE),
+                "token": s("Token of preview_rules: refused if the changes would be others by now.")}),
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "undo_rules",
+            description: "Undoes the last apply_rules that changed something. Transactions changed since stay as they are and are listed in skipped.",
             schema: obj(json!({}), &[]),
         },
         ToolDef {
@@ -400,6 +583,15 @@ fn opt_str(a: &Value, k: &str) -> Option<String> {
         Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
+}
+
+/// The arguments, but one.
+fn without(a: &Value, k: &str) -> Value {
+    let mut a = a.clone();
+    if let Some(o) = a.as_object_mut() {
+        o.remove(k);
+    }
+    a
 }
 
 fn missing(k: &str) -> anyhow::Error {
@@ -803,6 +995,9 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 to: opt_date(a, "to")?,
                 search: opt_str(a, "search").unwrap_or_default(),
                 uncategorized: opt_bool(a, "uncategorized")?,
+                tag: opt_str(a, "tag")
+                    .filter(|t| !t.trim().is_empty())
+                    .map(|t| t.trim().trim_start_matches('#').into()),
                 limit: Some(opt_i64(a, "limit").unwrap_or(100).max(1) as usize),
                 ..Default::default()
             };
@@ -835,6 +1030,10 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             };
             db.atomically(|| {
                 let id = db.add_transaction(&tx)?.ok_or_else(|| anyhow!(tr("the transaction was not saved")))?;
+                if let Some(mut tags) = tags_arg(a)? {
+                    tags.extend(db.transaction(id)?.tags);
+                    db.set_tags(id, &tags)?;
+                }
                 Ok(json!({"id": id, "transaction": db.transaction(id)?}))
             })?
         }
@@ -862,8 +1061,16 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                         cleared: given_bool(a, "cleared")?.unwrap_or(t.cleared),
                     },
                 )?;
+                if let Some(tags) = tags_arg(a)? {
+                    db.set_tags(id, &tags)?;
+                }
                 Ok(json!({"transaction": db.transaction(id)?}))
             })?
+        }
+        "get_transaction" => transaction_json(db, req_i64(a, "id")?)?,
+        "list_tags" => {
+            let all: Vec<Value> = db.tags()?.into_iter().map(|(t, n)| json!({"tag": t, "transactions": n})).collect();
+            json!({"tags": all})
         }
         "delete_transaction" => {
             let id = req_i64(a, "id")?;
@@ -940,6 +1147,15 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             let notices = layouts::notices(&t, &settings, sign_of);
             let read = importer::read_rows(&t, &settings);
             let rows = &read.rows;
+            let set = db.ruleset()?;
+            let ruled = |r: &importer::ParsedRow| -> Result<Value> {
+                let mut row = serde_json::to_value(r)?;
+                let outcome = set.evaluate(&rules::Subject::new(&r.payee, &r.memo, r.amount, id));
+                if let Some(o) = row.as_object_mut() {
+                    o.insert("ruled".into(), set.json(&outcome));
+                }
+                Ok(row)
+            };
             let mut info = importer::describe(&t, &settings.mapping);
             if let Some(i) = info.as_object_mut() {
                 i.insert("invert".into(), json!(settings.invert));
@@ -1008,7 +1224,8 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 });
                 json!({"format": info, "rows_found": rows.len(), "rows_skipped": read.skipped, "sum": total,
                        "first_date": rows.first().map(|r| r.date), "last_date": rows.last().map(|r| r.date),
-                       "preview": rows.iter().take(limit).collect::<Vec<_>>(), "problems": read.problems,
+                       "preview": rows.iter().take(limit).map(ruled).collect::<Result<Vec<_>>>()?,
+                       "broken_rules": set.broken, "problems": read.problems,
                        "likely_duplicates": likely, "deletions": db.deletions(id, rows)?, "notices": notices,
                        "refused": refused, "would_import": counts, "statement": statement, "ofx": ofx,
                        "ledger_balance": ledger_balance(db, id, &t)?})
@@ -1106,19 +1323,67 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 .collect();
             json!({"month": m.format("%Y-%m").to_string(), "lines": lines})
         }
-        "list_rules" => json!({"rules": db.rules()?}),
+        "list_rules" => {
+            let last = db.last_rule_run()?;
+            json!({"rules": db.rules()?.iter().map(rule_json).collect::<Vec<_>>(), "can_undo": last})
+        }
         "add_rule" => {
-            let c = db.find_category(&req_str(a, "category")?)?;
-            let id = db.add_rule(&req_str(a, "keywords")?, c.id, &opt_str(a, "rename_payee").unwrap_or_default())?;
-            json!({"id": id})
+            let from = opt_i64_strict(a, "from_transaction")?.is_some();
+            let first = match opt_str(a, "position").map(|p| Place::from_code(&p)) {
+                None => from,
+                Some(Some(Place::First)) => true,
+                Some(Some(Place::Last)) => false,
+                Some(_) => bail!(tr("a new rule goes first or last")),
+            };
+            let rule = rule_from_call(db, &without(a, "id"))?;
+            db.atomically(|| {
+                let id = db.insert_rule(&rule, first)?;
+                Ok(json!({"id": id, "rule": rule_json(&db.rule(id)?)}))
+            })?
+        }
+        "update_rule" => {
+            let id = req_i64(a, "id")?;
+            let rule = rule_arg(db, db.rule(id)?, a)?;
+            db.update_rule(&rule)?;
+            json!({"id": id, "rule": rule_json(&db.rule(id)?), "message": tr("rule changed")})
+        }
+        "move_rule" => {
+            let place = req_str(a, "position")?;
+            let place = Place::from_code(&place).ok_or_else(|| {
+                anyhow!(trf("\"{text}\" is not a place: use first, up, down or last", &[("text", &place)]))
+            })?;
+            db.move_rule(req_i64(a, "id")?, place)?;
+            json!({"rules": db.rules()?.iter().map(rule_json).collect::<Vec<_>>()})
+        }
+        "test_rule" => {
+            let rule = rule_from_call(db, a)?;
+            let all = db.transactions(&TxFilter::default())?;
+            let found = db.rule_matches(&rule, &all)?;
+            let limit = usize::try_from(opt_i64(a, "limit").unwrap_or(10).max(0)).unwrap_or(0);
+            let shown: Vec<&db::Transaction> =
+                found.iter().take(limit).filter_map(|id| all.iter().find(|t| t.id == *id)).collect();
+            json!({"matches": found.len(), "rule": rule_json(&rule), "transactions": shown})
         }
         "delete_rule" => {
             db.delete_rule(req_i64(a, "id")?)?;
             json!({"message": tr("rule deleted")})
         }
+        "preview_rules" => {
+            let plan = db.plan_rules(scope_arg(a)?)?;
+            let limit = usize::try_from(opt_i64(a, "limit").unwrap_or(100).max(0)).unwrap_or(0);
+            let (count, token, broken) = (plan.changes.len(), plan.token, plan.broken);
+            json!({"count": count, "changes": plan.changes.into_iter().take(limit).collect::<Vec<_>>(),
+                   "token": token, "broken_rules": broken})
+        }
         "apply_rules" => {
-            let n = db.apply_rules()?;
-            json!({"categorized": n, "message": trn(n, "{n} transaction categorized", "{n} transactions categorized")})
+            let run = db.run_rules(scope_arg(a)?, opt_str(a, "token").as_deref())?;
+            let n = run.changed;
+            json!({"categorized": run.categorized, "changed": n, "broken_rules": run.broken,
+                   "message": trn(n, "{n} transaction changed by the rules", "{n} transactions changed by the rules")})
+        }
+        "undo_rules" => {
+            let done = db.undo_rules()?;
+            json!({"undone": done.undone, "skipped": done.skipped, "message": done.message()})
         }
         "list_scheduled" => json!({"scheduled": db.scheduled()?}),
         "add_scheduled" => {
@@ -1302,7 +1567,16 @@ pub fn export_csv(db: &Db, f: &TxFilter, path: &std::path::Path) -> Result<usize
     let mut txs = db.transactions(f)?;
     txs.reverse();
     let mut w = csv::WriterBuilder::new().delimiter(delimiter).from_path(path)?;
-    w.write_record([tr("Date"), tr("Account"), tr("Payee"), tr("Category"), tr("Notes"), tr("Amount"), tr("Cleared")])?;
+    w.write_record([
+        tr("Date"),
+        tr("Account"),
+        tr("Payee"),
+        tr("Category"),
+        tr("Notes"),
+        tr("Amount"),
+        tr("Cleared"),
+        tr("Tags"),
+    ])?;
     for t in &txs {
         w.write_record([
             fmt_date(t.date),
@@ -1312,6 +1586,7 @@ pub fn export_csv(db: &Db, f: &TxFilter, path: &std::path::Path) -> Result<usize
             t.memo.clone(),
             amount(t.amount),
             if t.cleared { tr("yes").into() } else { tr("no").into() },
+            t.tags.join(", "),
         ])?;
     }
     w.flush()?;
@@ -1367,15 +1642,15 @@ mod tests {
         let (it, en) = (export(Lang::It), export(Lang::En));
         assert_eq!(
             it,
-            "Data;Conto;Beneficiario;Categoria;Note;Importo;Verificato\n\
-             04/03/2026;A;\"Casa, dolce; casa\";;;-1.234,56;sì\n\
-             04/03/2026;A;\"Rossi \"\"SpA\"\"\";;;1.000,00;no\n"
+            "Data;Conto;Beneficiario;Categoria;Note;Importo;Verificato;Etichette\n\
+             04/03/2026;A;\"Casa, dolce; casa\";;;-1.234,56;sì;\n\
+             04/03/2026;A;\"Rossi \"\"SpA\"\"\";;;1.000,00;no;\n"
         );
         assert_eq!(
             en,
-            "Date,Account,Payee,Category,Notes,Amount,Cleared\n\
-             2026-03-04,A,\"Casa, dolce; casa\",,,-1234.56,yes\n\
-             2026-03-04,A,\"Rossi \"\"SpA\"\"\",,,1000.00,no\n"
+            "Date,Account,Payee,Category,Notes,Amount,Cleared,Tags\n\
+             2026-03-04,A,\"Casa, dolce; casa\",,,-1234.56,yes,\n\
+             2026-03-04,A,\"Rossi \"\"SpA\"\"\",,,1000.00,no,\n"
         );
         for text in [it, en] {
             let t = importer::analyze(&text, "UTF-8").unwrap();
@@ -1614,6 +1889,90 @@ mod tests {
     }
 
     #[test]
+    fn rules_are_run_and_undone_by_operations() {
+        with_lang(Lang::En, || {
+            let dir = std::env::temp_dir().join(format!("cashcraft-ops-rules-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let roots = Roots::new(&dir, &dir).unwrap();
+            let db = one_account();
+            db.conn.execute("DELETE FROM transaction_rules", []).unwrap();
+            let run = |name: &str, a: Value| call(&db, name, &a, Some(&roots));
+            let add = |payee: &str, amount: f64| {
+                let v =
+                    run("add_transaction", json!({"account": "A", "payee": payee, "amount": amount, "tags": ["x"]}));
+                v.unwrap()["id"].as_i64().unwrap()
+            };
+            let (one, two) = (add("POS 77 Zoo", -12.5), add("POS 78 Zoo", -90.0));
+            run("update_transaction", json!({"id": one, "category": "Leisure", "tags": "fun, x"})).unwrap();
+            let v = run("test_rule", json!({"from_transaction": one})).unwrap();
+            assert_eq!(
+                (&v["matches"], &v["rule"]["category"], &v["rule"]["tags"]),
+                (&json!(1), &json!("Leisure"), &json!(["fun", "x"]))
+            );
+            let rule = json!({"from_transaction": one, "payee": r"^pos \d+ (.+)$", "regex": true, "rename_payee": "$1!",
+                              "min_amount": "10.00", "max_amount": 80.5, "sign": "out", "account": "A"});
+            assert_eq!(run("test_rule", rule.clone()).unwrap()["matches"], 1);
+            let v = run("add_rule", rule).unwrap();
+            assert_eq!((&v["rule"]["min_amount"], &v["rule"]["max_amount"]), (&json!("10.00"), &json!("80.50")));
+            let id = v["id"].as_i64().unwrap();
+            let last = run("add_rule", json!({"keywords": "zoo|park", "category": "Travel"})).unwrap()["id"].clone();
+            for bad in [
+                json!({"keywords": "x"}),
+                json!({"keywords": "(", "regex": true, "category": "Travel"}),
+                json!({"keywords": "x", "category": "Travel", "position": "up"}),
+                json!({"keywords": "x", "category": "Travel", "sign": "both"}),
+                json!({"keywords": "x", "category": "Travel", "min_amount": 1.234}),
+                json!({"keywords": "x", "category": "Travel", "regex": "yes"}),
+                json!({"keywords": "x", "category": "Travel", "tags": [1]}),
+            ] {
+                assert!(run("add_rule", bad.clone()).is_err(), "{bad}");
+            }
+            assert!(run("test_rule", json!({"id": id, "from_transaction": one})).is_err());
+            let v = run("update_rule", json!({"id": id, "max_amount": ""})).unwrap();
+            assert_eq!((&v["rule"]["max_amount"], &v["rule"]["rename_payee"]), (&Value::Null, &json!("$1!")));
+            let v = run("move_rule", json!({"id": id, "position": "last"})).unwrap();
+            assert_eq!(v["rules"][0]["id"], last);
+            run("move_rule", json!({"id": id, "position": "up"})).unwrap();
+            assert_eq!(run("list_rules", json!({})).unwrap()["rules"][0]["id"], id);
+            let v = run("preview_rules", json!({})).unwrap();
+            assert_eq!(
+                (&v["count"], &v["changes"][0]["id"], &v["changes"][0]["rules"]),
+                (&json!(1), &json!(two), &json!([id]))
+            );
+            assert_eq!(v["changes"][0]["amount"], -90.0);
+            for bad in [json!({"overwrite": true}), json!({"scope": "some"}), json!({"token": "other"})] {
+                assert!(run("apply_rules", bad).is_err());
+            }
+            assert_eq!(run("apply_rules", json!({"token": v["token"]})).unwrap()["changed"], 1);
+            let v = run("get_transaction", json!({"id": two})).unwrap();
+            assert_eq!(
+                (&v["transaction"]["payee"], &v["transaction"]["original_payee"]),
+                (&json!("Zoo!"), &json!("POS 78 Zoo"))
+            );
+            assert_eq!((&v["rules"][0]["id"], &v["transaction"]["rules"]["category"]), (&json!(id), &json!(id)));
+            assert_eq!(run("list_transactions", json!({"tag": "#FUN"})).unwrap()["count"], 2);
+            assert_eq!(run("list_tags", json!({})).unwrap()["tags"][1], json!({"tag": "x", "transactions": 2}));
+            run("export_csv", json!({"path": "out.csv"})).unwrap();
+            let text = std::fs::read_to_string(dir.join("out.csv")).unwrap();
+            assert!(text.contains(",Zoo!,Leisure,POS 78 Zoo,-90.00,no,\"x, fun\""), "{text}");
+            std::fs::write(dir.join("in.csv"), "Data;Descrizione;Importo\n05/01/2026;POS 1 Zoo;-12,00\n").unwrap();
+            let v = run("preview_csv", json!({"path": "in.csv", "account": "A"})).unwrap();
+            let ruled = &v["preview"][0]["ruled"];
+            assert_eq!(
+                (&ruled["category"], &ruled["payee"], &ruled["rules"]),
+                (&json!("Leisure"), &json!("Zoo!"), &json!([id]))
+            );
+            // The rule is of that account.
+            let v = run("preview_csv", json!({"path": "in.csv"})).unwrap();
+            assert_eq!(v["preview"][0]["ruled"]["category"], "Travel");
+            assert_eq!(run("undo_rules", json!({})).unwrap()["undone"], 1);
+            assert!(run("undo_rules", json!({})).is_err());
+            assert_eq!(db.transaction(two).unwrap().payee, "POS 78 Zoo");
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    #[test]
     fn hostile_params_never_panic() {
         let dir = std::env::temp_dir().join(format!("cashcraft-hostile-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1632,6 +1991,9 @@ mod tests {
             json!("İ"),
             json!("99999999999999999999,99"),
             json!("../../../etc/passwd"),
+            json!("(a{999}){999}"),
+            json!("(((("),
+            json!("${x}$99$"),
             json!("2025-13-99"),
             json!("9999-12"),
             json!([]),
@@ -1665,7 +2027,8 @@ mod tests {
                         "posting_id": 2, "statement_id": 1, "transaction_id": 1, "currency": "USD",
                         "parent": "Conto corrente", "match": "none", "ledger_account": "Conto corrente", "code": "1",
                         "postings": [{"account": "Conto corrente", "amount": "1,00"}, {"account": "Svago", "amount": -1}],
-                        "path": "out.csv", "pattern": "x", "unit": "month"});
+                        "path": "out.csv", "keywords": "a|b", "regex": true, "min_amount": 1, "max_amount": "900",
+                        "sign": "out", "tags": "x, y", "rename_payee": "$0", "position": "first", "scope": "all", "unit": "month"});
                     a[hostile.as_str()] = v.clone();
                     let _ = call(&db, tool.name, &a, Some(&roots));
                     // With files that are there.

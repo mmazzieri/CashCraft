@@ -216,8 +216,8 @@ impl Db {
         let (ledger, _) = self.money_ledger(a)?;
         let mut st = self.conn.prepare(
             "SELECT p.id, p.amount, COALESCE(p.date, e.date), p.import_hash, COALESCE(p.other_hashes,''), p.origin,
-                    COALESCE(p.payee, e.payee), COALESCE(p.memo, e.memo)
-             FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
+                    COALESCE(p.original_payee, p.payee, e.payee), COALESCE(p.original_memo, p.memo, e.memo)
+             FROM book_postings p JOIN entries e ON e.id=p.entry_id
              WHERE p.ledger_account_id=?1 AND (p.import_hash IS NOT NULL OR p.other_hashes IS NOT NULL)
              ORDER BY p.id",
         )?;

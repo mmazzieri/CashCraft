@@ -229,6 +229,9 @@ pub enum TxCmd {
         to: Option<String>,
         #[arg(long, short)]
         search: Option<String>,
+        /// Only with this tag
+        #[arg(long)]
+        tag: Option<String>,
         #[arg(long)]
         uncategorized: bool,
         #[arg(long, default_value_t = 50)]
@@ -248,6 +251,9 @@ pub enum TxCmd {
         category: Option<String>,
         #[arg(long)]
         memo: Option<String>,
+        /// Tags separated by commas
+        #[arg(long)]
+        tags: Option<String>,
         #[arg(long)]
         cleared: bool,
     },
@@ -265,9 +271,16 @@ pub enum TxCmd {
         category: Option<String>,
         #[arg(long)]
         memo: Option<String>,
+        /// Tags separated by commas, instead of those it has ("" removes them)
+        #[arg(long)]
+        tags: Option<String>,
         #[arg(long)]
         cleared: Option<bool>,
     },
+    /// One transaction: what the bank wrote, and the rules that set something of it
+    Show { id: i64 },
+    /// List the tags
+    Tags,
     /// Delete a transaction
     Delete { id: i64 },
     /// Turn a transaction into a transfer with another account
@@ -350,17 +363,136 @@ pub enum BudgetCmd {
 pub enum RulesCmd {
     /// List the rules
     List,
-    /// Add a rule: keywords separated by |
+    /// Add a rule: keywords separated by | and a category, or the options
     Add {
-        keywords: String,
-        category: String,
+        keywords: Option<String>,
+        category: Option<String>,
+        /// Categorize like this transaction; the rule goes first
         #[arg(long)]
-        rename: Option<String>,
+        like: Option<i64>,
+        /// Before the other rules
+        #[arg(long, conflicts_with = "last")]
+        first: bool,
+        /// After the other rules
+        #[arg(long)]
+        last: bool,
+        #[command(flatten)]
+        rule: RuleArgs,
+    },
+    /// Change a rule ("" removes a condition)
+    Edit {
+        id: i64,
+        #[command(flatten)]
+        rule: RuleArgs,
+    },
+    /// Move a rule: first, up, down or last
+    Move { id: i64, to: String },
+    /// Which transactions a rule matches; nothing is saved
+    Test {
+        keywords: Option<String>,
+        /// Start from this transaction
+        #[arg(long, conflicts_with = "id")]
+        like: Option<i64>,
+        /// Start from this rule
+        #[arg(long)]
+        id: Option<i64>,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        #[command(flatten)]
+        rule: RuleArgs,
     },
     /// Delete a rule
     Delete { id: i64 },
+    /// What apply would change
+    Preview {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
     /// Apply the rules to transactions without a category
-    Apply,
+    Apply {
+        #[command(flatten)]
+        scope: ScopeArgs,
+        /// Token of a preview: refused if the changes would be others by now
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Undo the last apply
+    Undo,
+}
+
+#[derive(Args, Debug, Default)]
+pub struct ScopeArgs {
+    /// Also transactions with a category: tags, payees, and the categories that rules set
+    #[arg(long)]
+    all: bool,
+    /// With --all, also the categories and payees set by hand
+    #[arg(long, requires = "all")]
+    overwrite: bool,
+}
+
+impl ScopeArgs {
+    fn pairs(&self) -> [(&'static str, Option<Value>); 2] {
+        [("scope", v(if self.all { "all" } else { "uncategorized" })), ("overwrite", v(self.overwrite))]
+    }
+}
+
+#[derive(Args, Debug, Default)]
+pub struct RuleArgs {
+    /// Text in the payee or the notes: keywords separated by |, or a regular expression
+    #[arg(long = "text")]
+    text: Option<String>,
+    /// Text in the payee
+    #[arg(long)]
+    payee: Option<String>,
+    /// Text in the notes
+    #[arg(long)]
+    memo: Option<String>,
+    /// The texts are regular expressions (--regex=false: keywords)
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", require_equals = true)]
+    regex: Option<bool>,
+    /// Smallest amount, whatever the sign
+    #[arg(long)]
+    min: Option<String>,
+    /// Largest amount
+    #[arg(long)]
+    max: Option<String>,
+    /// any, in or out
+    #[arg(long)]
+    sign: Option<String>,
+    /// Only transactions of this account
+    #[arg(long)]
+    account: Option<String>,
+    /// Category to give
+    #[arg(long = "category")]
+    into: Option<String>,
+    /// Tags to give, separated by commas
+    #[arg(long)]
+    tags: Option<String>,
+    /// New payee; with --regex $1 is what the first group matched
+    #[arg(long)]
+    rename: Option<String>,
+}
+
+impl RuleArgs {
+    fn json(&self, keywords: &Option<String>, category: &Option<String>, others: &[(&str, Option<Value>)]) -> Value {
+        let mut all = vec![
+            ("keywords", o(if keywords.is_some() { keywords } else { &self.text })),
+            ("payee", o(&self.payee)),
+            ("memo", o(&self.memo)),
+            ("regex", self.regex.map(|r| json!(r))),
+            ("min_amount", o(&self.min)),
+            ("max_amount", o(&self.max)),
+            ("sign", o(&self.sign)),
+            ("account", o(&self.account)),
+            ("category", o(if category.is_some() { category } else { &self.into })),
+            ("tags", o(&self.tags)),
+            ("rename_payee", o(&self.rename)),
+        ];
+        all.extend_from_slice(others);
+        args(&all)
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -562,7 +694,7 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
             AccountsCmd::Delete { account } => ("delete_account", args(&[("account", v(account))])),
         },
         Cmd::Tx(c) => match c {
-            TxCmd::List { account, category, from, to, search, uncategorized, limit } => (
+            TxCmd::List { account, category, from, to, search, tag, uncategorized, limit } => (
                 "list_transactions",
                 args(&[
                     ("account", o(&account)),
@@ -570,11 +702,12 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
                     ("from", o(&from)),
                     ("to", o(&to)),
                     ("search", o(&search)),
+                    ("tag", o(&tag)),
                     ("uncategorized", v(uncategorized)),
                     ("limit", v(limit)),
                 ]),
             ),
-            TxCmd::Add { account, amount, payee, date, category, memo, cleared } => (
+            TxCmd::Add { account, amount, payee, date, category, memo, tags, cleared } => (
                 "add_transaction",
                 args(&[
                     ("account", v(account)),
@@ -583,10 +716,11 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
                     ("date", o(&date)),
                     ("category", o(&category)),
                     ("memo", o(&memo)),
+                    ("tags", o(&tags)),
                     ("cleared", v(cleared)),
                 ]),
             ),
-            TxCmd::Edit { id, amount, payee, date, category, memo, cleared } => (
+            TxCmd::Edit { id, amount, payee, date, category, memo, tags, cleared } => (
                 "update_transaction",
                 args(&[
                     ("id", v(id)),
@@ -595,9 +729,12 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
                     ("date", o(&date)),
                     ("category", o(&category)),
                     ("memo", o(&memo)),
+                    ("tags", o(&tags)),
                     ("cleared", cleared.map(|c| json!(c))),
                 ]),
             ),
+            TxCmd::Show { id } => ("get_transaction", args(&[("id", v(id))])),
+            TxCmd::Tags => ("list_tags", json!({})),
             TxCmd::Delete { id } => ("delete_transaction", args(&[("id", v(id))])),
             TxCmd::ToTransfer { id, account, join, no_match } => (
                 "turn_into_transfer",
@@ -667,12 +804,28 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
         },
         Cmd::Rules(c) => match c {
             RulesCmd::List => ("list_rules", json!({})),
-            RulesCmd::Add { keywords, category, rename } => (
-                "add_rule",
-                args(&[("keywords", v(keywords)), ("category", v(category)), ("rename_payee", o(&rename))]),
-            ),
+            RulesCmd::Add { keywords, category, like, first, last, rule } => {
+                let place = if first { Some("first") } else { last.then_some("last") };
+                let others = [("from_transaction", like.map(|i| json!(i))), ("position", place.map(|p| json!(p)))];
+                ("add_rule", rule.json(&keywords, &category, &others))
+            }
+            RulesCmd::Edit { id, rule } => ("update_rule", rule.json(&None, &None, &[("id", v(id))])),
+            RulesCmd::Move { id, to } => ("move_rule", args(&[("id", v(id)), ("position", v(to))])),
+            RulesCmd::Test { keywords, like, id, limit, rule } => {
+                let others =
+                    [("from_transaction", like.map(|i| json!(i))), ("id", id.map(|i| json!(i))), ("limit", v(limit))];
+                ("test_rule", rule.json(&keywords, &None, &others))
+            }
             RulesCmd::Delete { id } => ("delete_rule", args(&[("id", v(id))])),
-            RulesCmd::Apply => ("apply_rules", json!({})),
+            RulesCmd::Preview { scope, limit } => {
+                let [a, b] = scope.pairs();
+                ("preview_rules", args(&[a, b, ("limit", v(limit))]))
+            }
+            RulesCmd::Apply { scope, token } => {
+                let [a, b] = scope.pairs();
+                ("apply_rules", args(&[a, b, ("token", o(&token))]))
+            }
+            RulesCmd::Undo => ("undo_rules", json!({})),
         },
         Cmd::Report(c) => match c {
             ReportCmd::Categories { month, from, to } => {
@@ -978,6 +1131,35 @@ fn print_transfers(result: &Value) {
     }
 }
 
+/// The tags of a transaction, or what the rules give a row.
+fn tags(t: &Value) -> String {
+    let all: Vec<String> = field(t, "tags").as_array().into_iter().flatten().map(|x| format!("#{}", st(x))).collect();
+    all.join(" ")
+}
+
+fn rule_numbers(v: &Value) -> String {
+    let all: Vec<String> = field(v, "rules").as_array().into_iter().flatten().map(st).collect();
+    trf("rules {ids}", &[("ids", &all.join(", "))])
+}
+
+/// What the rules do to a row of a preview.
+fn print_ruled(v: &Value) {
+    if field(v, "rules").as_array().is_none_or(Vec::is_empty) {
+        return;
+    }
+    let what: Vec<String> =
+        [st(field(v, "category")), st(field(v, "payee")), tags(v)].into_iter().filter(|t| !t.is_empty()).collect();
+    println!("      → {} ({})", what.join(", "), rule_numbers(v));
+}
+
+/// Rules that were skipped.
+fn print_broken(v: &Value) {
+    for b in field(v, "broken_rules").as_array().into_iter().flatten() {
+        let (id, what) = (st(field(b, "id")), st(field(b, "error")));
+        println!("! {}", trf("rule {id} was skipped: {what}", &[("id", &id), ("what", &what)]));
+    }
+}
+
 fn st(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -1022,6 +1204,82 @@ fn print_human(tool: &str, r: &Value) {
             }
             println!("{:>69}", trf("Net worth: {amount}", &[("amount", &eur(field(r, "net_worth")))]));
         }
+        "get_transaction" => {
+            let t = field(r, "transaction");
+            println!(
+                "{}  {}  {}  {}  {}",
+                st(field(t, "id")),
+                date(field(t, "date")),
+                st(field(t, "payee")),
+                st(field(t, "category")),
+                eur(field(t, "amount"))
+            );
+            for (label, k) in [
+                (tr("Notes"), "memo"),
+                (tr("Payee written by the bank"), "original_payee"),
+                (tr("Notes written by the bank"), "original_memo"),
+            ] {
+                let text = st(field(t, k));
+                if !text.is_empty() {
+                    println!("  {label}: {text}");
+                }
+            }
+            if !tags(t).is_empty() {
+                println!("  {}: {}", tr("Tags"), tags(t));
+            }
+            for x in arr("rules") {
+                let what = st(field(&x, "summary"));
+                println!("  {}", trf("rule {id}: {what}", &[("id", &st(field(&x, "id"))), ("what", &what)]));
+            }
+        }
+        "list_tags" => {
+            for t in arr("tags") {
+                println!("{:>5}  #{}", st(field(&t, "transactions")), st(field(&t, "tag")));
+            }
+        }
+        "test_rule" => {
+            println!("{}", st(field(field(r, "rule"), "summary")));
+            for t in arr("transactions") {
+                println!(
+                    "  {:>5}  {}  {:<40} {:>13}",
+                    st(field(&t, "id")),
+                    date(field(&t, "date")),
+                    cut(&st(field(&t, "payee")), 40),
+                    eur(field(&t, "amount"))
+                );
+            }
+            let n = count(field(r, "matches"));
+            println!("{}", trn(n, "{n} transaction matches", "{n} transactions match"));
+        }
+        "preview_rules" => {
+            for c in arr("changes") {
+                println!(
+                    "{:>5}  {}  {:<40} {:>13}",
+                    st(field(&c, "id")),
+                    date(field(&c, "date")),
+                    cut(&st(field(&c, "payee")), 40),
+                    eur(field(&c, "amount"))
+                );
+                let mut what = Vec::new();
+                for k in ["new_category", "new_payee"] {
+                    what.extend(Some(st(field(&c, k))).filter(|t| !t.is_empty()));
+                }
+                let new: Vec<String> = field(&c, "new_tags").as_array().into_iter().flatten().map(st).collect();
+                what.extend(new.iter().map(|t| format!("#{t}")));
+                println!("       → {} ({})", what.join(", "), rule_numbers(&c));
+            }
+            let n = count(field(r, "count"));
+            println!("{}", trn(n, "{n} transaction would change", "{n} transactions would change"));
+            println!(
+                "{}",
+                trf("To apply exactly this: rules apply --token {token}", &[("token", &st(field(r, "token")))])
+            );
+            print_broken(r);
+        }
+        "apply_rules" => {
+            println!("{}", st(field(r, "message")));
+            print_broken(r);
+        }
         "list_transactions" | "transfer_candidates" => {
             println!(
                 "{:>5}  {:<10}  {:<16} {:<30} {:<24} {:>13}",
@@ -1034,13 +1292,14 @@ fn print_human(tool: &str, r: &Value) {
             );
             for t in arr("transactions") {
                 println!(
-                    "{:>5}  {:<10}  {:<16} {:<30} {:<24} {:>13}",
+                    "{:>5}  {:<10}  {:<16} {:<30} {:<24} {:>13}  {}",
                     st(field(&t, "id")),
                     date(field(&t, "date")),
                     cut(&st(field(&t, "account")), 16),
                     cut(&st(field(&t, "payee")), 30),
                     cut(&st(field(&t, "category")), 24),
-                    eur(field(&t, "amount"))
+                    eur(field(&t, "amount")),
+                    tags(&t)
                 );
             }
             let n = count(field(r, "count"));
@@ -1107,15 +1366,17 @@ fn print_human(tool: &str, r: &Value) {
                 println!("{:>4}  {:<36} {}", st(field(&c, "id")), st(field(&c, "path")), kind);
             }
         }
-        "list_rules" => {
+        "list_rules" | "move_rule" => {
             for x in arr("rules") {
-                println!(
-                    "{:>4}  {:<50} → {}",
-                    st(field(&x, "id")),
-                    cut(&st(field(&x, "pattern")), 50),
-                    st(field(&x, "category"))
-                );
+                println!("{:>4}  {}", st(field(&x, "id")), st(field(&x, "summary")));
+                let problem = st(field(&x, "problem"));
+                if !problem.is_empty() {
+                    println!("      ! {problem}");
+                }
             }
+        }
+        "add_rule" | "update_rule" => {
+            println!("{:>4}  {}", st(field(r, "id")), st(field(field(r, "rule"), "summary")));
         }
         "list_scheduled" => {
             for x in arr("scheduled") {
@@ -1268,6 +1529,7 @@ fn print_human(tool: &str, r: &Value) {
                 println!("{}", st(msg));
                 print_payments(&arr("card_payments"));
                 print_transfers(field(r, "result"));
+                print_broken(field(r, "result"));
             } else {
                 println!(
                     "{}",
@@ -1294,7 +1556,9 @@ fn print_human(tool: &str, r: &Value) {
                         cut(&st(field(&p, "payee")), 40),
                         eur(field(&p, "amount"))
                     );
+                    print_ruled(field(&p, "ruled"));
                 }
+                print_broken(r);
             }
         }
         _ => {

@@ -20,6 +20,7 @@ use crate::duplicates::{Decision, Deletion, State};
 use crate::i18n::{tr, trf};
 use crate::money::{DateOrder, parse_amount_with, parse_date, parse_date_as};
 use crate::ofx::{self, Correction, Ofx, OfxStatement};
+use crate::rules::Broken;
 use crate::transfers::near;
 use crate::{pdf, xls};
 use anyhow::{Context, Result, anyhow, bail};
@@ -227,6 +228,8 @@ pub struct ImportResult {
     /// What the bank takes back of what is in the books: nothing was done.
     pub deletions: Vec<Deletion>,
     pub categorized: usize,
+    /// Rules that were skipped, and why.
+    pub broken_rules: Vec<Broken>,
     /// Lines that took the place of the added side of a transfer.
     pub adopted: Vec<Adopted>,
     /// Lines that were added, and may be the side of a transfer that is there: the user chooses.
@@ -1004,6 +1007,8 @@ pub(crate) fn import_deciding(
             let near = dates.get(&t.amount).into_iter().flatten().filter(|(d, _)| near(**d, t.date));
             near.map(|(_, n)| n).sum()
         };
+        let rules = db.ruleset()?;
+        res.broken_rules.clone_from(&rules.broken);
         let mut unsure = Vec::new();
         for i in &fresh {
             let (Some(row), Some(p)) = (rows.get(*i), plan.rows.get(*i)) else { continue };
@@ -1019,7 +1024,7 @@ pub(crate) fn import_deciding(
                 place.insert(*i, side.id);
                 continue;
             }
-            let id = db.add_transaction(&NewTx {
+            let new = NewTx {
                 account_id,
                 date: row.date,
                 amount: row.amount,
@@ -1030,7 +1035,8 @@ pub(crate) fn import_deciding(
                 import_hash: Some(p.hash.clone()),
                 import_marks: Some(p.marks.clone()),
                 card_row: row.key.is_some(),
-            })?;
+            };
+            let id = db.add_with_rules(&new, Some(&rules))?;
             let Some(id) = id else {
                 res.duplicates += 1;
                 continue;
@@ -1427,7 +1433,7 @@ pub(crate) mod tests {
     }
 
     /// A workbook laid out as BPER's "Movimenti Conto" export, with invented contents.
-    fn bper() -> Vec<u8> {
+    pub(crate) fn bper() -> Vec<u8> {
         let row = |cells: &[&str]| cells.iter().map(|c| c.to_string()).collect::<Vec<String>>();
         let rows = vec![
             row(&["Lunedì,01 dicembre 2025"]),

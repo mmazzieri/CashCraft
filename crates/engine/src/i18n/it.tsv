@@ -28,7 +28,6 @@ Account updated	Conto aggiornato
 Accounts	Conti
 Add	Aggiungi
 Add an account under "{name}"	Aggiungi un conto sotto "{name}"
-Add rule	Aggiungi regola
 All	Tutto
 All accounts	Tutti i conti
 All categories	Tutte le categorie
@@ -73,7 +72,6 @@ Chart of accounts	Piano dei conti
 Checked against the bank statement	Verificato sull'estratto conto
 Choose a category…	Scegli categoria…
 Choose an account…	Scegli un conto…
-Choose the category of the rule	Scegli la categoria della regola
 Cinema and books	Cinema e libri
 Class	Classe
 Cleared	Verificato
@@ -163,7 +161,6 @@ Its {n} line will be deleted. This cannot be undone.	La sua riga verrà eliminat
 January	gennaio
 July	luglio
 June	giugno
-Keywords	Parole chiave
 Language	Lingua
 Last 12 months	Ultimi 12 mesi
 Last 3 months	Ultimi 3 mesi
@@ -235,7 +232,6 @@ Remove the line	Togli la riga
 Rename	Rinomina
 Rename "{name}"	Rinomina "{name}"
 Rename the account	Rinomina il conto
-Rename to	Rinomina in
 Repeat every	Ripeti ogni
 Repetition	Ripetizione
 Reports	Report
@@ -298,7 +294,6 @@ Upcoming	Prossime scadenze
 Video streaming	Streaming Video
 Wallet	Portafoglio
 Weekly shopping	Spesa settimanale
-When the payee or the description contains one of the keywords (separated by | ), the transaction gets that category. Rules apply to every new or imported transaction without a category.	Quando il beneficiario o la descrizione contengono una delle parole chiave (separate da | ), il movimento riceve la categoria indicata. Le regole valgono per ogni movimento nuovo o importato senza categoria.
 Where your money goes	Dove vanno i tuoi soldi
 Works from the terminal (cashcraft-cli --help) and over MCP (cashcraft-cli mcp)	Pilotabile da terminale (cashcraft-cli --help) e da MCP (cashcraft-cli mcp)
 [Transfer] {account}	[Giroconto] {account}
@@ -459,12 +454,10 @@ yyyy-mm-dd	gg/mm/aaaa
 {n} row was not a transaction (balances, totals…)	{n} riga non era un movimento (saldi, totali…)
 {n} rows were not transactions (balances, totals…)	{n} righe non erano movimenti (saldi, totali…)
 {n} transaction	{n} movimento
-{n} transaction categorized	{n} movimento categorizzato
 {n} transaction found	{n} movimento trovato
 {n} transaction imported	{n} movimento importato
 {n} transaction recorded	{n} movimento registrato
 {n} transactions	{n} movimenti
-{n} transactions categorized	{n} movimenti categorizzati
 {n} transactions found	{n} movimenti trovati
 {n} transactions imported	{n} movimenti importati
 {n} transactions recorded	{n} movimenti registrati
@@ -478,7 +471,6 @@ yyyy-mm-dd	gg/mm/aaaa
 …or paste the path of the file	…oppure incolla il percorso del file
 ℹ You are looking at sample data, to try the app out.	ℹ Stai guardando dati di esempio, per provare il programma.
 − Expense	− Uscita
-▶ Apply now to uncategorized transactions	▶ Applica ora ai movimenti senza categoria
 ⚫ {n} uncategorized transaction	⚫ {n} movimento senza categoria
 ⚫ {n} uncategorized transactions	⚫ {n} movimenti senza categoria
 ✏ Edit	✏ Modifica
@@ -668,3 +660,95 @@ transaction {id} is not one that row {n} may be	il movimento {id} non è tra que
 {columns}; sign {sign}, dates {dates}, decimals {decimals}	{columns}; segno {sign}, date {dates}, decimali {decimals}
 {n} are left	{n} da decidere
 {n} is left	{n} da decidere
+"{tag}" cannot be a tag: at most {n} characters	"{tag}" non può essere un'etichetta: al massimo {n} caratteri
+"{text}" is not a place: use first, up, down or last	"{text}" non è una posizione: usa first, up, down o last
+"{text}" is not a scope: use uncategorized or all	"{text}" non è un insieme di movimenti: usa uncategorized o all
+"{text}" is not a sign: use any, in or out	"{text}" non è un segno: usa any, in o out
+$1 is what the first group matched	$1 è il testo del primo gruppo
++ New rule	+ Nuova regola
+All, also the categories and payees set by hand	Tutti, anche le categorie e i beneficiari scelti a mano
+All: also tags, payees and the categories that rules set	Tutti: anche etichette, beneficiari e categorie date dalle regole
+Apply the rules	Applica le regole
+Apply these changes	Applica queste modifiche
+Before the other rules	Prima delle altre regole
+Edit rule	Modifica regola
+It matches {n} transaction	Corrisponde a {n} movimento
+It matches {n} transactions	Corrisponde a {n} movimenti
+Makes a rule for the transactions like this one, those that will be imported too.	Crea una regola per i movimenti come questo, anche quelli che importerai.
+New payee	Nuovo beneficiario
+New rule	Nuova regola
+Notes written by the bank	Note scritte dalla banca
+Payee or notes	Beneficiario o note
+Payee written by the bank	Beneficiario scritto dalla banca
+Regular expressions, instead of keywords separated by |	Espressioni regolari, invece di parole chiave separate da |
+Rule changed	Regola modificata
+Rule {id}	Regola {id}
+Rules run from the first to the last on every new or imported transaction without a category. The first that matches decides the category; tags are those of every rule that matches.	Le regole si applicano dalla prima all'ultima a ogni movimento nuovo o importato senza categoria. La prima che corrisponde decide la categoria; le etichette sono quelle di tutte le regole che corrispondono.
+Tags	Etichette
+Then	Allora
+Then:	Allora:
+There are no rules.	Non ci sono regole.
+To apply exactly this: rules apply --token {token}	Per applicare esattamente questo: regole apply --token {token}
+Transactions without a category	I movimenti senza categoria
+Transfers and splits are left alone.	I giroconti e i movimenti divisi restano come sono.
+Undo the last run ({n} transaction)	Annulla l'ultima applicazione ({n} movimento)
+Undo the last run ({n} transactions)	Annulla l'ultima applicazione ({n} movimenti)
+When	Quando
+When all of these are met (leave out what does not matter):	Quando valgono tutte queste condizioni (lascia vuoto ciò che non conta):
+a new rule goes first or last	una regola nuova va per prima o per ultima
+account {name}	conto {name}
+deleted	cancellata
+from	da
+give the rule or the transaction to start from, not both	indica la regola o il movimento da cui partire, non entrambi
+it was changed since	è stato modificato nel frattempo
+it was deleted	è stato cancellato
+left as they are: {list}	restano come sono: {list}
+money in	entrate
+money in or out	entrate e uscite
+money out	uscite
+notes	note
+nothing was undone, every transaction was changed since: {list}	nulla è stato annullato, tutti i movimenti sono stati modificati nel frattempo: {list}
+only this one	solo questo
+payee	beneficiario
+payee "{name}"	beneficiario "{name}"
+regular expression	espressione regolare
+rule changed	regola modificata
+rule {id} not found	regola {id} non trovata
+rule {id} was skipped: {what}	la regola {id} è stata saltata: {what}
+rule {id}, deleted	regola {id}, cancellata
+rule {id}: {what}	regola {id}: {what}
+rules do not categorize transfers, splits and entries of the chart of accounts	le regole non categorizzano giroconti, movimenti divisi e registrazioni del piano dei conti
+rules skipped: {list}	regole saltate: {list}
+rules {ids}	regole {ids}
+separated by commas	separate da virgole
+skipped: {problem}	saltata: {problem}
+the books or the rules have changed meanwhile: look at the changes again; nothing was done	i movimenti o le regole sono cambiati nel frattempo: riguarda le modifiche; nulla è stato fatto
+the category it had was deleted	la categoria che aveva è stata cancellata
+the category or the account of the rule is not there	la categoria o il conto della regola non c'è
+the keywords are too long: at most {n} characters	le parole chiave sono troppo lunghe: al massimo {n} caratteri
+the new payee is too long: at most {n} characters	il nuovo beneficiario è troppo lungo: al massimo {n} caratteri
+the parameter "{name}" must be text	il parametro "{name}" deve essere un testo
+the range of amounts is not valid: two amounts without sign, the smaller first	l'intervallo degli importi non è valido: due importi senza segno, prima il minore
+the regular expression has no group "{name}" ($$ is a dollar)	l'espressione regolare non ha un gruppo "{name}" ($$ è un dollaro)
+the regular expression is not valid: {error}	l'espressione regolare non è valida: {error}
+the regular expression is too large	l'espressione regolare è troppo grande
+the regular expression is too long: at most {n} characters	l'espressione regolare è troppo lunga: al massimo {n} caratteri
+the rule does nothing: give it a category, tags or a new payee	la regola non fa nulla: dalle una categoria, etichette o un nuovo beneficiario
+the rule is damaged in the data file	la regola è danneggiata nell'archivio
+the rule needs a keyword or another condition	la regola ha bisogno di una parola chiave o di un'altra condizione
+there are too many rules: at most {n}	ci sono troppe regole: al massimo {n}
+there are too many tags: at most {n}	ci sono troppe etichette: al massimo {n}
+there is no run of the rules to undo	non c'è un'applicazione delle regole da annullare
+to	a
+what is needed to undo is damaged in the data file	i dati per annullare sono danneggiati nell'archivio
+what was set by hand is overwritten only with all the transactions	ciò che è stato scelto a mano si sostituisce solo con tutti i movimenti
+{n} transaction changed by the rules	{n} movimento modificato dalle regole
+{n} transaction is as before	{n} movimento è come prima
+{n} transaction matches	{n} movimento corrisponde
+{n} transaction would change	{n} movimento cambierebbe
+{n} transactions are as before	{n} movimenti sono come prima
+{n} transactions changed by the rules	{n} movimenti modificati dalle regole
+{n} transactions match	{n} movimenti corrispondono
+{n} transactions would change	{n} movimenti cambierebbero
+▶ Apply to transactions…	▶ Applica ai movimenti…
+⚙ Always categorize like this…	⚙ Categorizza sempre così…

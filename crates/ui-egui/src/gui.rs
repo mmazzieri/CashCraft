@@ -2,6 +2,7 @@
 //! Le singole schermate sono in `views.rs`, le finestre di dialogo in `dialogs.rs`.
 
 use crate::ledger::{EntryForm, LedgerAccountForm, LedgerData};
+use crate::rules::{RuleForm, RunForm};
 use anyhow::Result;
 use cashcraft_engine::cards::{CardStatement, PaymentProposal};
 use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Db, Scheduled, Transaction, TxFilter, TxKind};
@@ -10,14 +11,18 @@ use cashcraft_engine::i18n::{self, Lang, lang, tr, trf};
 use cashcraft_engine::importer::{self, ImportResult, Mapping, ParsedRow, Problem, Settings, Table};
 
 use cashcraft_engine::money::{DateOrder, fmt_date, fmt_eur, fmt_number, month_short, total};
+use cashcraft_engine::rules::{LastRun, Rule};
 use cashcraft_engine::transfers::OtherSide;
-use cashcraft_engine::{demo, ops};
+use cashcraft_engine::{demo, ops, rules};
 use chrono::{Datelike, NaiveDate};
 use egui::{self, Align2, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
+
+/// How many rows of a file are shown before it is imported.
+pub const PREVIEWED: usize = 50;
 
 // ------------------------------------------------------------------ colori
 
@@ -171,6 +176,11 @@ pub struct TxForm {
     /// Whether the category can be chosen.
     pub has_category: bool,
     pub is_split: bool,
+    pub tags: String,
+    /// The tags it had.
+    pub old_tags: String,
+    /// What the bank wrote, and the rules that set something of it.
+    pub detail: String,
     pub error: String,
 }
 
@@ -265,6 +275,9 @@ pub struct ImportState {
     pub problems: Vec<Problem>,
     /// Whether most rows were read.
     pub convincing: bool,
+    /// What the rules give the rows that are shown, with the rules.
+    pub ruled: HashMap<usize, (String, String)>,
+    pub broken_rules: String,
     /// Rows that may be in the books already, and what the user said of each, for every account.
     pub likely: Vec<LikelyDuplicate>,
     pub decided: BTreeMap<usize, Choice>,
@@ -370,6 +383,7 @@ impl ImportState {
         self.said.clear();
         self.compared = None;
         self.books = None;
+        self.ruled.clear();
     }
     pub fn settings(&self) -> Settings {
         Settings {
@@ -445,6 +459,19 @@ impl ImportState {
         self.deletions.clear();
         self.likely = db.likely_duplicates(target, &self.rows)?;
         self.deletions = db.deletions(target, &self.rows)?;
+        let set = db.ruleset()?;
+        self.broken_rules = rules::broken_message(&set.broken);
+        self.ruled.clear();
+        for (i, r) in self.rows.iter().enumerate().rev().take(PREVIEWED) {
+            let o = set.evaluate(&rules::Subject::new(&r.payee, &r.memo, r.amount, target));
+            let category = o.category.and_then(|(id, _)| set.rule(id)).map(|r| r.category.clone());
+            let payee = o.payee.as_ref().map(|p| format!("\"{}\"", p.1));
+            let mut what: Vec<String> = category.into_iter().chain(payee).collect();
+            what.extend(o.tags.iter().map(|t| format!("#{}", t.1)));
+            if !what.is_empty() {
+                self.ruled.insert(i, (what.join(", "), set.explain(&o)));
+            }
+        }
         let likely: HashMap<usize, &LikelyDuplicate> = self.likely.iter().map(|l| (l.index, l)).collect();
         self.decided.retain(|i, c| {
             likely.get(i).is_some_and(|l| match c {
@@ -483,6 +510,8 @@ pub enum Dialog {
     ConfirmDeleteEntry(i64, usize),
     ConfirmDeleteAccount(i64, String),
     ConfirmClearDemo,
+    Rule(Box<RuleForm>),
+    RunRules(RunForm),
 }
 
 pub struct Dash {
@@ -522,7 +551,8 @@ pub struct App {
     pub budget_month: NaiveDate,
     pub budget_edit: Option<(i64, String)>,
     pub new_budget: (Option<i64>, String),
-    pub new_rule: (String, Option<i64>, String),
+    /// The rules, and the run that can be undone.
+    pub rules: Option<(Vec<Rule>, Option<LastRun>)>,
     pub new_cat: (String, bool, Option<i64>),
     pub rename_cat: Option<(i64, String)>,
     pub dash: Option<Dash>,
@@ -665,7 +695,7 @@ impl App {
             budget_month: db::first_of_month(db::today()),
             budget_edit: None,
             new_budget: (None, String::new()),
-            new_rule: (String::new(), None, String::new()),
+            rules: None,
             new_cat: (String::new(), false, None),
             rename_cat: None,
             dash: None,
@@ -747,6 +777,7 @@ impl App {
         self.dash = None;
         self.report = None;
         self.ledger = None;
+        self.rules = None;
     }
 
     pub fn reload_txs(&mut self) {
@@ -762,6 +793,7 @@ impl App {
             from,
             to,
             search: self.search.clone(),
+            tag: None,
             limit: None,
         };
         self.txs = or_report(self.db.transactions(&f), &mut self.toast);
@@ -830,8 +862,22 @@ impl App {
             is_transfer: t.transfer_peer.is_some(),
             has_category: has_category(t),
             is_split: t.kind == TxKind::Split,
+            tags: t.tags.join(", "),
+            old_tags: t.tags.join(", "),
+            detail: self.detail_of(t),
             error: String::new(),
         }));
+    }
+
+    fn detail_of(&self, t: &Transaction) -> String {
+        let mut out = Vec::new();
+        let texts =
+            [(tr("Payee written by the bank"), &t.original_payee), (tr("Notes written by the bank"), &t.original_memo)];
+        for (label, text) in texts {
+            out.extend(text.as_ref().filter(|x| !x.is_empty()).map(|x| format!("{label}: {x}")));
+        }
+        out.push(self.rules_of(t).unwrap_or_else(|e| error_text(&e)));
+        out.join("\n").trim().to_string()
     }
 
     /// Asks for the other account of a transaction, or whether to separate a transfer.

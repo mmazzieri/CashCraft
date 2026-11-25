@@ -56,6 +56,16 @@ may pay each statement, with the `card_lines` that may be the same; `link_card_p
 to the card (`join`: the card line, only if the user says it is the same), `unlink_card_payment` undoes
 it, `list_card_statements` shows them all. See [cards.md](cards.md).
 
+## Rules and tags
+
+`list_rules`, `add_rule`, `update_rule`, `move_rule`, `delete_rule` and `test_rule` (how many transactions a rule would match)
+manage the rules ([rules.md](rules.md)). `add_rule` with `from_transaction` categorizes others like it. `preview_rules` lists what
+`apply_rules` would change: show it, then pass its `token`. `scope: "all"` takes the transactions with a category too, and
+`overwrite`, only if the user asked, what was set by hand. `undo_rules` undoes the last run; `skipped` lists what was changed since
+and stays. `preview_csv` gives each row `ruled`: the category, payee and tags it would get, and the rules. `broken_rules`
+are rules that cannot be read and were skipped: tell the user. `get_transaction` has the rules that set something of it and what the bank
+wrote; `tags` of `add_transaction` and `update_transaction` is text with commas, or a list; `list_transactions` takes `tag`.
+
 ## Allowed folders
 
 The server refuses to start without both folders:

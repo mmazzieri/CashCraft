@@ -1,9 +1,9 @@
 //! Finestre di dialogo: movimento, giroconto, conto, pianificato, importazione CSV, conferme.
 
 use crate::gui::{
-    ACCENT, AMBER, App, CardPayments, Dialog, GREEN, ImportState, MUTED, Period, RED, TurnForm, TxForm, View, ZEBRA,
-    account_combo, card, category_combo, column_combo, cut, error_text, expense_toggle, form_row, kind_icon, money,
-    primary_button, section_title,
+    ACCENT, AMBER, App, CardPayments, Dialog, GREEN, ImportState, MUTED, PREVIEWED, Period, RED, TurnForm, TxForm,
+    View, ZEBRA, account_combo, card, category_combo, column_combo, cut, error_text, expense_toggle, form_row,
+    kind_icon, money, primary_button, section_title,
 };
 use anyhow::Result;
 use cashcraft_engine::cards::{CardStatement, PaymentProposal};
@@ -14,6 +14,7 @@ use cashcraft_engine::importer::{self, ImportResult, Statement};
 use cashcraft_engine::layouts;
 use cashcraft_engine::money::{DateOrder, fmt_date, fmt_eur, fmt_plain, parse_amount, parse_date, total};
 use cashcraft_engine::ofx::Kind;
+use cashcraft_engine::rules::parse_tags;
 use cashcraft_engine::transfers::OtherSide;
 use egui::{self, Color32, CornerRadius, Frame, Id, Margin, RichText, Ui};
 use std::collections::BTreeMap;
@@ -79,9 +80,19 @@ impl App {
                     form_row(ui, tr("Notes"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.memo).desired_width(280.0));
                     });
+                    form_row(ui, tr("Tags"), |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut f.tags)
+                                .hint_text(tr("separated by commas"))
+                                .desired_width(280.0),
+                        );
+                    });
                     form_row(ui, "", |ui| {
                         ui.checkbox(&mut f.cleared, tr("Checked against the bank statement"));
                     });
+                    if !f.detail.is_empty() {
+                        ui.label(RichText::new(&f.detail).color(MUTED).size(12.5));
+                    }
                     if !f.error.is_empty() {
                         ui.label(RichText::new(&f.error).color(RED));
                     }
@@ -369,6 +380,12 @@ impl App {
                         }
                     });
                 }
+                Dialog::Rule(f) => {
+                    (keep, message) = self.rule_dialog(ui, f, &accounts, &cats);
+                }
+                Dialog::RunRules(f) => {
+                    (keep, message) = self.run_dialog(ui, f);
+                }
                 Dialog::Import(st) => {
                     let (k, m) = self.import_dialog(ui, st, &accounts);
                     keep = k;
@@ -603,7 +620,8 @@ impl App {
         if f.payee.trim().is_empty() {
             anyhow::bail!(tr("write the payee or a description"));
         }
-        match f.id {
+        let tags = parse_tags(&f.tags)?;
+        self.db.atomically(|| match f.id {
             Some(id) => {
                 self.db.update_transaction(
                     id,
@@ -616,10 +634,13 @@ impl App {
                         cleared: f.cleared,
                     },
                 )?;
+                if f.tags != f.old_tags {
+                    self.db.set_tags(id, &tags)?;
+                }
                 Ok(tr("Transaction updated").into())
             }
             None => {
-                self.db.add_transaction(&NewTx {
+                let id = self.db.add_transaction(&NewTx {
                     account_id: account,
                     date,
                     amount,
@@ -631,9 +652,14 @@ impl App {
                     import_marks: None,
                     card_row: false,
                 })?;
+                if let Some(id) = id.filter(|_| !tags.is_empty()) {
+                    let mut all = self.db.transaction(id)?.tags;
+                    all.extend(tags.iter().cloned());
+                    self.db.set_tags(id, &all)?;
+                }
                 Ok(tr("Transaction recorded").into())
             }
-        }
+        })
     }
 
     fn import_dialog(
@@ -870,15 +896,19 @@ impl App {
                         .max_height(200.0)
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
-                            egui::Grid::new("preview").striped(true).num_columns(5).spacing([14.0, 4.0]).show(
+                            egui::Grid::new("preview").striped(true).num_columns(6).spacing([14.0, 4.0]).show(
                                 ui,
                                 |ui| {
-                                    for (i, r) in st.rows.iter().enumerate().rev().take(50) {
+                                    for (i, r) in st.rows.iter().enumerate().rev().take(PREVIEWED) {
                                         ui.label(RichText::new((i + 1).to_string()).color(MUTED).size(12.0));
                                         ui.label(RichText::new(fmt_date(r.date)).color(MUTED));
                                         ui.label(cut(&r.payee, 38));
                                         ui.label(RichText::new(cut(&r.memo, 40)).color(MUTED).size(12.0));
                                         ui.label(money(r.amount));
+                                        if let Some((what, why)) = st.ruled.get(&i) {
+                                            ui.label(RichText::new(cut(what, 34)).color(ACCENT).size(12.0))
+                                                .on_hover_text(why);
+                                        }
                                         ui.end_row();
                                     }
                                 },
@@ -905,6 +935,9 @@ impl App {
             }
             if let Some(a) = target.filter(|_| st.new_account.trim().is_empty()) {
                 ofx_account(ui, st, a);
+            }
+            if !st.broken_rules.is_empty() {
+                ui.label(RichText::new(&st.broken_rules).color(RED));
             }
             balance_check(ui, st);
             likely_duplicates(ui, st);

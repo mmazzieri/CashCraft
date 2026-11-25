@@ -37,7 +37,8 @@ pub const MAX_TURNOVER: Cents = 4_000_000_000_000_000_000;
 
 const MAX_DEPTH: usize = 16;
 
-/// The ledger since format 2 (`postings.date` since 3, `origin` since 5, `other_hashes` since 7). A row linked to an account of the user or to a category has no name of
+/// The ledger since format 2 (`date` of a posting since 3, `origin` since 5,
+/// `other_hashes` since 7, the original texts, `tags` and `rules` since 8). A row linked to an account of the user or to a category has no name of
 /// its own, so that names are in one place; triggers keep exactly one row for each of them.
 pub(crate) const LEDGER_SCHEMA: &str = r#"
 CREATE TABLE ledger_accounts (
@@ -61,7 +62,7 @@ CREATE TABLE entries (
     opening_account_id INTEGER UNIQUE REFERENCES accounts(id)
 );
 CREATE INDEX entry_date ON entries(date);
-CREATE TABLE ledger_postings (
+CREATE TABLE book_postings (
     id INTEGER PRIMARY KEY,
     entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
     ledger_account_id INTEGER NOT NULL REFERENCES ledger_accounts(id),
@@ -73,20 +74,24 @@ CREATE TABLE ledger_postings (
     memo TEXT,
     date TEXT,
     origin TEXT,
-    other_hashes TEXT
+    other_hashes TEXT,
+    original_payee TEXT,
+    original_memo TEXT,
+    tags TEXT,
+    rules TEXT
 );
-CREATE INDEX posting_entry ON ledger_postings(entry_id);
-CREATE INDEX posting_account ON ledger_postings(ledger_account_id);
-CREATE UNIQUE INDEX posting_import_hash ON ledger_postings(ledger_account_id, import_hash) WHERE import_hash IS NOT NULL;
+CREATE INDEX posting_entry ON book_postings(entry_id);
+CREATE INDEX posting_account ON book_postings(ledger_account_id);
+CREATE UNIQUE INDEX posting_import_hash ON book_postings(ledger_account_id, import_hash) WHERE import_hash IS NOT NULL;
 CREATE TABLE ledger_turnover (id INTEGER PRIMARY KEY CHECK (id = 1), total INTEGER NOT NULL);
 INSERT INTO ledger_turnover VALUES (1, 0);
-CREATE TRIGGER posting_added AFTER INSERT ON ledger_postings BEGIN
+CREATE TRIGGER posting_added AFTER INSERT ON book_postings BEGIN
     UPDATE ledger_turnover SET total = total + abs(NEW.amount);
 END;
-CREATE TRIGGER posting_changed AFTER UPDATE OF amount ON ledger_postings BEGIN
+CREATE TRIGGER posting_changed AFTER UPDATE OF amount ON book_postings BEGIN
     UPDATE ledger_turnover SET total = total - abs(OLD.amount) + abs(NEW.amount);
 END;
-CREATE TRIGGER posting_removed AFTER DELETE ON ledger_postings BEGIN
+CREATE TRIGGER posting_removed AFTER DELETE ON book_postings BEGIN
     UPDATE ledger_turnover SET total = total - abs(OLD.amount);
 END;
 CREATE TRIGGER account_gets_ledger AFTER INSERT ON accounts BEGIN
@@ -113,7 +118,7 @@ pub(crate) const PROFIT_AND_LOSS: &str = "l.class IN ('income','expense')";
 /// The postings that count from ?1 to ?2, each with how many of them its entry has (`n`).
 pub(crate) const COUNTED: &str = "WITH counted AS (
     SELECT l.category_id, l.class, p.amount, COUNT(*) OVER (PARTITION BY p.entry_id) AS n
-    FROM ledger_postings p JOIN entries e ON e.id=p.entry_id JOIN ledger_accounts l ON l.id=p.ledger_account_id
+    FROM book_postings p JOIN entries e ON e.id=p.entry_id JOIN ledger_accounts l ON l.id=p.ledger_account_id
     WHERE l.class IN ('income','expense') AND e.date>=?1 AND e.date<=?2)";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -308,6 +313,13 @@ pub(crate) struct Line {
     pub date: Option<String>,
     /// Where the posting comes from, when it matters: [`ADDED`].
     pub origin: Option<String>,
+    /// What the bank wrote, whatever the texts are now. `None` is the text as it is.
+    pub original_payee: Option<String>,
+    pub original_memo: Option<String>,
+    /// Separated by commas.
+    pub tags: Option<String>,
+    /// What the rules did: [`crate::rules::Marks`].
+    pub rules: Option<String>,
 }
 
 /// What an account of the chart is, for the checks.
@@ -427,7 +439,7 @@ impl Db {
                     let kept: HashSet<i64> = d.lines.iter().filter_map(|l| l.id).collect();
                     for old in &current {
                         if !kept.contains(old) {
-                            self.conn.execute("DELETE FROM ledger_postings WHERE id=?1", [*old])?;
+                            self.conn.execute("DELETE FROM book_postings WHERE id=?1", [*old])?;
                         }
                     }
                     id
@@ -446,9 +458,10 @@ impl Db {
                         let n = self
                             .conn
                             .prepare_cached(
-                                "UPDATE ledger_postings SET ledger_account_id=?3, amount=?4, currency=?5, cleared=?6,
+                                "UPDATE book_postings SET ledger_account_id=?3, amount=?4, currency=?5, cleared=?6,
                                         import_hash=?7, payee=?8, memo=?9, date=?10,
-                                        origin=?11, other_hashes=?12 WHERE id=?1 AND entry_id=?2",
+                                        origin=?11, other_hashes=?12, original_payee=?13,
+                                        original_memo=?14, tags=?15, rules=?16 WHERE id=?1 AND entry_id=?2",
                             )?
                             .execute(params![
                                 id,
@@ -462,7 +475,11 @@ impl Db {
                                 l.memo,
                                 l.date,
                                 l.origin,
-                                l.other_hashes
+                                l.other_hashes,
+                                l.original_payee,
+                                l.original_memo,
+                                l.tags,
+                                l.rules
                             ])?;
                         if n != 1 {
                             return Err(no_entry(entry));
@@ -472,9 +489,10 @@ impl Db {
                     wanted => {
                         self.conn
                             .prepare_cached(
-                                "INSERT INTO ledger_postings(id,entry_id,ledger_account_id,amount,currency,cleared,
-                                                      import_hash,payee,memo,date,origin,other_hashes)
-                                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                                "INSERT INTO book_postings(id,entry_id,ledger_account_id,amount,currency,cleared,
+                                                      import_hash,payee,memo,date,origin,other_hashes,
+                                                      original_payee,original_memo,tags,rules)
+                                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
                             )?
                             .execute(params![
                                 wanted,
@@ -488,7 +506,11 @@ impl Db {
                                 l.memo,
                                 l.date,
                                 l.origin,
-                                l.other_hashes
+                                l.other_hashes,
+                                l.original_payee,
+                                l.original_memo,
+                                l.tags,
+                                l.rules
                             ])?;
                         self.conn.last_insert_rowid()
                     }
@@ -536,7 +558,7 @@ impl Db {
             return Ok(());
         }
         let mut st = self.conn.prepare_cached(
-            "SELECT 1 FROM ledger_postings WHERE ledger_account_id=?1 GROUP BY currency HAVING SUM(amount) NOT BETWEEN -?2 AND ?2",
+            "SELECT 1 FROM book_postings WHERE ledger_account_id=?1 GROUP BY currency HAVING SUM(amount) NOT BETWEEN -?2 AND ?2",
         )?;
         for a in touched {
             if st.exists(params![a, MAX_BALANCE])? {
@@ -586,7 +608,7 @@ impl Db {
     }
 
     fn posting_ids(&self, entry: i64) -> Result<Vec<i64>> {
-        let mut st = self.conn.prepare_cached("SELECT id FROM ledger_postings WHERE entry_id=?1 ORDER BY id")?;
+        let mut st = self.conn.prepare_cached("SELECT id FROM book_postings WHERE entry_id=?1 ORDER BY id")?;
         Ok(st.query_map([entry], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?)
     }
 
@@ -624,8 +646,8 @@ impl Db {
             .ok_or_else(|| no_entry(id))?;
         let mut st = self.conn.prepare_cached(
             "SELECT id, ledger_account_id, amount, currency, cleared, import_hash, payee, memo, date, origin,
-                    other_hashes
-             FROM ledger_postings WHERE entry_id=?1 ORDER BY id",
+                    other_hashes, original_payee, original_memo, tags, rules
+             FROM book_postings WHERE entry_id=?1 ORDER BY id",
         )?;
         let lines = st.query_map([id], |r| {
             Ok(Line {
@@ -640,6 +662,10 @@ impl Db {
                 date: r.get(8)?,
                 origin: r.get(9)?,
                 other_hashes: r.get(10)?,
+                original_payee: r.get(11)?,
+                original_memo: r.get(12)?,
+                tags: r.get(13)?,
+                rules: r.get(14)?,
             })
         })?;
         for l in lines {
@@ -653,7 +679,7 @@ impl Db {
         Ok(self
             .conn
             .prepare_cached(
-                "SELECT e.id FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
+                "SELECT e.id FROM book_postings p JOIN entries e ON e.id=p.entry_id
                  JOIN ledger_accounts l ON l.id=p.ledger_account_id
                  WHERE p.id=?1 AND l.money_account_id IS NOT NULL AND e.opening_account_id IS NULL",
             )?
@@ -757,6 +783,9 @@ impl Db {
             _ => None,
         };
         let (payee, memo) = (tx.payee.trim().to_string(), tx.memo.trim().to_string());
+        let old_account = d.lines.get(other).map_or(0, |l| l.account);
+        let old_payee = d.lines.iter().find(|l| l.id == Some(id)).and_then(|l| l.payee.clone());
+        let old_payee = old_payee.unwrap_or_else(|| d.payee.clone());
         // A side with a date of its own changes that one; the others follow the entry.
         let date = d2s(tx.date);
         let mut shared = true;
@@ -768,6 +797,8 @@ impl Db {
             let mine = l.id == Some(id);
             if mine {
                 l.cleared = tx.cleared;
+                let moved = other_account.is_some() && other_account != Some(old_account);
+                l.changed_by_hand(moved, payee != old_payee)?;
             }
             if kind == TxKind::Transfer {
                 // Each side has its own payee.
@@ -812,6 +843,9 @@ impl Db {
                 let account = self.category_ledger(category)?;
                 if let Some(l) = d.lines.get_mut(other) {
                     l.account = account;
+                }
+                for l in &mut d.lines {
+                    l.changed_by_hand(true, false)?;
                 }
             }
         }
@@ -868,7 +902,7 @@ impl Db {
     }
 
     fn entries_on(&self, ledger: i64) -> Result<Vec<i64>> {
-        let mut st = self.conn.prepare("SELECT DISTINCT entry_id FROM ledger_postings WHERE ledger_account_id=?1")?;
+        let mut st = self.conn.prepare("SELECT DISTINCT entry_id FROM book_postings WHERE ledger_account_id=?1")?;
         Ok(st.query_map([ledger], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?)
     }
 
@@ -932,7 +966,7 @@ impl Db {
         self.atomically(|| {
             let entry: Option<i64> = self
                 .conn
-                .query_row("SELECT entry_id FROM ledger_postings WHERE id=?1", [posting], |r| r.get(0))
+                .query_row("SELECT entry_id FROM book_postings WHERE id=?1", [posting], |r| r.get(0))
                 .optional()?;
             let mut d = self.load_draft(entry.ok_or_else(|| no_posting(posting))?)?;
             let account = self.category_ledger(category)?;
@@ -942,6 +976,9 @@ impl Db {
                     bail!(tr("only a posting on a category can be given another one"));
                 }
                 l.account = account;
+            }
+            for l in &mut d.lines {
+                l.changed_by_hand(true, false)?;
             }
             self.save_entry(&d)?;
             Ok(())
@@ -1142,7 +1179,7 @@ impl Db {
         self.atomically(|| {
             self.hand_made(id)?;
             let used: bool = self.conn.query_row(
-                "SELECT EXISTS (SELECT 1 FROM ledger_postings WHERE ledger_account_id=?1)
+                "SELECT EXISTS (SELECT 1 FROM book_postings WHERE ledger_account_id=?1)
                      OR EXISTS (SELECT 1 FROM ledger_accounts WHERE parent_id=?1)",
                 [id],
                 |r| r.get(0),
@@ -1160,7 +1197,7 @@ impl Db {
     /// Sums of the postings up to a date, by account and currency.
     fn ledger_sums(&self, until: Option<NaiveDate>) -> Result<Vec<(i64, String, Cents)>> {
         let mut st = self.conn.prepare(
-            "SELECT p.ledger_account_id, p.currency, SUM(p.amount) FROM ledger_postings p JOIN entries e ON e.id=p.entry_id
+            "SELECT p.ledger_account_id, p.currency, SUM(p.amount) FROM book_postings p JOIN entries e ON e.id=p.entry_id
              WHERE ?1 IS NULL OR e.date<=?1 GROUP BY p.ledger_account_id, p.currency ORDER BY 1, 2",
         )?;
         let rows = st.query_map([until.map(d2s)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
@@ -1200,7 +1237,7 @@ impl Db {
     pub fn entries(&self, f: &EntryFilter) -> Result<Vec<Entry>> {
         let mut st = self.conn.prepare(
             "SELECT id FROM entries e
-             WHERE (?1 IS NULL OR EXISTS (SELECT 1 FROM ledger_postings p WHERE p.entry_id=e.id AND p.ledger_account_id=?1))
+             WHERE (?1 IS NULL OR EXISTS (SELECT 1 FROM book_postings p WHERE p.entry_id=e.id AND p.ledger_account_id=?1))
                AND (?2 IS NULL OR date>=?2) AND (?3 IS NULL OR date<=?3)
              ORDER BY date DESC, id DESC LIMIT ?4 OFFSET ?5",
         )?;
@@ -1244,29 +1281,29 @@ impl Db {
             Ok(st.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?)
         };
         for id in
-            ids("SELECT e.id FROM entries e WHERE (SELECT COUNT(*) FROM ledger_postings p WHERE p.entry_id=e.id) < 2")?
+            ids("SELECT e.id FROM entries e WHERE (SELECT COUNT(*) FROM book_postings p WHERE p.entry_id=e.id) < 2")?
         {
             problems.push(trf("entry {id} has fewer than two postings", &[("id", &id)]));
         }
         for id in ids("SELECT DISTINCT entry_id FROM
-                       (SELECT entry_id FROM ledger_postings GROUP BY entry_id, currency HAVING SUM(amount) <> 0)")?
+                       (SELECT entry_id FROM book_postings GROUP BY entry_id, currency HAVING SUM(amount) <> 0)")?
         {
             problems.push(trf("entry {id} does not balance", &[("id", &id)]));
         }
-        for id in ids("SELECT p.id FROM ledger_postings p
+        for id in ids("SELECT p.id FROM book_postings p
                        LEFT JOIN entries e ON e.id=p.entry_id LEFT JOIN ledger_accounts l ON l.id=p.ledger_account_id
                        WHERE e.id IS NULL OR l.id IS NULL")?
         {
             problems.push(trf("posting {id} has no entry or no account", &[("id", &id)]));
         }
-        for id in ids("SELECT p.id FROM ledger_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+        for id in ids("SELECT p.id FROM book_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
                        WHERE l.currency IS NOT NULL AND l.currency <> p.currency")?
         {
             problems.push(trf("posting {id} is not in the currency of its account", &[("id", &id)]));
         }
         for id in ids("SELECT e.id FROM entries e WHERE e.opening_account_id IS NOT NULL AND
-                       (SELECT COUNT(*) FROM ledger_postings p WHERE p.entry_id=e.id) <>
-                       (SELECT COUNT(*) FROM ledger_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                       (SELECT COUNT(*) FROM book_postings p WHERE p.entry_id=e.id) <>
+                       (SELECT COUNT(*) FROM book_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
                         WHERE p.entry_id=e.id
                           AND (l.money_account_id=e.opening_account_id OR l.system='opening_balances'))")?
         {
@@ -1294,7 +1331,7 @@ impl Db {
             problems.push(trf("account {id} of the chart of accounts stands for nothing", &[("id", &id)]));
         }
         for _ in ids("SELECT id FROM ledger_turnover WHERE
-                      total <> (SELECT COALESCE(SUM(abs(amount)),0) FROM ledger_postings)")?
+                      total <> (SELECT COALESCE(SUM(abs(amount)),0) FROM book_postings)")?
         {
             problems.push(tr("the sum of the postings is not the one on record").into());
         }
@@ -1308,7 +1345,7 @@ impl Db {
         };
         Ok(Verification {
             entries: count("SELECT COUNT(*) FROM entries")?,
-            postings: count("SELECT COUNT(*) FROM ledger_postings")?,
+            postings: count("SELECT COUNT(*) FROM book_postings")?,
             problems,
         })
     }

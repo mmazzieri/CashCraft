@@ -309,7 +309,7 @@ fn the_user_sees_and_chooses_the_transaction() {
     assert_eq!(counts(b.import(&t, Decision { each, ..Default::default() }).unwrap()), (1, 0, 1));
     // The one chosen has the key now.
     let keys: String =
-        b.db.conn.query_row("SELECT other_hashes FROM ledger_postings WHERE id=?1", [chosen], |r| r.get(0)).unwrap();
+        b.db.conn.query_row("SELECT other_hashes FROM book_postings WHERE id=?1", [chosen], |r| r.get(0)).unwrap();
     assert!(keys.contains("ofx:") && keys.contains("src:csv") && keys.contains("src:ofx"));
 }
 
@@ -387,7 +387,7 @@ fn rows_of_older_versions_are_compared() {
     let b = Books::new();
     let csv = csv_file(&[("05/01/2026", "-9,99", "POS Shop")]);
     b.import(&csv, ask()).unwrap();
-    b.db.conn.execute("UPDATE ledger_postings SET other_hashes=NULL", []).unwrap();
+    b.db.conn.execute("UPDATE book_postings SET other_hashes=NULL", []).unwrap();
     assert!(b.likely(&csv_file(&[("06/01/2026", "-9,99", "POS Shop")])).is_empty());
     let t = ofx_file(&[("A", "20260107", "-9.99", "SHOP")]);
     assert_eq!(b.likely(&t).len(), 1);
@@ -707,10 +707,10 @@ fn the_source_of_older_rows_is_kept() {
         b.import(&csv_file(&[("05/01/2026", "-1", "Bar")]), ask()).unwrap();
         let origin = card.then_some("card");
         b.db.conn
-            .execute("UPDATE ledger_postings SET other_hashes=NULL, origin=?1 WHERE import_hash IS NOT NULL", [origin])
+            .execute("UPDATE book_postings SET other_hashes=NULL, origin=?1 WHERE import_hash IS NOT NULL", [origin])
             .unwrap();
         b.import(&ofx_file(&[("A", "20260105", "-1", "Bar")]), skip(&[0])).unwrap();
-        let sql = "SELECT other_hashes FROM ledger_postings WHERE import_hash IS NOT NULL";
+        let sql = "SELECT other_hashes FROM book_postings WHERE import_hash IS NOT NULL";
         let marks: String = b.db.conn.query_row(sql, [], |r| r.get(0)).unwrap();
         assert!(marks.starts_with(source) && marks.contains("src:ofx"), "{marks}");
     }
