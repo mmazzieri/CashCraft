@@ -180,7 +180,32 @@ pub fn parse_date(s: &str) -> Option<NaiveDate> {
             return Some(d);
         }
     }
-    None
+    worded_date(s)
+}
+
+/// "24 novembre 2026", "24 nov 2026", "24 November 2026": statements write it in their own language,
+/// whatever the language in use.
+fn worded_date(s: &str) -> Option<NaiveDate> {
+    const MONTHS: [(&str, &str); 12] = [
+        ("gennaio", "january"),
+        ("febbraio", "february"),
+        ("marzo", "march"),
+        ("aprile", "april"),
+        ("maggio", "may"),
+        ("giugno", "june"),
+        ("luglio", "july"),
+        ("agosto", "august"),
+        ("settembre", "september"),
+        ("ottobre", "october"),
+        ("novembre", "november"),
+        ("dicembre", "december"),
+    ];
+    let mut words = s.split_whitespace();
+    let (day, month, year) = (words.next()?, words.next()?.to_lowercase(), words.next()?);
+    let is = |name: &str| month == name || (month.chars().count() == 3 && name.starts_with(&month));
+    let m = MONTHS.iter().position(|(it, en)| is(it) || is(en))? + 1;
+    let date = NaiveDate::from_ymd_opt(year.parse().ok()?, u32::try_from(m).ok()?, day.parse().ok()?)?;
+    (1970..=2100).contains(&date.year()).then_some(date)
 }
 
 /// dd/mm/yyyy in Italian, yyyy-mm-dd in English.

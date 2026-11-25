@@ -21,6 +21,7 @@ Rust crates are listed with their licenses by `cargo deny list`; `cargo deny che
 | egui, eframe (and egui-wgpu, egui-winit) | 0.37 | MIT OR Apache-2.0 |
 | rfd | 0.17.2 | MIT |
 | rusqlite, with SQLite bundled | 0.37 | MIT; SQLite is public domain |
+| craft-xls (storytold/craft-libs) | 0.1.0, pinned commit | MIT OR Apache-2.0 |
 | csv | 1.3 | Unlicense/MIT |
 | encoding_rs | 0.8 | (Apache-2.0 OR MIT) AND BSD-3-Clause |
 | image (PNG and ICO only) | 0.25 | MIT OR Apache-2.0 |

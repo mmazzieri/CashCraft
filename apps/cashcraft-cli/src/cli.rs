@@ -43,7 +43,7 @@ pub enum Cmd {
         #[arg(long)]
         memo: Option<String>,
     },
-    /// Import a bank CSV into an account
+    /// Import a bank statement (CSV or .xls) into an account
     #[command(visible_alias = "importa")]
     Import {
         file: PathBuf,
@@ -56,7 +56,7 @@ pub enum Cmd {
         #[command(flatten)]
         cols: ColumnArgs,
     },
-    /// Analyze a CSV without importing it
+    /// Analyze a statement (CSV or .xls) without importing it
     #[command(visible_alias = "anteprima")]
     Preview {
         file: PathBuf,

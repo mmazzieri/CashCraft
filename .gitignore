@@ -7,3 +7,7 @@
 *.db-shm
 .DS_Store
 /.claude
+# Real statements never enter the repository.
+*.xls
+*.xlsx
+/private

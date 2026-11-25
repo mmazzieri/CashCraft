@@ -15,6 +15,7 @@
 use crate::db::{Cents, Db, NewTx};
 use crate::i18n::{tr, trf};
 use crate::money::{parse_amount_with, parse_date};
+use crate::xls;
 use anyhow::{Context, Result, bail};
 use chrono::NaiveDate;
 use serde::Serialize;
@@ -35,6 +36,8 @@ pub struct Mapping {
     pub amount: Option<usize>,
     pub credit: Option<usize>,
     pub debit: Option<usize>,
+    /// Says whether the bank has booked the row.
+    pub status: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -67,6 +70,20 @@ pub struct ImportResult {
 
 /// Legge il file e lo converte in testo (UTF-8 o Windows-1252).
 pub fn read_text(path: &Path) -> Result<(String, &'static str)> {
+    Ok(decode(&read_bytes(path)?))
+}
+
+/// Reads a statement, CSV or Excel 97-2003, and finds its columns.
+pub fn load(path: &Path) -> Result<Table> {
+    let bytes = read_bytes(path)?;
+    if xls::is_xls(&bytes) {
+        return Ok(table(xls::rows(&bytes)?, b'\t', "Excel 97-2003"));
+    }
+    let (text, encoding) = decode(&bytes);
+    analyze(&text, encoding)
+}
+
+fn read_bytes(path: &Path) -> Result<Vec<u8>> {
     let context = || trf("cannot read {path}", &[("path", &path.display())]);
     let mut bytes = Vec::new();
     let file = std::fs::File::open(path).with_context(context)?;
@@ -74,7 +91,7 @@ pub fn read_text(path: &Path) -> Result<(String, &'static str)> {
     if bytes.len() as u64 > MAX_FILE {
         bail!(trf("{path}: the file is larger than {mb} MB", &[("path", &path.display()), ("mb", &(MAX_FILE >> 20))]));
     }
-    Ok(decode(&bytes))
+    Ok(bytes)
 }
 
 pub fn decode(bytes: &[u8]) -> (String, &'static str) {
@@ -190,6 +207,17 @@ const DESC_KW: [&str; 8] = [
 ];
 const EXTRA_KW: [&str; 6] = ["descrizione estesa", "descrizione completa", "dettaglio", "note", "memo", "causale"];
 
+const STATUS_KW: [&str; 3] = ["stato", "stato movimento", "status"];
+
+/// Whether a status says that the row is not booked yet. The bank may still change its text and
+/// date, so it would come in twice: it is imported once booked.
+fn is_pending(status: &str) -> bool {
+    let s = norm(status);
+    ["non contabilizzat", "da contabilizzare", "in attesa", "prenotat", "pending", "not booked"]
+        .iter()
+        .any(|w| s.contains(w))
+}
+
 /// Sceglie le colonne in base ai nomi dell'intestazione.
 pub fn map_headers(headers: &[String]) -> Mapping {
     let n: Vec<String> = headers.iter().map(|h| norm(h)).collect();
@@ -231,6 +259,7 @@ pub fn map_headers(headers: &[String]) -> Mapping {
     m.payee = pick(&PAYEE_KW, &no, &mut used);
     m.description = pick(&DESC_KW, &|h: &str| h.contains("estesa") || h.contains("completa"), &mut used);
     m.extra = pick(&EXTRA_KW, &no, &mut used);
+    m.status = pick(&STATUS_KW, &no, &mut used);
     m
 }
 
@@ -261,6 +290,11 @@ pub fn analyze(text: &str, encoding: &'static str) -> Result<Table> {
     if records.is_empty() {
         bail!(tr("the file is empty or is not a CSV"));
     }
+    Ok(table(records, delimiter, encoding))
+}
+
+/// Finds the headings, the columns and the decimal separator of a statement's rows.
+fn table(records: Vec<Vec<String>>, delimiter: u8, encoding: &'static str) -> Table {
     let header_row = records.iter().take(60).position(|r| looks_like_header(r));
     let (headers, mapping) = match header_row {
         Some(h) => {
@@ -288,7 +322,7 @@ pub fn analyze(text: &str, encoding: &'static str) -> Result<Table> {
     };
     let mut t = Table { delimiter, encoding, records, header_row, headers, mapping, decimal_comma: true };
     t.decimal_comma = detect_decimal_comma(&t);
-    Ok(t)
+    t
 }
 
 /// Senza intestazione: la colonna con più date, quella con più importi, il testo più lungo.
@@ -361,6 +395,16 @@ fn detect_decimal_comma(t: &Table) -> bool {
 pub fn smart_payee(desc: &str) -> String {
     // Solo ASCII: le posizioni restano quelle del testo originale.
     let lower = desc.to_ascii_lowercase();
+    // Layouts that name the other party between two fixed words, the first one at the start.
+    for (start, end) in [("addebito sdd ", " n:"), ("bonifico o/c: ", " abi-cab:"), ("", " operazione carta ")] {
+        if let Some(rest) = lower.strip_prefix(start)
+            && let Some(n) = rest.find(end)
+            && let Some(p) = desc.get(start.len()..start.len() + n)
+            && p.trim().len() >= 2
+        {
+            return collapse(p);
+        }
+    }
     for marker in ["presso ", "c/o ", "a favore di ", "beneficiario: ", "beneficiario ", "ordinante: ", "ordinante "] {
         if let Some(i) = lower.find(marker) {
             let Some(rest) = desc.get(i + marker.len()..) else { continue };
@@ -393,6 +437,10 @@ pub fn parse_rows(t: &Table, m: &Mapping, invert: bool) -> (Vec<ParsedRow>, usiz
     let get = |r: &Vec<String>, c: Option<usize>| -> String { c.and_then(|i| r.get(i)).cloned().unwrap_or_default() };
     for r in t.records.iter().skip(start) {
         if r.iter().all(|c| c.is_empty()) {
+            continue;
+        }
+        if is_pending(&get(r, m.status)) {
+            skipped += 1;
             continue;
         }
         let Some(date) = parse_date(&get(r, m.date)).or_else(|| parse_date(&get(r, m.value_date))) else {
@@ -531,6 +579,7 @@ pub fn describe(t: &Table, m: &Mapping) -> serde_json::Value {
             "amount": name(m.amount),
             "credit": name(m.credit),
             "debit": name(m.debit),
+            "status": name(m.status),
         }
     })
 }
@@ -661,5 +710,116 @@ mod tests {
         assert_eq!(import_rows(&db, acc, &rows, skipped).unwrap().added, 2);
         let again = import_rows(&db, acc, &rows, skipped).unwrap();
         assert_eq!((again.added, again.duplicates), (0, 2));
+    }
+
+    /// A workbook laid out as BPER's "Movimenti Conto" export, with invented contents.
+    fn bper() -> Vec<u8> {
+        let row = |cells: &[&str]| cells.iter().map(|c| c.to_string()).collect::<Vec<String>>();
+        let rows = vec![
+            row(&["Lunedì,01 dicembre 2025"]),
+            row(&[]),
+            row(&["CONTO", "", "", "Saldo disponibile", "1.000,00 €"]),
+            row(&["IBAN", "IT00X0000000000000000000000", "", "Saldo iniziale", "500,00 €"]),
+            row(&[]),
+            row(&["Data operazione", "Data valuta", "Descrizione", "Entrate", "Uscite", "Categoria", "Stato"]),
+            row(&[
+                "28 novembre 2025",
+                "29 novembre 2025",
+                "Bar Esempio          ",
+                " ",
+                "-9.9",
+                "PAGAMENTO",
+                "Contabilizzato",
+            ]),
+            row(&[
+                "27 novembre 2025",
+                "27 novembre 2025",
+                "BONIFICO DI PROVA",
+                "1234.5",
+                " ",
+                "BONIFICO",
+                "Contabilizzato",
+            ]),
+            row(&[
+                "26 novembre 2025",
+                "26 novembre 2025",
+                "Negozio Esempio",
+                " ",
+                "-12",
+                "PAGAMENTO",
+                "Non contabilizzato",
+            ]),
+            row(&["2 maggio 2025", "2 maggio 2025", "COMMISSIONE", " ", "-0.29", "COMMISSIONE", "Contabilizzato"]),
+            row(&[" ", " ", "Totale", "1.234,50", "-22,19", " ", " "]),
+            row(&[]),
+            row(&["Dati aggiornati al 01 dicembre 2025"]),
+        ];
+        craft_xls::testing::workbook(&[("Movimenti Conto", rows)]).unwrap()
+    }
+
+    fn load_bytes(bytes: &[u8]) -> Result<Table> {
+        Ok(table(xls::rows(bytes)?, b'\t', "Excel 97-2003"))
+    }
+
+    #[test]
+    fn payees_between_fixed_words() {
+        for (desc, payee) in [
+            ("BAR ESEMPIO ROMA IT Operazione carta ****0000 del 01.01.2025", "BAR ESEMPIO ROMA IT"),
+            ("ADDEBITO SDD Luce Esempio   N: 0000000000/00 ID:X0000 canone", "Luce Esempio"),
+            (
+                "BONIFICO o/c: DITTA ESEMPIO SRL  ABI-CAB: 00000-00000 a favore di Tizio Caio Num. 0",
+                "DITTA ESEMPIO SRL",
+            ),
+            ("addebito sdd ", "addebito sdd"),
+        ] {
+            assert_eq!(smart_payee(desc), payee);
+        }
+    }
+
+    #[test]
+    fn bper_statement() {
+        let t = load_bytes(&bper()).unwrap();
+        let (rows, skipped) = parse_rows(&t, &t.mapping, false);
+        let got: Vec<_> = rows.iter().map(|r| (r.date.to_string(), r.amount, r.payee.as_str())).collect();
+        assert_eq!(
+            got,
+            [
+                ("2025-05-02".into(), -29, "COMMISSIONE"),
+                ("2025-11-27".into(), 123_450, "BONIFICO DI PROVA"),
+                ("2025-11-28".into(), -990, "Bar Esempio"),
+            ]
+        );
+        assert!(skipped >= 2, "the pending row and the totals");
+        let db = Db::open_in_memory().unwrap();
+        let acc = db.add_account("A", crate::db::AccountKind::Bank, "EUR", 0, "").unwrap();
+        assert_eq!(import_rows(&db, acc, &rows, skipped).unwrap().added, 3);
+        assert_eq!(import_rows(&db, acc, &rows, skipped).unwrap().added, 0);
+    }
+
+    #[test]
+    fn date_cells_of_a_workbook_are_dates() {
+        let rows = vec![
+            vec!["Data".into(), "Descrizione".into(), "Importo".into()],
+            vec!["date:45989".into(), "Bar".into(), "-1.2".into()],
+        ];
+        let t = load_bytes(&craft_xls::testing::workbook(&[("a", rows)]).unwrap()).unwrap();
+        let (rows, _) = parse_rows(&t, &t.mapping, false);
+        assert_eq!(
+            rows.iter().map(|r| (r.date.to_string(), r.amount)).collect::<Vec<_>>(),
+            [("2025-11-28".into(), -120)]
+        );
+    }
+
+    #[test]
+    fn damaged_workbooks_never_panic() {
+        let good = bper();
+        for n in (0..good.len()).step_by(37) {
+            let _ = load_bytes(&good[..n]);
+            let mut bad = good.clone();
+            bad[n] ^= 0xFF;
+            if let Ok(t) = load_bytes(&bad) {
+                parse_rows(&t, &t.mapping, false);
+            }
+        }
     }
 }
