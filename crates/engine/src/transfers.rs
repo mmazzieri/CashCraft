@@ -5,6 +5,7 @@ use crate::db::{Cents, Db, Transaction, TxFilter, TxKind, d2s, no_transaction};
 use crate::i18n::{tr, trf};
 use crate::ledger::{ADDED, Draft, Line, OPENING, UNCATEGORIZED, split_error, too_big};
 use crate::money::{fmt_date, fmt_eur};
+use crate::rules::Marks;
 use anyhow::{Result, anyhow, bail};
 use chrono::NaiveDate;
 use serde::Serialize;
@@ -137,6 +138,9 @@ impl Db {
                 l.memo = Some(memo.trim().into());
                 l.original_payee.clone_from(&l.payee);
                 l.original_memo.clone_from(&l.memo);
+                // Its tags stay, with what was said of them.
+                let m = Marks::read(l.rules.as_deref());
+                l.rules = Marks { tags: m.tags, removed: m.removed, ..Default::default() }.write()?;
                 l.date = Some(d2s(date));
                 l.import_hash = Some(hash.into());
                 l.other_hashes = Some(marks.into());
@@ -178,7 +182,9 @@ impl Db {
                 let mine = own.lines.into_iter().find(|l| l.id == Some(id)).ok_or_else(|| no_transaction(id))?;
                 self.remove_entry(t.entry_id)?;
                 for l in d.lines.iter_mut().filter(|l| l.id != Some(far.id)) {
-                    *l = own_side(mine.clone(), &t);
+                    let mut side = own_side(mine.clone(), &t);
+                    side.add_tags_of(l);
+                    *l = side;
                 }
                 self.save_entry(&d)?;
                 return Ok(Turned { id, other_id: far.id, joined: true });
@@ -280,7 +286,11 @@ impl Db {
                     ],
                 }
             };
-            let (first, second) = (alone(mine, d.id, next(1)?), alone(other, None, next(2)?));
+            let mut stays = mine.clone();
+            if !keep_other {
+                stays.add_tags_of(other);
+            }
+            let (first, second) = (alone(&stays, d.id, next(1)?), alone(other, None, next(2)?));
             self.save_entry(&first)?;
             if !keep_other {
                 return Ok(None);

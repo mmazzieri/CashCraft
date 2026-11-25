@@ -691,8 +691,8 @@ There are no rules.	Non ci sono regole.
 To apply exactly this: rules apply --token {token}	Per applicare esattamente questo: regole apply --token {token}
 Transactions without a category	I movimenti senza categoria
 Transfers and splits are left alone.	I giroconti e i movimenti divisi restano come sono.
-Undo the last run ({n} transaction)	Annulla l'ultima applicazione ({n} movimento)
-Undo the last run ({n} transactions)	Annulla l'ultima applicazione ({n} movimenti)
+Undo the last run ({n} transaction)…	Annulla l'ultima applicazione ({n} movimento)…
+Undo the last run ({n} transactions)…	Annulla l'ultima applicazione ({n} movimenti)…
 When	Quando
 When all of these are met (leave out what does not matter):	Quando valgono tutte queste condizioni (lascia vuoto ciò che non conta):
 a new rule goes first or last	una regola nuova va per prima o per ultima
@@ -753,3 +753,28 @@ what was set by hand is overwritten only with all the transactions	ciò che è s
 ▶ Apply to transactions…	▶ Applica ai movimenti…
 ⚙ Always categorize like this…	⚙ Categorizza sempre così…
 a new payee with a group like $1 needs a regular expression	un nuovo beneficiario con un gruppo come $1 richiede un'espressione regolare
+run {id} cannot be undone: {what}	l'applicazione {id} non si può annullare: {what}
+say which run to undo: {what}	indica quale applicazione annullare: {what}
+the last run is {id}, of {when} ({n})	l'ultima applicazione è la {id}, del {when} ({n})
+the parameter "{name}" must be of type {type}	il parametro "{name}" deve essere di tipo {type}
+the parameters must be an object	i parametri devono essere un oggetto
+{n} rule went with it	insieme è stata cancellata {n} regola
+{n} rules went with it	insieme sono state cancellate {n} regole
+Counting…	Conteggio…
+Delete the category?	Cancellare la categoria?
+It matches {n} transaction at least	Corrisponde ad almeno {n} movimento
+It matches {n} transactions at least	Corrisponde ad almeno {n} movimenti
+Notes typed before the rules	Note scritte prima delle regole
+Payee typed before the rules	Beneficiario scritto prima delle regole
+The notes are the payee that a rule replaced	Le note sono il beneficiario che una regola ha sostituito
+The transactions of "{name}" stay, uncategorized.	I movimenti di "{name}" restano, senza categoria.
+To undo it: rules undo {run}	Per annullarla: regole undo {run}
+Transactions changed since then stay as they are.	I movimenti modificati da allora restano come sono.
+Undo	Annulla l'applicazione
+Undo the rules?	Annullare le regole?
+{n} rule for this account goes too.	Si cancella anche {n} regola di questo conto.
+{n} rules for this account go too.	Si cancellano anche {n} regole di questo conto.
+{n} rule that gives it goes too.	Si cancella anche {n} regola che la assegna.
+{n} rules that give it go too.	Si cancellano anche {n} regole che la assegnano.
+{n} rule for one account goes too.	Si cancella anche {n} regola limitata a un conto.
+{n} rules for one account go too.	Si cancellano anche {n} regole limitate a un conto.

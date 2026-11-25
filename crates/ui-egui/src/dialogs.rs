@@ -74,7 +74,8 @@ impl App {
                     }
                     if f.has_category {
                         form_row(ui, tr("Category"), |ui| {
-                            category_combo(ui, "txcat", &cats, &mut f.category, tr("Automatic (rules)"));
+                            f.category_chosen |=
+                                category_combo(ui, "txcat", &cats, &mut f.category, tr("Automatic (rules)"));
                         });
                     }
                     form_row(ui, tr("Notes"), |ui| {
@@ -386,6 +387,38 @@ impl App {
                 Dialog::RunRules(f) => {
                     (keep, message) = self.run_dialog(ui, f);
                 }
+                Dialog::ConfirmUndoRules(last) => {
+                    ui.heading(tr("Undo the rules?"));
+                    ui.label(last.text());
+                    ui.label(tr("Transactions changed since then stay as they are."));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if primary_button(ui, tr("Undo")).clicked() {
+                            message = Some(self.db.undo_run(last.id).map(|u| u.message()));
+                            keep = false;
+                        }
+                        if ui.button(tr("Cancel")).clicked() {
+                            keep = false;
+                        }
+                    });
+                }
+                Dialog::ConfirmDeleteCategory(id, name, rules) => {
+                    ui.heading(tr("Delete the category?"));
+                    ui.label(trf("The transactions of \"{name}\" stay, uncategorized.", &[("name", name)]));
+                    let text = trn(*rules, "{n} rule that gives it goes too.", "{n} rules that give it go too.");
+                    ui.label(RichText::new(text).color(AMBER));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let delete = egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(RED);
+                        if ui.add(delete).clicked() {
+                            message = Some(self.db.delete_category(*id).map(|_| tr("Category deleted").to_string()));
+                            keep = false;
+                        }
+                        if ui.button(tr("Cancel")).clicked() {
+                            keep = false;
+                        }
+                    });
+                }
                 Dialog::Import(st) => {
                     let (k, m) = self.import_dialog(ui, st, &accounts);
                     keep = k;
@@ -464,7 +497,7 @@ impl App {
                         }
                     });
                 }
-                Dialog::ConfirmDeleteAccount(id, name) => {
+                Dialog::ConfirmDeleteAccount(id, name, rules) => {
                     ui.heading(tr("Delete the account?"));
                     ui.label(trf(
                         "The account \"{name}\" and all its transactions will be deleted. This cannot be undone.",
@@ -473,6 +506,10 @@ impl App {
                     ui.label(tr(
                         "The other side of its transfers stays in the other account, against the opening balances: no other balance changes.",
                     ));
+                    if *rules > 0 {
+                        let text = trn(*rules, "{n} rule for this account goes too.", "{n} rules for this account go too.");
+                        ui.label(RichText::new(text).color(AMBER));
+                    }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui
@@ -492,6 +529,12 @@ impl App {
                     ui.heading(tr("Delete the sample data?"));
                     ui.label(tr("Sample accounts, transactions, budgets and scheduled transactions will be deleted."));
                     ui.label(tr("Categories and rules stay, so you can start right away."));
+                    let of_account = |a: &Account| self.db.rules_of_account(a.id).unwrap_or(0);
+                    let gone: usize = accounts.iter().map(of_account).sum();
+                    if gone > 0 {
+                        let text = trn(gone, "{n} rule for one account goes too.", "{n} rules for one account go too.");
+                        ui.label(RichText::new(text).color(AMBER));
+                    }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if primary_button(ui, tr("Delete and start")).clicked() {
@@ -609,7 +652,7 @@ impl App {
         (keep, message)
     }
 
-    fn save_tx(&mut self, f: &TxForm) -> Result<String> {
+    pub(crate) fn save_tx(&mut self, f: &TxForm) -> Result<String> {
         let account = f.account.ok_or_else(|| anyhow::anyhow!(tr("choose an account")))?;
         let date = parse_date(&f.date).ok_or_else(|| anyhow::anyhow!(tr("the date is not valid (yyyy-mm-dd)")))?;
         let a = parse_amount(&f.amount)?.abs();
@@ -623,6 +666,10 @@ impl App {
         let tags = parse_tags(&f.tags)?;
         self.db.atomically(|| match f.id {
             Some(id) => {
+                if f.category_chosen {
+                    // The one it has too, when it was a rule's.
+                    self.db.set_category(id, f.category)?;
+                }
                 self.db.update_transaction(
                     id,
                     &TxEdit {
@@ -653,9 +700,7 @@ impl App {
                     card_row: false,
                 })?;
                 if let Some(id) = id.filter(|_| !tags.is_empty()) {
-                    let mut all = self.db.transaction(id)?.tags;
-                    all.extend(tags.iter().cloned());
-                    self.db.set_tags(id, &all)?;
+                    self.db.add_tags(id, &tags)?;
                 }
                 Ok(tr("Transaction recorded").into())
             }
@@ -930,7 +975,7 @@ impl App {
             {
                 ui.label(RichText::new(tr("⚠ This account is not a credit card.")).color(AMBER));
             }
-            if let Err(e) = st.compare(&self.db) {
+            if let Err(e) = st.compare(&self.db).and_then(|_| st.look_at_rules(&self.db)) {
                 st.error = format!("{e:#}");
             }
             if let Some(a) = target.filter(|_| st.new_account.trim().is_empty()) {

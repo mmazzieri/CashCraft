@@ -26,7 +26,7 @@ use crate::{pdf, xls};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read as _;
 use std::path::Path;
 
@@ -954,6 +954,60 @@ pub fn import_rows(db: &Db, account_id: i64, rows: &[ParsedRow], skipped: usize)
     import_deciding(db, account_id, rows, skipped, &Decision::default())
 }
 
+/// The added sides of transfers in an account, which lines of a statement may take the place of.
+struct Sides {
+    by_amount: HashMap<Cents, Vec<Transaction>>,
+    /// How many rows there are of each amount and date.
+    rows: HashMap<Cents, BTreeMap<NaiveDate, usize>>,
+}
+
+impl Sides {
+    fn new(db: &Db, account: i64, rows: &[ParsedRow], fresh: &[usize]) -> Result<Self> {
+        let mut out = Sides { by_amount: HashMap::new(), rows: HashMap::new() };
+        for t in db.added_sides(account)? {
+            out.by_amount.entry(t.amount).or_default().push(t);
+        }
+        // The rows of a card statement are never sides of transfers.
+        for row in fresh.iter().filter_map(|i| rows.get(*i)).filter(|r| r.key.is_none()) {
+            if out.by_amount.contains_key(&row.amount) {
+                *out.rows.entry(row.amount).or_default().entry(row.date).or_default() += 1;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Those that a row may be.
+    fn of(&self, row: &ParsedRow) -> Vec<&Transaction> {
+        let all = self.by_amount.get(&row.amount).into_iter().flatten();
+        all.filter(|t| row.key.is_none() && near(row.date, t.date)).take(MAX_SIDES).collect()
+    }
+
+    /// The one that a row takes the place of: only when neither the line nor the side could be another one.
+    fn taken(&self, row: &ParsedRow) -> Option<&Transaction> {
+        let mine = self.of(row);
+        let [side] = mine.as_slice() else { return None };
+        let rows = self.rows.get(&side.amount).into_iter().flatten();
+        let n: usize = rows.filter(|(d, _)| near(**d, side.date)).map(|(_, n)| n).sum();
+        (n == 1).then_some(*side)
+    }
+}
+
+/// The rows that an import would add as new transactions, as far as is decided: the rules run on these alone.
+pub fn rows_to_add(db: &Db, account: Option<i64>, rows: &[ParsedRow], decision: &Decision) -> Result<HashSet<usize>> {
+    let plan = db.plan_import(account, rows)?;
+    let mut fresh = Vec::new();
+    for (i, p) in plan.rows.iter().enumerate() {
+        match &p.state {
+            State::New => fresh.push(i),
+            State::Likely { certain, .. } if decision.adds(i, *certain) => fresh.push(i),
+            _ => {}
+        }
+    }
+    let Some(account) = account else { return Ok(fresh.into_iter().collect()) };
+    let sides = Sides::new(db, account, rows, &fresh)?;
+    Ok(fresh.into_iter().filter(|i| rows.get(*i).is_some_and(|r| sides.taken(r).is_none())).collect())
+}
+
 pub(crate) fn import_deciding(
     db: &Db,
     account_id: i64,
@@ -989,35 +1043,14 @@ pub(crate) fn import_deciding(
                 _ => fresh.push(i),
             }
         }
-        // The rows of a card statement are never sides of transfers.
-        let fits =
-            |row: &ParsedRow, t: &Transaction| row.key.is_none() && row.amount == t.amount && near(row.date, t.date);
-        let mut sides: HashMap<Cents, Vec<Transaction>> = HashMap::new();
-        for t in db.added_sides(account_id)? {
-            sides.entry(t.amount).or_default().push(t);
-        }
-        // How many rows each side fits.
-        let mut dates: HashMap<Cents, BTreeMap<NaiveDate, usize>> = HashMap::new();
-        for row in
-            fresh.iter().filter_map(|i| rows.get(*i)).filter(|r| r.key.is_none() && sides.contains_key(&r.amount))
-        {
-            *dates.entry(row.amount).or_default().entry(row.date).or_default() += 1;
-        }
-        let rows_of = |t: &Transaction| -> usize {
-            let near = dates.get(&t.amount).into_iter().flatten().filter(|(d, _)| near(**d, t.date));
-            near.map(|(_, n)| n).sum()
-        };
+        let sides = Sides::new(db, account_id, rows, &fresh)?;
         let rules = db.ruleset()?;
         res.broken_rules.clone_from(&rules.broken);
         let mut unsure = Vec::new();
         for i in &fresh {
             let (Some(row), Some(p)) = (rows.get(*i), plan.rows.get(*i)) else { continue };
-            let mine: Vec<&Transaction> =
-                sides.get(&row.amount).into_iter().flatten().filter(|t| fits(row, t)).take(MAX_SIDES).collect();
-            // Only when neither the line nor the side could be another one.
-            if let [side] = mine.as_slice()
-                && rows_of(side) == 1
-            {
+            let mine = sides.of(row);
+            if let Some(side) = sides.taken(row) {
                 db.adopt(side, row.date, &row.payee, &row.memo, &p.hash, &p.marks)?;
                 let payee = row.payee.clone();
                 res.adopted.push(Adopted { id: side.id, date: row.date, payee, amount: row.amount });

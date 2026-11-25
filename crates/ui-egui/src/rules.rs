@@ -6,10 +6,13 @@ use crate::gui::{
 };
 use anyhow::Result;
 use cashcraft_engine::db::{Account, Category, Db, Transaction, TxFilter};
-use cashcraft_engine::i18n::{tr, trf, trn};
+use cashcraft_engine::i18n::{lang, tr, trf, trn, with_lang};
 use cashcraft_engine::money::{fmt_date, fmt_plain, parse_amount};
-use cashcraft_engine::rules::{Place, Plan, Rule, Scope, Sign, broken_message, parse_tags};
+use cashcraft_engine::rules::{Place, Plan, Rule, Scope, Sign, broken_message, count_matches, parse_tags};
 use egui::{self, RichText, Ui};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
 /// A rule as it is written.
 pub struct RuleForm {
@@ -21,8 +24,8 @@ pub struct RuleForm {
     /// Before the other rules.
     pub first: bool,
     /// What the live count is of.
-    txs: Vec<Transaction>,
-    counted: Option<(Rule, std::result::Result<usize, String>)>,
+    txs: Arc<Vec<Transaction>>,
+    count: LiveCount,
     pub error: String,
 }
 
@@ -36,8 +39,8 @@ impl RuleForm {
             tags: rule.tags.join(", "),
             rule,
             first,
-            txs: db.transactions(&TxFilter::default())?,
-            counted: None,
+            txs: Arc::new(db.transactions(&TxFilter::default())?),
+            count: LiveCount::default(),
             error: String::new(),
         })
     }
@@ -53,20 +56,73 @@ impl RuleForm {
         })
     }
 
-    /// How many transactions the rule matches as it is written now.
-    pub fn count(&mut self, db: &Db) -> std::result::Result<usize, String> {
+    /// How many transactions the rule matches as it is written now; `None` while it is not known. Counted beside
+    /// the window, once the user stops writing.
+    pub fn count(&mut self) -> Option<Counted> {
         let rule = match self.read() {
             Ok(r) => r,
-            Err(e) => return Err(format!("{e:#}")),
+            Err(e) => return Some(Err(format!("{e:#}"))),
         };
-        match &self.counted {
-            Some((of, n)) if *of == rule => n.clone(),
-            _ => {
-                let n = db.rule_matches(&rule, &self.txs).map(|m| m.len()).map_err(|e| format!("{e:#}"));
-                self.counted = Some((rule, n.clone()));
-                n
-            }
+        self.count.of(rule, &self.txs)
+    }
+}
+
+/// How many match, and whether those are all.
+pub type Counted = std::result::Result<(usize, bool), String>;
+
+/// How long a rule stays as it is before it is counted.
+const PAUSE: Duration = Duration::from_millis(250);
+/// How long a count may take.
+const LONGEST: Duration = Duration::from_secs(2);
+
+#[derive(Default)]
+struct LiveCount {
+    /// The rule as it was last seen, and since when.
+    rule: Option<(Rule, Option<Instant>)>,
+    running: Option<(mpsc::Receiver<Counted>, Arc<AtomicBool>)>,
+    done: Option<Counted>,
+}
+
+impl LiveCount {
+    fn of(&mut self, rule: Rule, txs: &Arc<Vec<Transaction>>) -> Option<Counted> {
+        if self.rule.as_ref().is_none_or(|(of, _)| *of != rule) {
+            self.stop();
+            self.rule = Some((rule, Some(Instant::now())));
+            self.done = None;
         }
+        if let Some((rule, since)) = &mut self.rule
+            && since.is_some_and(|s| s.elapsed() >= PAUSE)
+        {
+            *since = None;
+            let (send, receive) = mpsc::channel();
+            let stop = Arc::new(AtomicBool::new(false));
+            let (rule, txs, told, language) = (rule.clone(), txs.clone(), stop.clone(), lang());
+            std::thread::spawn(move || {
+                let n = with_lang(language, || count_matches(&rule, &txs, LONGEST, &told));
+                // Nobody may be waiting any more.
+                let _ = send.send(n.map_err(|e| format!("{e:#}")));
+            });
+            self.running = Some((receive, stop));
+        }
+        if let Some((receive, _)) = &self.running
+            && let Ok(n) = receive.try_recv()
+        {
+            self.done = Some(n);
+            self.running = None;
+        }
+        self.done.clone()
+    }
+
+    fn stop(&mut self) {
+        if let Some((_, stop)) = self.running.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Drop for LiveCount {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -110,8 +166,8 @@ impl App {
                     if let Some(l) = &last {
                         let text = trn(
                             l.changed,
-                            "Undo the last run ({n} transaction)",
-                            "Undo the last run ({n} transactions)",
+                            "Undo the last run ({n} transaction)…",
+                            "Undo the last run ({n} transactions)…",
                         );
                         undo = ui.button(text).on_hover_text(&l.made_at).clicked();
                     }
@@ -169,8 +225,7 @@ impl App {
             self.dialog = Some(Dialog::RunRules(RunForm::default()));
         }
         if undo {
-            let r = self.db.undo_rules().map(|u| u.message());
-            self.act(ui, r);
+            self.dialog = last.map(Dialog::ConfirmUndoRules);
         }
         if let Some((id, to)) = moved {
             let r = self.db.move_rule(id, to).map(|_| String::new());
@@ -272,13 +327,21 @@ impl App {
             });
         }
         ui.add_space(6.0);
-        match f.count(&self.db) {
-            Ok(n) => {
-                let text = trn(n, "It matches {n} transaction", "It matches {n} transactions");
+        match f.count() {
+            Some(Ok((n, whole))) => {
+                let text = if whole {
+                    trn(n, "It matches {n} transaction", "It matches {n} transactions")
+                } else {
+                    trn(n, "It matches {n} transaction at least", "It matches {n} transactions at least")
+                };
                 ui.label(RichText::new(text).strong().color(ACCENT));
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 ui.label(RichText::new(e).color(AMBER));
+            }
+            None => {
+                ui.label(RichText::new(tr("Counting…")).color(MUTED));
+                ui.ctx().request_repaint_after(Duration::from_millis(50));
             }
         }
         if !f.error.is_empty() {

@@ -148,7 +148,11 @@ fn rules_of_format_7_work_as_before() {
             let edit =
                 TxEdit { date: day(4), amount: -5, payee: payee.clone(), memo: memo.clone(), ..Default::default() };
             db.update_transaction(later, &edit).unwrap();
+            // The payee was typed: a run leaves it, unless the user asks.
             db.apply_rules().unwrap();
+            let t = db.transaction(later).unwrap();
+            assert_eq!((t.payee.as_str(), t.memo.as_str()), (payee.trim(), memo.trim()));
+            db.run_rules(Scope { all: true, overwrite: true }, None).unwrap();
             let hit = old_match(&old, &payee, &memo);
             let rename = hit.map(|h| h.3.clone()).filter(|n| !n.is_empty());
             renames += usize::from(rename.is_some());
@@ -344,7 +348,7 @@ fn the_first_rule_with_a_category_decides() {
         (t.rules.category, t.rules.payee, t.rules.ids()),
         (Some(first), Some(clean), vec![clean, first, second])
     );
-    assert_eq!(t.original_payee.as_deref(), Some("POS 12 Bar Roma"));
+    assert_eq!((t.original_payee, t.typed_payee.as_deref()), (None, Some("POS 12 Bar Roma")));
     // A replacement that comes out empty leaves the payee, and one is never longer than it may be.
     db.insert_rule(&re("^zz(y?)", "$1"), true).unwrap();
     db.insert_rule(&re("^(w+)", "$1$1$1 $$"), true).unwrap();
@@ -487,7 +491,7 @@ fn duplicates_and_transfers_are_found_after_a_clean_up() {
     assert_eq!(db.transfer_candidates(one, b).unwrap().len(), 1);
     db.turn_into_transfer(one, b, OtherSide::Join(two)).unwrap();
     let t = db.transaction(two).unwrap();
-    assert_eq!((t.payee.as_str(), t.original_payee.as_deref(), t.tags.len()), ("Cosy", Some("moved in"), 1));
+    assert_eq!((t.payee.as_str(), t.typed_payee.as_deref(), t.tags.len()), ("Cosy", Some("moved in"), 1));
     assert!(t.rules.category.is_none());
     db.separate_transfer(one, true).unwrap();
     assert_eq!(db.transaction(two).unwrap().tags, ["kept"]);
@@ -753,11 +757,408 @@ fn tags_are_searched_listed_and_kept() {
     assert_eq!(db.tags().unwrap().len(), 1);
     // What the bank wrote is found too.
     db.insert_rule(&Rule { rename_payee: "Rail".into(), ..words("train", None) }, true).unwrap();
-    db.apply_rules().unwrap();
+    db.run_rules(Scope { all: true, overwrite: true }, None).unwrap();
     db.update_transaction(
         two,
         &TxEdit { date: t.date, amount: -5, payee: "Rail".into(), memo: "".into(), ..Default::default() },
     )
     .unwrap();
     assert_eq!(search("train"), [two]);
+}
+
+fn edit_of(t: &Transaction) -> TxEdit {
+    TxEdit {
+        date: t.date,
+        amount: t.amount,
+        payee: t.payee.clone(),
+        memo: t.memo.clone(),
+        category_id: t.category_id,
+        cleared: t.cleared,
+    }
+}
+
+const ALL: Scope = Scope { all: true, overwrite: false };
+const OVER: Scope = Scope { all: true, overwrite: true };
+
+fn one(db: &Db, a: i64, row: &str) -> Transaction {
+    import(db, a, &csv(&format!("Data;Beneficiario;Descrizione;Importo\n05/03/2026;{row};-1,20\n")));
+    db.transactions(&TxFilter { limit: Some(1), ..Default::default() }).unwrap().remove(0)
+}
+
+/// As a file of format 7 has it.
+fn forget_texts(db: &Db) {
+    db.conn.execute("UPDATE book_postings SET original_payee=NULL, original_memo=NULL, rules=NULL", []).unwrap();
+}
+
+#[test]
+fn what_may_be_the_users_is_never_replaced() {
+    let (db, a) = books();
+    let s = cat(&db, "Spesa");
+    let typed = add(&db, a, "Cena con Bruno", "satispay", -500);
+    let t = one(&db, a, "SATISPAY;spesa satispay");
+    let old = one(&db, a, "SATISPAY 2;satispay");
+    forget_texts(&db);
+    // One of an older program is edited, and one was edited there: no key proves its text.
+    db.update_transaction(t.id, &TxEdit { payee: "Cena con Anna".into(), category_id: Some(s), ..edit_of(&t) })
+        .unwrap();
+    assert_eq!(db.transaction(t.id).unwrap().original_payee.as_deref(), Some("SATISPAY"));
+    let entry = db.transaction(old.id).unwrap().entry_id;
+    db.conn.execute("UPDATE entries SET payee='Cena con Carla' WHERE id=?1", [entry]).unwrap();
+    let edited = one(&db, a, "SATISPAY 3;satispay");
+    forget_texts(&db);
+    db.update_transaction(edited.id, &TxEdit { memo: "satispay, regalo".into(), ..edit_of(&edited) }).unwrap();
+    let kept = db.transaction(edited.id).unwrap();
+    assert_eq!((kept.original_payee, kept.original_memo.as_deref()), (None, Some("satispay")));
+    let plain = one(&db, a, "SATISPAY 4;satispay");
+    db.conn
+        .execute("UPDATE book_postings SET original_payee=NULL, original_memo=NULL WHERE id=?1", [plain.id])
+        .unwrap();
+    let rule = Rule { pattern: "satispay".into(), rename_payee: "Satispay".into(), ..Default::default() };
+    db.insert_rule(&rule, false).unwrap();
+    db.run_rules(ALL, None).unwrap();
+    let texts = |id| {
+        let t = db.transaction(id).unwrap();
+        (t.payee, t.memo)
+    };
+    let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+    assert_eq!(texts(t.id), pair("Cena con Anna", "spesa satispay"));
+    assert_eq!(texts(typed), pair("Cena con Bruno", "satispay"));
+    assert_eq!(texts(old.id), pair("Cena con Carla", "satispay"));
+    // The payee of these is the bank's: the keys of the import tell.
+    assert_eq!(texts(edited.id), pair("Satispay", "satispay, regalo"));
+    assert_eq!(texts(plain.id), pair("Satispay", "satispay"));
+    let x = db.transaction(plain.id).unwrap();
+    assert_eq!((x.original_payee.as_deref(), x.typed_payee), (Some("SATISPAY 4"), None));
+    // Asked for, what was typed is kept, and never called the bank's.
+    db.run_rules(OVER, None).unwrap();
+    for (id, text) in [(typed, "Cena con Bruno"), (old.id, "Cena con Carla")] {
+        let x = db.transaction(id).unwrap();
+        assert_eq!(
+            (x.payee.as_str(), x.original_payee.as_deref(), x.typed_payee.as_deref()),
+            ("Satispay", None, Some(text))
+        );
+    }
+    // Nor is it compared as such with another statement.
+    let file = importer::ofx_table(
+        ofx::read(
+            ofx::tests::sgml()
+                .replace("20260105", "20260305")
+                .replace("-12,50", "-1,20")
+                .replace("BAR &amp; CAFFE", "Cena con Carla")
+                .as_bytes(),
+        )
+        .unwrap()
+        .0,
+        "UTF-8",
+    );
+    let (rows, _) = importer::parse_rows(&file, &file.mapping, false);
+    let likely = db.likely_duplicates(Some(a), &rows).unwrap();
+    assert!(!likely.is_empty() && likely.iter().all(|l| !l.certain), "{likely:?}");
+    assert_sound(&db, "typed");
+}
+
+/// The text that an older program moved into the notes is proved too, and that of an OFX file.
+#[test]
+fn the_keys_of_an_import_prove_the_text_of_the_bank() {
+    let (db, a) = books();
+    let id = db.insert_rule(&Rule { rename_payee: "Shop".into(), ..words("pos", None) }, true).unwrap();
+    let t = one(&db, a, "POS 1;");
+    assert_eq!((t.payee.as_str(), t.memo.as_str(), t.rules.memo), ("Shop", "POS 1", Some(id)));
+    forget_texts(&db);
+    let file = importer::ofx_table(ofx::read(ofx::tests::sgml().as_bytes()).unwrap().0, "UTF-8");
+    let b = db.add_account("B", AccountKind::Bank, "EUR", 0, "").unwrap();
+    import(&db, b, &file);
+    db.conn.execute("UPDATE book_postings SET original_payee=NULL, original_memo=NULL", []).unwrap();
+    // Nothing says who wrote "Shop": it stays, and the notes are the bank's payee.
+    let y = cat(&db, "Y");
+    db.insert_rule(&Rule { memo: "pos".into(), category_id: Some(y), ..Default::default() }, true).unwrap();
+    db.insert_rule(&Rule { rename_payee: "Bar".into(), ..words("bar &", None) }, true).unwrap();
+    db.run_rules(ALL, None).unwrap();
+    let x = db.transaction(t.id).unwrap();
+    assert_eq!((x.payee.as_str(), x.category_id), ("Shop", None));
+    let found = db.transactions(&TxFilter { account_id: Some(b), ..Default::default() }).unwrap();
+    assert!(found.iter().any(|t| t.payee == "Bar" && t.original_payee.as_deref() == Some("BAR & CAFFE")), "{found:?}");
+    db.update_transaction(t.id, &TxEdit { payee: "Mine".into(), ..edit_of(&x) }).unwrap();
+    let x = db.transaction(t.id).unwrap();
+    assert_eq!((x.original_payee.as_deref(), x.memo.as_str()), (Some("POS 1"), "POS 1"));
+    db.run_rules(ALL, None).unwrap();
+    assert_eq!(db.transaction(t.id).unwrap().category_id, None, "its notes are not the user's");
+}
+
+#[test]
+fn a_category_confirmed_is_by_hand() {
+    let (db, a) = books();
+    let (x, y) = (cat(&db, "X"), cat(&db, "Y"));
+    let id = db.insert_rule(&words("shop", Some(x)), false).unwrap();
+    let t = add(&db, a, "shop", "", -5);
+    let update = |args| crate::ops::call(&db, "update_transaction", &args, None).unwrap();
+    update(serde_json::json!({"id": t, "memo": "n"}));
+    assert_eq!(db.transaction(t).unwrap().rules.category, Some(id));
+    update(serde_json::json!({"id": t, "category": "X"}));
+    assert_eq!(db.transaction(t).unwrap().rules.category, None);
+    db.update_rule(&Rule { id, ..words("shop", Some(y)) }).unwrap();
+    db.run_rules(ALL, None).unwrap();
+    assert_eq!(db.transaction(t).unwrap().category, "X");
+    // And an undo leaves it.
+    let t = add(&db, a, "other", "", -5);
+    db.insert_rule(&words("other", Some(x)), false).unwrap();
+    db.run_rules(Scope::default(), None).unwrap();
+    update(serde_json::json!({"id": t, "category": "X"}));
+    assert!(db.undo_rules().is_err());
+    assert_eq!(db.transaction(t).unwrap().category, "X");
+}
+
+/// Running twice is running once, whatever the rules, the files and what the user did between.
+#[test]
+fn a_second_run_changes_nothing() {
+    let text = ["pos", "bar", "zoo", "pos 1", "bar zoo", "", "shop", "a", "Shop!"];
+    let mut r = Lcg(21);
+    let mut changed = 0;
+    for round in 0..400 {
+        let (db, a) = books();
+        let cats: Vec<i64> = ["X", "Y", "Z"].iter().map(|c| cat(&db, c)).collect();
+        let mut rules = Vec::new();
+        let some_rule = |r: &mut Lcg| {
+            let mut w = |on: bool| if on { r.pick(&text).unwrap().to_string() } else { String::new() };
+            let (p, q, m) = (w(true), w(true), w(true));
+            let regex = r.below(3) == 0;
+            Rule {
+                pattern: if r.below(2) == 0 { p } else { String::new() },
+                payee: if r.below(2) == 0 { q } else { String::new() },
+                memo: if r.below(2) == 0 { m } else { String::new() },
+                regex,
+                category_id: if r.below(2) == 0 { r.pick(&cats) } else { None },
+                tags: if r.below(3) == 0 { vec![format!("t{}", r.below(30))] } else { vec![] },
+                rename_payee: match r.below(4) {
+                    0 => "Shop!".into(),
+                    1 if regex => "$0 $0".into(),
+                    2 => "bar".into(),
+                    _ => String::new(),
+                },
+                ..Default::default()
+            }
+        };
+        for step in 0..6 {
+            let rule = some_rule(&mut r);
+            rules.extend(db.insert_rule(&rule, r.below(2) == 0).ok());
+            let (p, m) = (r.pick(&text).unwrap(), r.pick(&text).unwrap());
+            let id = if r.below(2) == 0 {
+                let row = format!("{p} ;{m}");
+                let t =
+                    csv(&format!("Data;Beneficiario;Descrizione;Importo\n0{}/03/2026;{row};-1,2{step}\n", step + 1));
+                import(&db, a, &t);
+                db.transactions(&TxFilter { limit: Some(1), ..Default::default() }).unwrap().first().map(|t| t.id)
+            } else {
+                Some(add(&db, a, p, m, -120))
+            };
+            if r.below(3) == 0 {
+                forget_texts(&db);
+            }
+            let Some(id) = id else { continue };
+            for _ in 0..r.below(3) {
+                let t = db.transaction(id).unwrap();
+                let w = r.pick(&text).unwrap().to_string();
+                match r.below(6) {
+                    0 => db.update_transaction(id, &TxEdit { payee: w, ..edit_of(&t) }).unwrap(),
+                    1 => db.update_transaction(id, &TxEdit { memo: w, ..edit_of(&t) }).unwrap(),
+                    2 => db.set_category(id, r.pick(&cats)).unwrap(),
+                    3 => db.set_tags(id, &[w.replace('!', "")]).unwrap(),
+                    4 => db.set_tags(id, &[]).unwrap(),
+                    _ => db.set_category(id, None).unwrap(),
+                }
+            }
+            for scope in [Scope::default(), ALL, OVER] {
+                if scope == OVER && r.below(3) > 0 {
+                    continue;
+                }
+                let before: Vec<_> = db.transactions(&TxFilter::default()).unwrap();
+                changed += db.run_rules(scope, None).unwrap().changed;
+                let again = db.plan_rules(scope).unwrap().changes;
+                assert!(again.is_empty(), "{round} {scope:?} {again:#?} {:#?}", db.rules().unwrap());
+                if scope != OVER {
+                    for t in before.iter().filter(|t| t.marks.own_payee || t.keys.is_empty() && t.rules.payee.is_none())
+                    {
+                        assert_eq!(db.transaction(t.id).unwrap().payee, t.payee);
+                    }
+                }
+            }
+        }
+        assert_sound(&db, "twice");
+    }
+    assert!(changed > 700, "{changed}");
+}
+
+#[test]
+fn notes_are_matched_only_as_the_user_wrote_them() {
+    let (db, a) = books();
+    let (g, s) = (cat(&db, "Regali"), cat(&db, "Spesa"));
+    let gift =
+        Rule { memo: "regalo".into(), category_id: Some(g), rename_payee: "Regalo".into(), ..Default::default() };
+    db.insert_rule(&gift, false).unwrap();
+    db.insert_rule(&words("pos", Some(s)), false).unwrap();
+    let t = one(&db, a, "POS 1;");
+    db.update_transaction(t.id, &TxEdit { memo: "regalo Anna".into(), ..edit_of(&t) }).unwrap();
+    assert_eq!(db.run_rules(ALL, None).unwrap().changed, 1);
+    assert_eq!(db.run_rules(ALL, None).unwrap().changed, 0);
+    let x = db.transaction(t.id).unwrap();
+    assert_eq!((x.category.as_str(), x.payee.as_str(), x.memo.as_str()), ("Regali", "Regalo", "regalo Anna"));
+    // A payee that was moved into the notes is not a note, also when the user then writes another payee.
+    db.insert_rule(&Rule { rename_payee: "Shop".into(), ..words("card", Some(s)) }, true).unwrap();
+    let t = one(&db, a, "CARD 9;");
+    assert_eq!((t.memo.as_str(), t.rules.memo.is_some()), ("CARD 9", true));
+    db.update_transaction(t.id, &TxEdit { payee: "Mio".into(), ..edit_of(&t) }).unwrap();
+    db.insert_rule(&Rule { memo: "card".into(), category_id: Some(g), ..Default::default() }, true).unwrap();
+    db.run_rules(ALL, None).unwrap();
+    assert_eq!(db.transaction(t.id).unwrap().category, "Spesa");
+    // Written by the user, they are.
+    db.update_transaction(t.id, &TxEdit { memo: "card of Anna".into(), ..edit_of(&db.transaction(t.id).unwrap()) })
+        .unwrap();
+    db.run_rules(ALL, None).unwrap();
+    let x = db.transaction(t.id).unwrap();
+    assert_eq!((x.category.as_str(), x.payee.as_str(), x.rules.memo), ("Regali", "Mio", None));
+    // Put back by hand to what the bank wrote, the payee stays, and so do notes that were emptied.
+    let t = one(&db, a, "CARD 10;");
+    let edit = TxEdit { payee: "CARD 10".into(), memo: String::new(), ..edit_of(&t) };
+    db.update_transaction(t.id, &edit).unwrap();
+    db.run_rules(ALL, None).unwrap();
+    let x = db.transaction(t.id).unwrap();
+    assert_eq!((x.payee.as_str(), x.memo.as_str()), ("CARD 10", ""));
+    db.run_rules(OVER, None).unwrap();
+    let x = db.transaction(t.id).unwrap();
+    assert_eq!((x.payee.as_str(), x.memo.as_str()), ("Shop", ""));
+}
+
+#[test]
+fn tags_are_lost_by_no_join_and_come_back_by_no_rule() {
+    let (db, a) = books();
+    let b = db.add_account("B", AccountKind::Bank, "EUR", 0, "").unwrap();
+    let tags = |id: i64| db.transaction(id).unwrap().tags;
+    let (_, into) = db.add_transfer(a, b, day(4), 5000, "").unwrap();
+    db.set_tags(into, &["vacanze".into(), "both".into()]).unwrap();
+    let row = add(&db, b, "Bonifico", "", 5000);
+    db.set_tags(row, &["mine".into(), "Both".into()]).unwrap();
+    let far = db.transfer_candidates(row, a).unwrap()[0].id;
+    db.turn_into_transfer(row, a, OtherSide::Join(far)).unwrap();
+    assert_eq!(tags(row), ["mine", "Both", "vacanze"]);
+    // Two lines that are joined keep their own; one that goes leaves its tags.
+    let (x, y) = (add(&db, a, "x", "", -70), add(&db, b, "y", "", 70));
+    db.set_tags(x, &["x".into()]).unwrap();
+    db.set_tags(y, &["y".into()]).unwrap();
+    db.turn_into_transfer(x, b, OtherSide::Join(y)).unwrap();
+    assert_eq!((tags(x), tags(y)), (vec!["x".to_string()], vec!["y".to_string()]));
+    db.separate_transfer(x, false).unwrap();
+    assert_eq!(tags(x), ["x", "y"]);
+    // A line of the bank that takes the place of a side keeps the tags of the side.
+    let (_, side) = db.add_transfer(a, b, day(4), 900, "").unwrap();
+    db.set_tags(side, &["kept".into()]).unwrap();
+    assert_eq!(import(&db, b, &csv("Data;Descrizione;Importo\n05/03/2026;Moved;9,00\n")).adopted.len(), 1);
+    assert_eq!(tags(side), ["kept"]);
+    // Removed by hand, whoever had put it there.
+    let t = add(&db, a, "pos", "", -1);
+    db.set_tags(t, &["Fun".into()]).unwrap();
+    db.insert_rule(&Rule { tags: vec!["fun".into()], ..words("pos", None) }, true).unwrap();
+    assert_eq!(db.run_rules(ALL, None).unwrap().changed, 0);
+    db.set_tags(t, &[]).unwrap();
+    assert_eq!(db.run_rules(ALL, None).unwrap().changed, 0);
+    db.set_tags(t, &["fun".into()]).unwrap();
+    assert!(db.transaction(t).unwrap().rules.is_empty());
+    // Those of the rules make room for those given.
+    let many: Vec<String> = (0..20).map(|i| format!("t{i}")).collect();
+    db.insert_rule(&Rule { tags: many.clone(), ..words("shop", None) }, true).unwrap();
+    let given = serde_json::json!({"account": "Bank", "payee": "shop", "amount": -5, "tags": "mine, T3"});
+    let v = crate::ops::call(&db, "add_transaction", &given, None).unwrap();
+    let got = tags(v["id"].as_i64().unwrap());
+    assert!(got.len() == MAX_TAGS && got[..2] == ["mine", "T3"], "{got:?}");
+    assert_eq!(db.run_rules(ALL, None).unwrap().changed, 0);
+    assert_sound(&db, "tags");
+}
+
+#[test]
+fn a_rule_from_a_transaction_can_always_be_saved() {
+    let (db, a) = books();
+    let x = cat(&db, "X");
+    let pieces = ["$1", "${a}", "$", "|", "(", "Tutto a ", " ", "x", "é", "\\", "[", ",", "#"];
+    let mut r = Lcg(5);
+    for i in 0..400 {
+        let some = |r: &mut Lcg| (0..r.below(8)).map(|_| pieces[r.below(pieces.len())]).collect::<String>();
+        let (p, m, n) = (some(&mut r), some(&mut r), some(&mut r).repeat(1 + r.below(60)));
+        let t = add(&db, a, &p.repeat(1 + r.below(60)), &m, -(i + 1));
+        db.update_transaction(t, &TxEdit { payee: n, category_id: Some(x), ..edit_of(&db.transaction(t).unwrap()) })
+            .unwrap();
+        if r.below(2) == 0 {
+            db.conn.execute("UPDATE book_postings SET original_payee=?2 WHERE id=?1", params![t, p]).unwrap();
+        }
+        let rule = db.rule_from(t).unwrap();
+        let id = db.insert_rule(&rule, true).unwrap_or_else(|e| panic!("{rule:?} {e:#}"));
+        let all = db.transactions(&TxFilter::default()).unwrap();
+        assert!(db.rule_matches(&rule, &all).unwrap().contains(&t), "{rule:?}");
+        db.delete_rule(id).unwrap();
+        db.delete_transaction(t).unwrap();
+    }
+}
+
+#[test]
+fn rules_are_shown_only_for_rows_that_would_be_added() {
+    let (db, a) = books();
+    let b = db.add_account("B", AccountKind::Bank, "EUR", 0, "").unwrap();
+    db.insert_rule(&words("shop", Some(cat(&db, "X"))), true).unwrap();
+    db.add_transfer(b, a, day(4), 900, "").unwrap();
+    import(&db, a, &csv("Data;Descrizione;Importo\n01/03/2026;shop known;-1,00\n"));
+    let t = csv(
+        "Data;Descrizione;Importo\n01/03/2026;shop known;-1,00\n02/03/2026;shop new;-2,00\n05/03/2026;shop side;9,00\n",
+    );
+    let (rows, _) = importer::parse_rows(&t, &t.mapping, false);
+    let add = |account, d: &crate::duplicates::Decision| {
+        let mut v: Vec<usize> = importer::rows_to_add(&db, account, &rows, d).unwrap().into_iter().collect();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(add(Some(a), &Default::default()), [1]);
+    assert_eq!(add(None, &Default::default()), [0, 1, 2]);
+    let res = import(&db, a, &t);
+    assert_eq!((res.added, res.duplicates, res.adopted.len()), (1, 1, 1));
+    // One that may be there, once it is said that it is another.
+    let file = importer::ofx_table(
+        ofx::read(ofx::tests::sgml().replace("20260105", "20260302").replace("-12,50", "-2,00").as_bytes()).unwrap().0,
+        "UTF-8",
+    );
+    let (rows, _) = importer::parse_rows(&file, &file.mapping, false);
+    let of = |d: &crate::duplicates::Decision| importer::rows_to_add(&db, Some(a), &rows, d).unwrap().len();
+    let mut d = crate::duplicates::Decision::default();
+    assert_eq!(of(&d), 1);
+    d.add_others = true;
+    assert_eq!(of(&d), 2);
+}
+
+#[test]
+fn what_goes_with_an_account_or_a_category_is_counted() {
+    let (db, a) = books();
+    let (x, below) = (cat(&db, "X"), cat(&db, "X:Below"));
+    let other = cat(&db, "Other");
+    for (account, category) in [(Some(a), x), (Some(a), other), (None, below), (None, other)] {
+        db.insert_rule(&Rule { account_id: account, ..words("w", Some(category)) }, false).unwrap();
+    }
+    assert_eq!((db.rules_of_account(a).unwrap(), db.rules_of_category(x).unwrap()), (2, 2));
+    let v = crate::ops::call(&db, "delete_category", &serde_json::json!({"category": "X"}), None).unwrap();
+    assert!(v["rules_deleted"] == 2 && v["message"].as_str().unwrap().contains("2 rules"), "{v}");
+    assert_eq!(db.rules().unwrap().len(), 2);
+    let v = crate::ops::call(&db, "delete_account", &serde_json::json!({"account": "Bank"}), None).unwrap();
+    assert!(v["rules_deleted"] == 1 && v["message"].as_str().unwrap().contains("1 rule "), "{v}");
+    assert_eq!(db.rules().unwrap().len(), 1);
+}
+
+#[test]
+fn a_count_stops_when_it_is_told_or_takes_too_long() {
+    let (db, a) = books();
+    for i in 0..50 {
+        add(&db, a, &format!("shop {i}"), "", -1);
+    }
+    let all = db.transactions(&TxFilter::default()).unwrap();
+    let go = AtomicBool::new(false);
+    let hour = Duration::from_secs(3600);
+    assert_eq!(count_matches(&words("shop", None), &all, hour, &go).unwrap(), (50, true));
+    assert_eq!(count_matches(&words("shop", None), &all, Duration::ZERO, &go).unwrap(), (0, false));
+    go.store(true, Ordering::Relaxed);
+    assert_eq!(count_matches(&words("shop", None), &all, hour, &go).unwrap(), (0, false));
+    assert!(count_matches(&re("(", ""), &all, hour, &go).is_err());
 }

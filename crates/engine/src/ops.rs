@@ -27,8 +27,19 @@ pub struct ToolDef {
 fn s(desc: &str) -> Value {
     json!({"type": "string", "description": desc})
 }
+/// A whole number.
 fn n(desc: &str) -> Value {
-    json!({"type": "number", "description": desc})
+    json!({"type": "integer", "description": desc})
+}
+/// Text or a number: an amount, or an id that may be a name.
+fn k(desc: &str) -> Value {
+    json!({"type": ["string", "number"], "description": desc})
+}
+fn rows(desc: &str) -> Value {
+    json!({"type": ["string", "number", "array"], "description": desc})
+}
+fn list(desc: &str) -> Value {
+    json!({"type": ["string", "array"], "description": desc})
 }
 fn b(desc: &str) -> Value {
     json!({"type": "boolean", "description": desc})
@@ -56,9 +67,9 @@ fn rule_properties(mut others: Value) -> Value {
     let rule = json!({"keywords": s("Text to find in the payee or the notes: keywords separated by | (e.g. \"bakery|panificio\")."),
         "payee": s("The same, in the payee alone."), "memo": s("The same, in the notes alone."),
         "regex": b("The texts are regular expressions (whatever the case) instead of keywords."),
-        "min_amount": s("Smallest amount, whatever the sign, included."), "max_amount": s("Largest amount, included."),
-        "sign": s("any, in (money in) or out (money out)."), "account": s("Only transactions of this account: numeric id or name."),
-        "category": s(CATEGORY), "tags": s(TAGS),
+        "min_amount": k("Smallest amount, whatever the sign, included."), "max_amount": k("Largest amount, included."),
+        "sign": s("any, in (money in) or out (money out)."), "account": k("Only transactions of this account: numeric id or name."),
+        "category": k(CATEGORY), "tags": list(TAGS),
         "rename_payee": s("New name of the payee; with regex $1 or ${name} is what a group matched (of the payee's expression, else of the keywords', else of the notes'), $$ a dollar.")});
     if let (Some(o), Value::Object(r)) = (others.as_object_mut(), rule) {
         o.extend(r);
@@ -164,6 +175,14 @@ fn scope_arg(a: &Value) -> Result<Scope> {
     Ok(Scope { all, overwrite })
 }
 
+fn with_rules(message: String, gone: usize) -> String {
+    if gone == 0 {
+        message
+    } else {
+        format!("{message}; {}", trn(gone, "{n} rule went with it", "{n} rules went with it"))
+    }
+}
+
 /// A transaction with the rules it comes from.
 fn transaction_json(db: &Db, id: i64) -> Result<Value> {
     let t = db.transaction(id)?;
@@ -192,20 +211,20 @@ pub fn tools() -> Vec<ToolDef> {
             description: "Creates an account (bank, cash, credit_card, savings, investment, loan).",
             schema: obj(
                 json!({"name": s("Name of the account."), "kind": s("Type: bank, cash, credit_card, savings, investment, loan."),
-                "opening_balance": n("Opening balance in euros."), "currency": s("Currency (default EUR)."), "iban": s("IBAN (optional).")}),
+                "opening_balance": k("Opening balance in euros."), "currency": s("Currency (default EUR)."), "iban": s("IBAN (optional).")}),
                 &["name"],
             ),
         },
         ToolDef {
             name: "delete_account",
             description: "Deletes an account and all its transactions.",
-            schema: obj(json!({"account": s(ACCOUNT)}), &["account"]),
+            schema: obj(json!({"account": k(ACCOUNT)}), &["account"]),
         },
         ToolDef {
             name: "list_transactions",
             description: "Lists transactions, newest first, with optional filters.",
             schema: obj(
-                json!({"account": s(ACCOUNT), "category": s(CATEGORY), "from": s("From this day (included)."), "to": s("To this day (included)."),
+                json!({"account": k(ACCOUNT), "category": k(CATEGORY), "from": s("From this day (included)."), "to": s("To this day (included)."),
                 "search": s("Text to look for in payee, notes, category, #tags, amount and the text of the bank."), "tag": s("Only transactions with this tag."), "uncategorized": b("Only transactions without a category."),
                 "limit": n("Maximum number of transactions (default 100).")}),
                 &[],
@@ -215,8 +234,8 @@ pub fn tools() -> Vec<ToolDef> {
             name: "add_transaction",
             description: "Records a transaction. Without a category, the automatic rules are applied.",
             schema: obj(
-                json!({"account": s(ACCOUNT), "amount": s(AMOUNT), "payee": s("Payee or description."), "date": s(DATE),
-                "category": s(CATEGORY), "memo": s("Notes."), "tags": s(TAGS), "cleared": b("Already checked against the bank statement.")}),
+                json!({"account": k(ACCOUNT), "amount": k(AMOUNT), "payee": s("Payee or description."), "date": s(DATE),
+                "category": k(CATEGORY), "memo": s("Notes."), "tags": list(TAGS), "cleared": b("Already checked against the bank statement.")}),
                 &["account", "amount", "payee"],
             ),
         },
@@ -224,8 +243,8 @@ pub fn tools() -> Vec<ToolDef> {
             name: "update_transaction",
             description: "Changes a transaction; fields left out stay as they are. Empty category = no category.",
             schema: obj(
-                json!({"id": n("Id of the transaction."), "date": s(DATE), "amount": s(AMOUNT), "payee": s("Payee."), "memo": s("Notes."),
-                "category": s(CATEGORY), "tags": s("Tags separated by commas, instead of those it has; empty removes them."), "cleared": b("Cleared.")}),
+                json!({"id": n("Id of the transaction."), "date": s(DATE), "amount": k(AMOUNT), "payee": s("Payee."), "memo": s("Notes."),
+                "category": k(CATEGORY), "tags": list("Tags separated by commas, instead of those it has; empty removes them."), "cleared": b("Cleared.")}),
                 &["id"],
             ),
         },
@@ -248,7 +267,7 @@ pub fn tools() -> Vec<ToolDef> {
             name: "add_transfer",
             description: "Records a transfer between two accounts.",
             schema: obj(
-                json!({"from": s("Account to transfer from."), "to": s("Account to transfer to."), "amount": s("Positive amount in euros."),
+                json!({"from": k("Account to transfer from."), "to": k("Account to transfer to."), "amount": k("Positive amount in euros."),
                 "date": s(DATE), "memo": s("Notes.")}),
                 &["from", "to", "amount"],
             ),
@@ -257,7 +276,7 @@ pub fn tools() -> Vec<ToolDef> {
             name: "transfer_candidates",
             description: "Lists the transactions of another account that may be the other side of a transaction (opposite amount, within 10 days, nearest first). One of kind transfer is a transfer whose other side this transaction would confirm.",
             schema: obj(
-                json!({"id": n("Id of the transaction."), "account": s("The other account: numeric id or name.")}),
+                json!({"id": n("Id of the transaction."), "account": k("The other account: numeric id or name.")}),
                 &["id", "account"],
             ),
         },
@@ -265,8 +284,8 @@ pub fn tools() -> Vec<ToolDef> {
             name: "turn_into_transfer",
             description: "Turns a transaction into a transfer with another account. If transactions there may be the other side already, the call is refused and lists them: ask the user, then pass one as match, or none. Ids, texts, dates and import keys are kept.",
             schema: obj(
-                json!({"id": n("Id of the transaction."), "account": s("The other account: numeric id or name."),
-                "match": s("\"auto\" (default), \"none\" to add the other side anyway, or the id of the transaction to join.")}),
+                json!({"id": n("Id of the transaction."), "account": k("The other account: numeric id or name."),
+                "match": k("\"auto\" (default), \"none\" to add the other side anyway, or the id of the transaction to join.")}),
                 &["id", "account"],
             ),
         },
@@ -282,10 +301,10 @@ pub fn tools() -> Vec<ToolDef> {
             name: "preview_csv",
             description: "Analyzes a statement (CSV, Excel 97 .xls, OFX or the PDF of a credit card) without importing it: separator, recognized columns, first rows and the lines that could not be read; for a card statement its dates and whether the rows add up to its totals; for OFX its statements and the balance they state, a check only. With an account, also likely_duplicates: rows that may be there already, each with the transactions it may be and the one proposed (certain: same date, amount and payee, and only one).",
             schema: obj(
-                json!({"path": s("Path of the file."), "account": s("Account to look for likely duplicates and remembered columns in: numeric id or name (optional)."),
-                "statement": s(STATEMENT), "invert": b("Invert the sign of the amounts."), "limit": n("Preview rows (default 10)."),
-                "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."), "credit_column": s("Money-in column."),
-                "debit_column": s("Money-out column."), "description_column": s("Description column."), "payee_column": s("Payee column."),
+                json!({"path": s("Path of the file."), "account": k("Account to look for likely duplicates and remembered columns in: numeric id or name (optional)."),
+                "statement": k(STATEMENT), "invert": b("Invert the sign of the amounts."), "limit": n("Preview rows (default 10)."),
+                "date_column": k("Date column (name, or number from 1)."), "amount_column": k("Amount column."), "credit_column": k("Money-in column."),
+                "debit_column": k("Money-out column."), "description_column": k("Description column."), "payee_column": k("Payee column."),
                 "decimal_separator": s(DECIMALS), "date_format": s(DATES), "use_saved": b(SAVED)}),
                 &["path"],
             ),
@@ -294,14 +313,14 @@ pub fn tools() -> Vec<ToolDef> {
             name: "import_csv",
             description: "Imports a CSV or Excel 97 .xls file exported by a bank, an OFX statement in the currency of the account, or the PDF statement of a credit card (into a credit_card account), into an account. Columns, separator, encoding and amount format are detected, or are those of the last import into this account of a file with the same headings; transactions already imported are skipped; rules assign the categories. When rows may be there already from another statement the call is refused and lists them: ask the user, then pass skip_rows and add_rows.",
             schema: obj(
-                json!({"path": s("Path of the file."), "account": s(ACCOUNT), "statement": s(STATEMENT), "invert": b("Invert the sign (e.g. credit card statements with positive expenses), or not. When it is not given the sign is that of the last import into this account. It also confirms the sign of an OFX statement that contradicts its types."),
-                "dry_run": b("Trial run: the same checks, saves nothing; refused says why the import would be refused."), "date_column": s("Date column (name, or number from 1)."), "amount_column": s("Amount column."),
-                "credit_column": s("Money-in column."), "debit_column": s("Money-out column."), "description_column": s("Description column."),
-                "payee_column": s("Payee column."), "decimal_separator": s(DECIMALS), "date_format": s(DATES), "use_saved": b(SAVED),
-                "skip_rows": s("Rows of likely_duplicates that the user says are in the books already: numbers separated by commas, each with =id for a transaction other than the proposed one (\"2,5=31\"), and \"same\" for all those that are certain."),
-                "add_rows": s("Rows of likely_duplicates that the user says are other transactions: numbers separated by commas, or \"all\" for those that are left."),
+                json!({"path": s("Path of the file."), "account": k(ACCOUNT), "statement": k(STATEMENT), "invert": b("Invert the sign (e.g. credit card statements with positive expenses), or not. When it is not given the sign is that of the last import into this account. It also confirms the sign of an OFX statement that contradicts its types."),
+                "dry_run": b("Trial run: the same checks, saves nothing; refused says why the import would be refused."), "date_column": k("Date column (name, or number from 1)."), "amount_column": k("Amount column."),
+                "credit_column": k("Money-in column."), "debit_column": k("Money-out column."), "description_column": k("Description column."),
+                "payee_column": k("Payee column."), "decimal_separator": s(DECIMALS), "date_format": s(DATES), "use_saved": b(SAVED),
+                "skip_rows": rows("Rows of likely_duplicates that the user says are in the books already: numbers separated by commas, each with =id for a transaction other than the proposed one (\"2,5=31\"), and \"same\" for all those that are certain."),
+                "add_rows": rows("Rows of likely_duplicates that the user says are other transactions: numbers separated by commas, or \"all\" for those that are left."),
                 "allow_mismatch": b("Import a card statement even if its rows do not add up to its totals; only after the user agreed."),
-                "any_account": b("Import the statement of a card into an account that is not a credit card; only after the user agreed.")}),
+                "limit": n("Preview rows of a trial (default 10)."), "any_account": b("Import the statement of a card into an account that is not a credit card; only after the user agreed.")}),
                 &["path", "account"],
             ),
         },
@@ -355,7 +374,7 @@ pub fn tools() -> Vec<ToolDef> {
         ToolDef {
             name: "delete_category",
             description: "Deletes a category (its transactions stay, without a category).",
-            schema: obj(json!({"category": s(CATEGORY)}), &["category"]),
+            schema: obj(json!({"category": k(CATEGORY)}), &["category"]),
         },
         ToolDef {
             name: "spending_by_category",
@@ -379,7 +398,7 @@ pub fn tools() -> Vec<ToolDef> {
             name: "set_budget",
             description: "Sets the monthly budget of a category (0 removes it).",
             schema: obj(
-                json!({"category": s(CATEGORY), "monthly_amount": s("Monthly amount in euros.")}),
+                json!({"category": k(CATEGORY), "monthly_amount": k("Monthly amount in euros.")}),
                 &["category", "monthly_amount"],
             ),
         },
@@ -449,8 +468,8 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "undo_rules",
-            description: "Undoes the last apply_rules that changed something. Transactions changed since stay as they are and are listed in skipped.",
-            schema: obj(json!({}), &[]),
+            description: "Undoes the last apply_rules that changed something. Transactions changed since stay as they are and are listed in skipped. Ask the user first, saying which run it is.",
+            schema: obj(json!({"run": n("The run: from apply_rules, or can_undo of list_rules.")}), &["run"]),
         },
         ToolDef {
             name: "list_scheduled",
@@ -461,9 +480,9 @@ pub fn tools() -> Vec<ToolDef> {
             name: "add_scheduled",
             description: "Adds a recurring transaction (or a recurring transfer, with to_account).",
             schema: obj(
-                json!({"account": s(ACCOUNT), "amount": s(AMOUNT), "payee": s("Payee."), "next_date": s("Next due date."),
+                json!({"account": k(ACCOUNT), "amount": k(AMOUNT), "payee": s("Payee."), "next_date": s("Next due date."),
                 "every": n("Every how many units (default 1)."), "unit": s("day, week, month, year (default month)."),
-                "category": s(CATEGORY), "memo": s("Notes."), "to_account": s("Account to transfer to, for a transfer.")}),
+                "category": k(CATEGORY), "memo": s("Notes."), "to_account": k("Account to transfer to, for a transfer.")}),
                 &["account", "amount", "payee", "next_date"],
             ),
         },
@@ -481,7 +500,7 @@ pub fn tools() -> Vec<ToolDef> {
             name: "export_csv",
             description: "Exports transactions to a CSV file. Over MCP, and in English: comma separator, amounts as 1234.56, dates as YYYY-MM-DD. In the Italian command line: semicolon, 1.234,56, DD/MM/YYYY.",
             schema: obj(
-                json!({"path": s("File to write."), "account": s(ACCOUNT), "from": s("From this day."), "to": s("To this day.")}),
+                json!({"path": s("File to write."), "account": k(ACCOUNT), "from": s("From this day."), "to": s("To this day.")}),
                 &["path"],
             ),
         },
@@ -495,7 +514,7 @@ pub fn tools() -> Vec<ToolDef> {
             description: "Adds an account to the chart of accounts. An income or expense account is a category.",
             schema: obj(
                 json!({"name": s("Name, without colons."), "class": s("asset, liability, equity, income or expense (default: that of the parent)."),
-                "parent": s("Account above it, of the same class (optional); written as in post_entry."), "code": s("Code, unique (optional)."),
+                "parent": k("Account above it, of the same class (optional); written as in post_entry."), "code": k("Code, unique (optional)."),
                 "currency": s("Currency (default: that of the parent, or EUR); not for income and expense.")}),
                 &["name"],
             ),
@@ -506,7 +525,7 @@ pub fn tools() -> Vec<ToolDef> {
             schema: obj(
                 json!({"date": s(DATE), "payee": s("Payee or description."), "memo": s("Notes."),
                 "postings": {"type": "array", "description": "At least two.", "items": obj(
-                    json!({"account": s(LEDGER_ACCOUNT), "amount": s("Exact amount with at most two decimals, a number or text like \"-12.50\": debit positive, credit negative."),
+                    json!({"account": k(LEDGER_ACCOUNT), "amount": k("Exact amount with at most two decimals, a number or text like \"-12.50\": debit positive, credit negative."),
                     "currency": s("Only for entries in several currencies.")}),
                     &["account", "amount"],
                 )}}),
@@ -522,7 +541,7 @@ pub fn tools() -> Vec<ToolDef> {
             name: "list_entries",
             description: "Lists the entries of the ledger with their postings, newest first, opening balances included (dated 0001-01-01).",
             schema: obj(
-                json!({"ledger_account": s(LEDGER_ACCOUNT), "from": s("From this date."), "to": s("Up to this date."),
+                json!({"ledger_account": k(LEDGER_ACCOUNT), "from": s("From this date."), "to": s("Up to this date."),
                 "limit": n("Maximum number of entries (default 100, at most 1000)."), "offset": n("How many to skip, for the next page.")}),
                 &[],
             ),
@@ -536,7 +555,7 @@ pub fn tools() -> Vec<ToolDef> {
             name: "set_posting_category",
             description: "Gives one posting on a category (or uncategorized) of an entry to another category; the way to re-categorize part of a split.",
             schema: obj(
-                json!({"posting_id": n("Id of the posting, from get_entry."), "category": s("Category: id, name or path (empty: uncategorized).")}),
+                json!({"posting_id": n("Id of the posting, from get_entry."), "category": k("Category: id, name or path (empty: uncategorized).")}),
                 &["posting_id"],
             ),
         },
@@ -544,20 +563,20 @@ pub fn tools() -> Vec<ToolDef> {
             name: "rename_ledger_account",
             description: "Renames an account added to the chart by hand.",
             schema: obj(
-                json!({"ledger_account": s(LEDGER_ACCOUNT), "name": s("New name.")}),
+                json!({"ledger_account": k(LEDGER_ACCOUNT), "name": s("New name.")}),
                 &["ledger_account", "name"],
             ),
         },
         ToolDef {
             name: "delete_ledger_account",
             description: "Deletes an account added to the chart by hand, when it has no entries and no accounts under it.",
-            schema: obj(json!({"ledger_account": s(LEDGER_ACCOUNT)}), &["ledger_account"]),
+            schema: obj(json!({"ledger_account": k(LEDGER_ACCOUNT)}), &["ledger_account"]),
         },
         ToolDef {
             name: "set_account_currency",
             description: "Changes the currency of an account and of its entries, amounts unchanged. Refused when an entry also moves another account.",
             schema: obj(
-                json!({"account": s(ACCOUNT), "currency": s("Three-letter code, like EUR.")}),
+                json!({"account": k(ACCOUNT), "currency": s("Three-letter code, like EUR.")}),
                 &["account", "currency"],
             ),
         },
@@ -576,11 +595,57 @@ pub fn tools() -> Vec<ToolDef> {
 
 // ----------------------------------------------------------- argomenti
 
+/// Refuses a call with a parameter of another type than the one declared: ignored, it would do something else
+/// than what was asked. Null is a parameter that is not given.
+fn check_types(schema: &Value, a: &Value) -> Result<()> {
+    let given = match a {
+        Value::Null => return Ok(()),
+        Value::Object(o) => o,
+        _ => bail!(tr("the parameters must be an object")),
+    };
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else { return Ok(()) };
+    for (name, value) in given {
+        let Some(p) = properties.get(name).filter(|_| !value.is_null()) else { continue };
+        let types: Vec<&str> = match p.get("type") {
+            Some(Value::String(t)) => vec![t],
+            Some(Value::Array(l)) => l.iter().filter_map(Value::as_str).collect(),
+            _ => continue,
+        };
+        if !types.iter().any(|t| is_of_type(value, t)) {
+            let wanted = types.join(", ");
+            bail!(trf("the parameter \"{name}\" must be of type {type}", &[("name", name), ("type", &wanted)]));
+        }
+        if let (Some(items), Value::Array(all)) = (p.get("items"), value) {
+            for x in all {
+                if !x.is_object() {
+                    bail!(trf(
+                        "the parameter \"{name}\" must be of type {type}",
+                        &[("name", name), ("type", &"object")]
+                    ));
+                }
+                check_types(items, x)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_of_type(v: &Value, t: &str) -> bool {
+    match t {
+        "string" => v.is_string(),
+        "number" => v.is_number(),
+        "integer" => whole(v).is_some(),
+        "boolean" => v.is_boolean(),
+        "array" => v.is_array(),
+        _ => v.is_object(),
+    }
+}
+
+/// Text or a number; `call` has refused the rest.
 fn opt_str(a: &Value, k: &str) -> Option<String> {
     match a.get(k)? {
         Value::String(s) => Some(s.clone()),
         Value::Number(n) => Some(n.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
 }
@@ -615,12 +680,14 @@ fn given_bool(a: &Value, k: &str) -> Result<Option<bool>> {
     }
 }
 
+/// A whole number, also written 5.0.
+fn whole(v: &Value) -> Option<i64> {
+    let exact = |f: &f64| f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_992.0;
+    v.as_i64().or_else(|| v.as_f64().filter(|_| v.is_f64()).filter(exact).map(|f| f as i64))
+}
+
 fn opt_i64(a: &Value, k: &str) -> Option<i64> {
-    match a.get(k)? {
-        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
-        Value::String(s) => s.trim().parse().ok(),
-        _ => None,
-    }
+    whole(a.get(k)?)
 }
 
 /// `None` when it is not given; anything but a whole number is an error.
@@ -959,6 +1026,9 @@ impl Roots {
 /// Esegue un'operazione. `roots` limita l'accesso ai file (obbligatorio per MCP);
 /// `None` è per la CLI, dove decide chi la usa.
 pub fn call(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Value> {
+    if let Some(t) = tools().iter().find(|t| t.name == name) {
+        check_types(&t.schema, a)?;
+    }
     let v = call_raw(db, name, a, roots)?;
     Ok(to_eur(v))
 }
@@ -986,8 +1056,10 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
         }
         "delete_account" => {
             let acc = db.find_account(&req_str(a, "account")?)?;
+            let gone = db.rules_of_account(acc.id)?;
             db.delete_account(acc.id)?;
-            json!({"message": trf("account \"{name}\" deleted", &[("name", &acc.name)])})
+            let message = trf("account \"{name}\" deleted", &[("name", &acc.name)]);
+            json!({"message": with_rules(message, gone), "rules_deleted": gone})
         }
         "list_transactions" => {
             let mut f = TxFilter {
@@ -1030,9 +1102,8 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             };
             db.atomically(|| {
                 let id = db.add_transaction(&tx)?.ok_or_else(|| anyhow!(tr("the transaction was not saved")))?;
-                if let Some(mut tags) = tags_arg(a)? {
-                    tags.extend(db.transaction(id)?.tags);
-                    db.set_tags(id, &tags)?;
+                if let Some(tags) = tags_arg(a)? {
+                    db.add_tags(id, &tags)?;
                 }
                 Ok(json!({"id": id, "transaction": db.transaction(id)?}))
             })?
@@ -1046,8 +1117,8 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 None => t.category_id,
             };
             db.atomically(|| {
-                if opt_str(a, "category").is_some() && matches!(t.kind, TxKind::Other | TxKind::Split) {
-                    // Also without a category: asked for, it is not left as it is.
+                if opt_str(a, "category").is_some() && t.kind != TxKind::Transfer {
+                    // Also without a category, or the one it has: asked for, it is the user's choice.
                     db.set_category(id, category_id)?;
                 }
                 db.update_transaction(
@@ -1148,9 +1219,13 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             let read = importer::read_rows(&t, &settings);
             let rows = &read.rows;
             let set = db.ruleset()?;
-            let ruled = |r: &importer::ParsedRow| -> Result<Value> {
+            let new = importer::rows_to_add(db, id, rows, &decision(a)?)?;
+            let ruled = |(i, r): (usize, &importer::ParsedRow)| -> Result<Value> {
                 let mut row = serde_json::to_value(r)?;
-                let outcome = set.evaluate(&rules::Subject::new(&r.payee, &r.memo, r.amount, id));
+                let mut outcome = rules::Outcome::default();
+                if new.contains(&i) {
+                    outcome = set.evaluate(&rules::Subject::new(&r.payee, &r.memo, r.amount, id));
+                }
                 if let Some(o) = row.as_object_mut() {
                     o.insert("ruled".into(), set.json(&outcome));
                 }
@@ -1224,7 +1299,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 });
                 json!({"format": info, "rows_found": rows.len(), "rows_skipped": read.skipped, "sum": total,
                        "first_date": rows.first().map(|r| r.date), "last_date": rows.last().map(|r| r.date),
-                       "preview": rows.iter().take(limit).map(ruled).collect::<Result<Vec<_>>>()?,
+                       "preview": rows.iter().enumerate().take(limit).map(ruled).collect::<Result<Vec<_>>>()?,
                        "broken_rules": set.broken, "problems": read.problems,
                        "likely_duplicates": likely, "deletions": db.deletions(id, rows)?, "notices": notices,
                        "refused": refused, "would_import": counts, "statement": statement, "ofx": ofx,
@@ -1275,8 +1350,10 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
         }
         "delete_category" => {
             let c = db.find_category(&req_str(a, "category")?)?;
+            let gone = db.rules_of_category(c.id)?;
             db.delete_category(c.id)?;
-            json!({"message": trf("category \"{name}\" deleted", &[("name", &c.path)])})
+            let message = trf("category \"{name}\" deleted", &[("name", &c.path)]);
+            json!({"message": with_rules(message, gone), "rules_deleted": gone})
         }
         "spending_by_category" => {
             let (from, to) = match opt_str(a, "month") {
@@ -1378,11 +1455,15 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
         "apply_rules" => {
             let run = db.run_rules(scope_arg(a)?, opt_str(a, "token").as_deref())?;
             let n = run.changed;
-            json!({"categorized": run.categorized, "changed": n, "broken_rules": run.broken,
+            json!({"run": run.run, "categorized": run.categorized, "changed": n, "broken_rules": run.broken,
                    "message": trn(n, "{n} transaction changed by the rules", "{n} transactions changed by the rules")})
         }
         "undo_rules" => {
-            let done = db.undo_rules()?;
+            let Some(run) = opt_i64_strict(a, "run")? else {
+                let last = db.last_rule_run()?.ok_or_else(|| anyhow!(tr("there is no run of the rules to undo")))?;
+                bail!(trf("say which run to undo: {what}", &[("what", &last.text())]));
+            };
+            let done = db.undo_run(run)?;
             json!({"undone": done.undone, "skipped": done.skipped, "message": done.message()})
         }
         "list_scheduled" => json!({"scheduled": db.scheduled()?}),
@@ -1897,12 +1978,15 @@ mod tests {
             let db = one_account();
             db.conn.execute("DELETE FROM transaction_rules", []).unwrap();
             let run = |name: &str, a: Value| call(&db, name, &a, Some(&roots));
-            let add = |payee: &str, amount: f64| {
-                let v =
-                    run("add_transaction", json!({"account": "A", "payee": payee, "amount": amount, "tags": ["x"]}));
-                v.unwrap()["id"].as_i64().unwrap()
+            let add = |payee: &str, amount: &str| {
+                let text = format!("Data;Descrizione;Importo\n05/01/2026;{payee};{amount}\n");
+                std::fs::write(dir.join("row.csv"), text).unwrap();
+                run("import_csv", json!({"path": "row.csv", "account": "A", "use_saved": false})).unwrap();
+                let id = run("list_transactions", json!({"search": payee})).unwrap()["transactions"][0]["id"].clone();
+                run("update_transaction", json!({"id": id, "tags": ["x"]})).unwrap();
+                id.as_i64().unwrap()
             };
-            let (one, two) = (add("POS 77 Zoo", -12.5), add("POS 78 Zoo", -90.0));
+            let (one, two) = (add("POS 77 Zoo", "-12,50"), add("POS 78 Zoo", "-90,00"));
             run("update_transaction", json!({"id": one, "category": "Leisure", "tags": "fun, x"})).unwrap();
             let v = run("test_rule", json!({"from_transaction": one})).unwrap();
             assert_eq!(
@@ -1943,7 +2027,9 @@ mod tests {
             for bad in [json!({"overwrite": true}), json!({"scope": "some"}), json!({"token": "other"})] {
                 assert!(run("apply_rules", bad).is_err());
             }
-            assert_eq!(run("apply_rules", json!({"token": v["token"]})).unwrap()["changed"], 1);
+            let v = run("apply_rules", json!({"token": v["token"]})).unwrap();
+            assert_eq!(v["changed"], 1);
+            let done = v["run"].as_i64().unwrap();
             let v = run("get_transaction", json!({"id": two})).unwrap();
             assert_eq!(
                 (&v["transaction"]["payee"], &v["transaction"]["original_payee"]),
@@ -1954,7 +2040,7 @@ mod tests {
             assert_eq!(run("list_tags", json!({})).unwrap()["tags"][1], json!({"tag": "x", "transactions": 2}));
             run("export_csv", json!({"path": "out.csv"})).unwrap();
             let text = std::fs::read_to_string(dir.join("out.csv")).unwrap();
-            assert!(text.contains(",Zoo!,Leisure,POS 78 Zoo,-90.00,no,\"x, fun\""), "{text}");
+            assert!(text.contains(",Zoo!,Leisure,POS 78 Zoo,-90.00,yes,\"x, fun\""), "{text}");
             std::fs::write(dir.join("in.csv"), "Data;Descrizione;Importo\n05/01/2026;POS 1 Zoo;-12,00\n").unwrap();
             let v = run("preview_csv", json!({"path": "in.csv", "account": "A"})).unwrap();
             let ruled = &v["preview"][0]["ruled"];
@@ -1965,8 +2051,11 @@ mod tests {
             // The rule is of that account.
             let v = run("preview_csv", json!({"path": "in.csv"})).unwrap();
             assert_eq!(v["preview"][0]["ruled"]["category"], "Travel");
-            assert_eq!(run("undo_rules", json!({})).unwrap()["undone"], 1);
-            assert!(run("undo_rules", json!({})).is_err());
+            let e = run("undo_rules", json!({})).unwrap_err().to_string();
+            assert!(e.contains(&format!("{done}")) && e.contains("1 transaction"), "{e}");
+            assert!(run("undo_rules", json!({"run": 99})).is_err());
+            assert_eq!(run("undo_rules", json!({"run": done})).unwrap()["undone"], 1);
+            assert!(run("undo_rules", json!({"run": done})).is_err());
             assert_eq!(db.transaction(two).unwrap().payee, "POS 78 Zoo");
             std::fs::remove_dir_all(&dir).unwrap();
         });
@@ -2002,6 +2091,46 @@ mod tests {
         std::fs::write(dir.join("in.csv"), "Data;Descrizione;Importo\n01/01/2026;Bar;-1,20\nx;y;2,00\n").unwrap();
         std::fs::write(dir.join("in.ofx"), crate::ofx::tests::sgml()).unwrap();
         std::fs::write(dir.join("two.ofx"), crate::ofx::tests::xml()).unwrap();
+        // What is not of the declared type is refused, alone or among plausible parameters.
+        for tool in tools() {
+            let db = one_account();
+            let properties = tool.schema["properties"].as_object().unwrap();
+            for (name, p) in properties {
+                let types: Vec<&str> = match &p["type"] {
+                    Value::String(t) => vec![t.as_str()],
+                    l => l.as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect(),
+                };
+                for (kind, v) in [
+                    ("string", json!("1")),
+                    ("number", json!(1.5)),
+                    ("boolean", json!(true)),
+                    ("array", json!(["1"])),
+                    ("array", json!([])),
+                    ("object", json!({"a": 1})),
+                    ("object", json!({})),
+                    ("number", json!(u64::MAX)),
+                ] {
+                    if types.contains(&kind) {
+                        continue;
+                    }
+                    let before = crate::ledger::tests::dump(&db.conn);
+                    for mut a in [
+                        json!({}),
+                        json!({"account": "A", "path": "in.csv", "keywords": "x", "category": "Leisure",
+                                                    "payee": "x", "amount": 1, "name": "x", "id": 1}),
+                    ] {
+                        a[name.as_str()] = v.clone();
+                        let e = call(&db, tool.name, &a, Some(&roots));
+                        let e = e.expect_err(&format!("{} {name} {v}", tool.name)).to_string();
+                        assert!(e.contains(name.as_str()), "{} {name} {v}: {e}", tool.name);
+                    }
+                    assert_eq!(crate::ledger::tests::dump(&db.conn), before, "{} {name} {v}", tool.name);
+                }
+            }
+            for a in [json!([]), json!("x"), json!(1), json!(true)] {
+                assert!(call(&db, tool.name, &a, Some(&roots)).is_err(), "{}", tool.name);
+            }
+        }
         for tool in tools() {
             let db = with_lang(Lang::It, || {
                 let db = Db::open_in_memory().unwrap();

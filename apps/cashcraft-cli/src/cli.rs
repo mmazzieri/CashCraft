@@ -418,8 +418,8 @@ pub enum RulesCmd {
         #[arg(long)]
         token: Option<String>,
     },
-    /// Undo the last apply
-    Undo,
+    /// Undo the last apply, by its number (without it, says which it is)
+    Undo { run: Option<i64> },
 }
 
 #[derive(Args, Debug, Default)]
@@ -825,7 +825,7 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
                 let [a, b] = scope.pairs();
                 ("apply_rules", args(&[a, b, ("token", o(&token))]))
             }
-            RulesCmd::Undo => ("undo_rules", json!({})),
+            RulesCmd::Undo { run } => ("undo_rules", args(&[("run", run.map(|r| json!(r)))])),
         },
         Cmd::Report(c) => match c {
             ReportCmd::Categories { month, from, to } => {
@@ -1218,11 +1218,16 @@ fn print_human(tool: &str, r: &Value) {
                 (tr("Notes"), "memo"),
                 (tr("Payee written by the bank"), "original_payee"),
                 (tr("Notes written by the bank"), "original_memo"),
+                (tr("Payee typed before the rules"), "typed_payee"),
+                (tr("Notes typed before the rules"), "typed_memo"),
             ] {
                 let text = st(field(t, k));
                 if !text.is_empty() {
                     println!("  {label}: {text}");
                 }
+            }
+            if !field(field(t, "rules"), "memo").is_null() {
+                println!("  {}", tr("The notes are the payee that a rule replaced"));
             }
             if !tags(t).is_empty() {
                 println!("  {}: {}", tr("Tags"), tags(t));
@@ -1261,12 +1266,15 @@ fn print_human(tool: &str, r: &Value) {
                     eur(field(&c, "amount"))
                 );
                 let mut what = Vec::new();
-                for k in ["new_category", "new_payee"] {
-                    what.extend(Some(st(field(&c, k))).filter(|t| !t.is_empty()));
+                for (old, new) in [("category", "new_category"), ("payee", "new_payee")] {
+                    let (old, new) = (st(field(&c, old)), st(field(&c, new)));
+                    if !new.is_empty() {
+                        what.push(format!("{} ➡ {new}", if old.is_empty() { "—" } else { &old }));
+                    }
                 }
                 let new: Vec<String> = field(&c, "new_tags").as_array().into_iter().flatten().map(st).collect();
                 what.extend(new.iter().map(|t| format!("#{t}")));
-                println!("       → {} ({})", what.join(", "), rule_numbers(&c));
+                println!("       {} ({})", what.join(", "), rule_numbers(&c));
             }
             let n = count(field(r, "count"));
             println!("{}", trn(n, "{n} transaction would change", "{n} transactions would change"));
@@ -1278,6 +1286,9 @@ fn print_human(tool: &str, r: &Value) {
         }
         "apply_rules" => {
             println!("{}", st(field(r, "message")));
+            if !field(r, "run").is_null() {
+                println!("{}", trf("To undo it: rules undo {run}", &[("run", &st(field(r, "run")))]));
+            }
             print_broken(r);
         }
         "list_transactions" | "transfer_candidates" => {

@@ -786,6 +786,9 @@ impl Db {
         let old_account = d.lines.get(other).map_or(0, |l| l.account);
         let old_payee = d.lines.iter().find(|l| l.id == Some(id)).and_then(|l| l.payee.clone());
         let old_payee = old_payee.unwrap_or_else(|| d.payee.clone());
+        let mine = d.lines.iter().find(|l| l.id == Some(id));
+        let old_memo = mine.and_then(|l| l.memo.clone()).unwrap_or_else(|| d.memo.clone());
+        let old_date = mine.and_then(|l| l.date.clone()).unwrap_or_else(|| d.date.clone());
         // A side with a date of its own changes that one; the others follow the entry.
         let date = d2s(tx.date);
         let mut shared = true;
@@ -797,8 +800,11 @@ impl Db {
             let mine = l.id == Some(id);
             if mine {
                 l.cleared = tx.cleared;
-                let moved = other_account.is_some() && other_account != Some(old_account);
-                l.changed_by_hand(moved, payee != old_payee)?;
+                l.keep_bank_text(&old_date, &old_payee, &old_memo)?;
+                l.texts_by_hand(payee != old_payee, memo != old_memo)?;
+                if other_account.is_some_and(|a| a != old_account) {
+                    l.category_by_hand()?;
+                }
             }
             if kind == TxKind::Transfer {
                 // Each side has its own payee.
@@ -845,7 +851,7 @@ impl Db {
                     l.account = account;
                 }
                 for l in &mut d.lines {
-                    l.changed_by_hand(true, false)?;
+                    l.category_by_hand()?;
                 }
             }
         }
@@ -978,7 +984,7 @@ impl Db {
                 l.account = account;
             }
             for l in &mut d.lines {
-                l.changed_by_hand(true, false)?;
+                l.category_by_hand()?;
             }
             self.save_entry(&d)?;
             Ok(())

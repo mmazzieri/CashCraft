@@ -102,7 +102,7 @@ On macOS, drag CashCraft to Applications. Until a release is signed with a Devel
     cashcraft-cli rules add "panificio|forno" Groceries
     cashcraft-cli rules add --payee "^pos \d+ (.+)$" --regex --rename '$1' --tags card --max 50
     cashcraft-cli rules add --like 12               # categorize like transaction 12
-    cashcraft-cli rules preview --all               # then rules apply --all, rules undo
+    cashcraft-cli rules preview --all               # then rules apply --all, rules undo <run>
     cashcraft-cli tx edit 12 --tags "trip, work"    # tx show 12, tx list --tag trip
     cashcraft-cli ledger post -l "Main account=1500" -l "Taxes=500" -l "Salary=-2000" -p "Pay"
     cashcraft-cli ledger trial-balance

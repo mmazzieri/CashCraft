@@ -95,7 +95,8 @@ impl App {
                                         self.open_import(None);
                                     }
                                     if ui.button(RichText::new(tr("🗑 Delete account…")).color(RED)).clicked() {
-                                        self.dialog = Some(Dialog::ConfirmDeleteAccount(a2.id, a2.name.clone()));
+                                        let rules = or_report(self.db.rules_of_account(a2.id), &mut self.toast);
+                                        self.dialog = Some(Dialog::ConfirmDeleteAccount(a2.id, a2.name.clone(), rules));
                                     }
                                 });
                             }
@@ -1048,6 +1049,21 @@ impl App {
 
     // -------------------------------------------------------------- categorie
 
+    /// Asks first when rules go with it.
+    pub fn delete_category(&mut self, ui: &Ui, id: i64) {
+        match self.db.rules_of_category(id) {
+            Ok(0) => {
+                let r = self.db.delete_category(id).map(|_| tr("Category deleted").to_string());
+                self.act(ui, r);
+            }
+            Ok(n) => {
+                let name = self.categories.iter().find(|c| c.id == id).map(|c| c.path.clone()).unwrap_or_default();
+                self.dialog = Some(Dialog::ConfirmDeleteCategory(id, name, n));
+            }
+            Err(e) => self.act(ui, Err(e)),
+        }
+    }
+
     pub fn categories_view(&mut self, ui: &mut Ui) {
         let cats = self.categories.clone();
         let mut del: Option<i64> = None;
@@ -1139,8 +1155,7 @@ impl App {
             self.act(ui, r);
         }
         if let Some(id) = del {
-            let r = self.db.delete_category(id).map(|_| tr("Category deleted").to_string());
-            self.act(ui, r);
+            self.delete_category(ui, id);
         }
         if let Some(id) = show {
             self.cat_filter = Some(id);

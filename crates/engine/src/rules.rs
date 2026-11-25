@@ -1,7 +1,8 @@
 //! Rules that categorize, tag and clean up transactions: what they match, in which order, and the undo of the
 //! last run. `docs/rules.md` has the semantics.
 
-use crate::db::{Cents, Db, Transaction, TxFilter, TxKind, no_transaction, s2d};
+use crate::db::{Cents, Db, Transaction, TxFilter, TxKind, d2s, no_transaction, s2d};
+use crate::duplicates::{contents_key, numbered_key, payee_mark};
 use crate::i18n::{tr, trf, trn};
 use crate::importer::fnv;
 use crate::ledger::{Draft, Line, UNCATEGORIZED};
@@ -12,7 +13,9 @@ use regex::{Captures, Regex, RegexBuilder};
 use rusqlite::types::ValueRef;
 use rusqlite::{OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// Since format 8. An account or category that goes takes its rules with it: without the condition a rule
 /// would match more than the user wanted.
@@ -201,12 +204,30 @@ pub(crate) struct Marks {
     pub category: Option<(i64, i64)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payee: Option<i64>,
-    /// By tag, in lowercase. One that the user removed stays here, and is not added again.
+    /// The rule that moved the payee into the notes: they are not the user's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memo: Option<i64>,
+    /// By tag, in lowercase.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tags: BTreeMap<String, i64>,
+    /// Tags that the user removed, in lowercase: no rule adds them again.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub removed: BTreeSet<String>,
+    /// The original texts are not known to be the bank's: somebody typed them, or may have.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub typed: bool,
+    /// The user wrote the payee, or the notes, whatever they are now.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub own_payee: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub own_memo: bool,
     /// The run on demand, so that what an undo looks for is in one transaction only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<i64>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Marks {
@@ -227,6 +248,9 @@ pub struct RuleUse {
     pub category: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payee: Option<i64>,
+    /// The notes are the payee that the rule replaced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memo: Option<i64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub tags: BTreeMap<String, i64>,
 }
@@ -239,7 +263,7 @@ impl RuleUse {
     /// The rules, each once.
     pub fn ids(&self) -> Vec<i64> {
         let mut out: Vec<i64> =
-            self.category.into_iter().chain(self.payee).chain(self.tags.values().copied()).collect();
+            self.category.into_iter().chain(self.payee).chain(self.memo).chain(self.tags.values().copied()).collect();
         out.sort_unstable();
         out.dedup();
         out
@@ -250,26 +274,127 @@ impl RuleUse {
         RuleUse {
             category: marks.category.filter(|(_, a)| Some(*a) == other_account).map(|(r, _)| r),
             payee: marks.payee,
+            memo: marks.memo.filter(|r| *r > 0),
             tags: marks.tags.iter().filter(|(t, _)| there(t)).map(|(t, r)| (t.clone(), *r)).collect(),
         }
     }
 }
 
 impl Line {
-    /// What the user changes by hand is no more the work of a rule.
-    pub(crate) fn changed_by_hand(&mut self, category: bool, payee: bool) -> Result<()> {
-        if self.rules.is_none() {
-            return Ok(());
-        }
+    /// The category is the user's choice from now on.
+    pub(crate) fn category_by_hand(&mut self) -> Result<()> {
         let mut m = Marks::read(self.rules.as_deref());
-        if category {
-            m.category = None;
-        }
+        m.category = None;
+        self.rules = m.write()?;
+        Ok(())
+    }
+
+    /// The user wrote the payee, the notes or both. What a rule did to them is no more.
+    pub(crate) fn texts_by_hand(&mut self, payee: bool, memo: bool) -> Result<()> {
+        let mut m = Marks::read(self.rules.as_deref());
         if payee {
-            m.payee = None;
+            (m.payee, m.own_payee) = (None, true);
+            if m.typed {
+                self.original_payee = None;
+            }
+        }
+        if memo {
+            (m.memo, m.own_memo) = (None, true);
+            if m.typed {
+                self.original_memo = None;
+            }
         }
         self.rules = m.write()?;
         Ok(())
+    }
+
+    /// What is known of the bank's text is kept before the user changes it.
+    pub(crate) fn keep_bank_text(&mut self, date: &str, payee: &str, memo: &str) -> Result<()> {
+        if self.original_payee.is_some() {
+            return Ok(());
+        }
+        let mut keys = self.import_hash.clone().unwrap_or_default();
+        keys.push(' ');
+        keys.push_str(self.other_hashes.as_deref().unwrap_or_default());
+        let Some(p) = Proof::new(date, self.amount, payee, memo, &keys) else { return Ok(()) };
+        if let Some(rule) = p.moved.then_some(0) {
+            let mut m = Marks::read(self.rules.as_deref());
+            m.memo = Some(rule);
+            self.rules = m.write()?;
+        }
+        (self.original_payee, self.original_memo) = (Some(p.payee), p.memo);
+        Ok(())
+    }
+
+    /// Tags of a line that this one takes the place of.
+    pub(crate) fn add_tags_of(&mut self, other: &Line) {
+        let mut all = stored_tags(self.tags.as_deref());
+        for t in stored_tags(other.tags.as_deref()) {
+            if !has_tag(&all, &t) {
+                all.push(t);
+            }
+        }
+        self.tags = store_tags(&all);
+    }
+}
+
+/// How many times a file may have had a transaction, for the search of its key.
+const MAX_TWINS: usize = 32;
+
+/// The text of the bank, proved by the keys of the import: they are made of it.
+pub(crate) struct Proof {
+    pub payee: String,
+    /// `None`: the key does not say.
+    pub memo: Option<String>,
+    /// An older program moved the payee into the notes.
+    pub moved: bool,
+}
+
+impl Proof {
+    pub fn new(date: &str, amount: Cents, payee: &str, memo: &str, keys: &str) -> Option<Self> {
+        let keys: Vec<&str> = keys.split_whitespace().collect();
+        if keys.is_empty() {
+            return None;
+        }
+        let texts = [(payee, memo, false), (memo, "", true)];
+        for (p, m, moved) in texts.into_iter().filter(|t| !t.0.is_empty()) {
+            let key = contents_key(date, amount, p, m);
+            if (1..=MAX_TWINS).any(|n| keys.contains(&numbered_key(&key, n).as_str())) {
+                return Some(Proof { payee: p.into(), memo: Some(m.into()), moved });
+            }
+        }
+        for (p, _, moved) in texts.into_iter().filter(|t| !t.0.is_empty()) {
+            let ofx = |a: Cents| payee_mark(date, a, p);
+            if keys.contains(&ofx(amount).as_str()) || keys.contains(&ofx(amount.saturating_neg()).as_str()) {
+                return Some(Proof { payee: p.into(), memo: None, moved });
+            }
+        }
+        None
+    }
+}
+
+/// Where the text of a transaction comes from.
+struct Source {
+    payee: String,
+    /// `None`: not known, or not other than the notes there are now.
+    memo: Option<String>,
+    /// Known to be the bank's.
+    bank: bool,
+    /// The notes are the payee that a rule replaced.
+    moved: bool,
+}
+
+impl Source {
+    fn of(t: &Transaction) -> Self {
+        let m = &t.marks;
+        if let Some(payee) = &t.source_payee {
+            let moved = m.memo.is_some();
+            return Source { payee: payee.clone(), memo: t.source_memo.clone(), bank: !m.typed, moved };
+        }
+        if let Some(p) = Proof::new(&d2s(t.date), t.amount, &t.payee, &t.memo, &t.keys).filter(|_| !m.own_payee) {
+            return Source { payee: p.payee, memo: p.memo, bank: true, moved: p.moved };
+        }
+        Source { payee: t.payee.clone(), memo: None, bank: false, moved: m.memo.is_some() }
     }
 }
 
@@ -290,10 +415,14 @@ pub fn parse_tags(text: &str) -> Result<Vec<String>> {
             out.push(tag);
         }
     }
-    if out.len() > MAX_TAGS {
+    Ok(out)
+}
+
+fn check_number(tags: &[String], now: usize) -> Result<()> {
+    if tags.len() > MAX_TAGS.max(now) {
         bail!(trf("there are too many tags: at most {n}", &[("n", &MAX_TAGS)]));
     }
-    Ok(out)
+    Ok(())
 }
 
 /// As they are in the file.
@@ -316,7 +445,7 @@ fn cut(s: &str) -> String {
 
 // -------------------------------------------------------------- matching
 
-/// What the rules look at: the text of the bank, and what the user wrote instead.
+/// What the rules look at.
 pub struct Subject {
     payee: String,
     memo: String,
@@ -344,14 +473,16 @@ impl Subject {
         }
     }
 
-    /// Of a transaction. The payee that a rule wrote is not what the bank wrote.
+    /// Of a transaction: the text of the bank, or what was typed, and the notes of the user. Never what a rule
+    /// wrote, so that a run changes nothing of what the next one looks at.
     pub fn of(t: &Transaction) -> Self {
         let account = Some(t.account_id);
-        let payee = t.original_payee.as_deref().unwrap_or(&t.payee);
-        let memo = t.original_memo.as_deref().unwrap_or(&t.memo);
-        let mut out = Subject::new(payee, memo, t.amount, account);
-        if t.rules.payee.is_none() && (t.original_payee.is_some() || t.original_memo.is_some()) {
-            out.written = Some(Box::new(Subject::new(&t.payee, &t.memo, t.amount, account)));
+        let s = Source::of(t);
+        let now = (!s.moved).then_some(t.memo.as_str());
+        let first = s.memo.as_deref().or(now).unwrap_or_default();
+        let mut out = Subject::new(&s.payee, first, t.amount, account);
+        if let Some(memo) = now.filter(|m| *m != first) {
+            out.written = Some(Box::new(Subject::new(&s.payee, memo, t.amount, account)));
         }
         out
     }
@@ -644,6 +775,8 @@ pub struct Change {
     #[serde(skip)]
     memo: String,
     #[serde(skip)]
+    own_memo: bool,
+    #[serde(skip)]
     category_rule: Option<i64>,
     #[serde(skip)]
     payee_rule: Option<i64>,
@@ -662,6 +795,8 @@ pub struct Plan {
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Run {
+    /// Its number, to undo it.
+    pub run: Option<i64>,
     pub changed: usize,
     pub categorized: usize,
     pub broken: Vec<Broken>,
@@ -670,6 +805,7 @@ pub struct Run {
 /// The run that can be undone.
 #[derive(Clone, Debug, Serialize)]
 pub struct LastRun {
+    pub id: i64,
     pub made_at: String,
     pub changed: usize,
 }
@@ -834,6 +970,7 @@ impl Db {
             problem: None,
             ..r.clone()
         };
+        check_number(&rule.tags, 0)?;
         for t in [&rule.pattern, &rule.payee, &rule.memo].into_iter().filter(|t| !t.is_empty()) {
             if !rule.regex && t.split('|').all(|k| k.trim().is_empty()) {
                 bail!(tr("the rule needs a keyword"));
@@ -846,8 +983,7 @@ impl Db {
             bail!(trf("the new payee is too long: at most {n} characters", &[("n", &MAX_REPLACEMENT)]));
         }
         // What format 7 saved stays as it was; a new one would name every payee "$1".
-        let mut after = rule.rename_payee.split('$').skip(1);
-        if !rule.regex && after.any(|t| t.starts_with(|c: char| c.is_ascii_digit() || c == '{')) {
+        if !rule.regex && names_a_group(&rule.rename_payee) {
             bail!(tr("a new payee with a group like $1 needs a regular expression"));
         }
         let limits = [rule.amount_min, rule.amount_max];
@@ -986,24 +1122,40 @@ impl Db {
         if !matches!(t.kind, TxKind::Category | TxKind::Uncategorized) {
             bail!(tr("rules do not categorize transfers, splits and entries of the chart of accounts"));
         }
-        let payee = t.original_payee.as_deref().unwrap_or(&t.payee).trim();
-        let memo = t.original_memo.as_deref().unwrap_or(&t.memo).trim();
+        let source = Source::of(&t);
+        let payee = source.payee.trim();
+        let now = if source.moved { "" } else { t.memo.as_str() };
+        let memo = source.memo.as_deref().filter(|m| !m.is_empty()).unwrap_or(now).trim();
         let mut rule = Rule { category_id: t.category_id, category: t.category.clone(), ..Default::default() };
         let (text, of_payee) = if payee.is_empty() { (memo, false) } else { (payee, true) };
-        // In a keyword it would separate two.
-        rule.regex = text.contains('|');
+        let name: String = t.payee.trim().chars().take(MAX_REPLACEMENT).collect();
+        let renamed = t.payee.trim() != payee && !payee.is_empty() && !name.is_empty();
+        // In a keyword a bar would separate two, and a new payee would not be plain text.
+        rule.regex = text.contains('|') || (renamed && names_a_group(&name));
         let text: String = text.chars().take(MAX_REPLACEMENT).collect();
         let text = if rule.regex { regex::escape(&text) } else { text };
-        if of_payee {
+        if text.is_empty() {
+            // Nothing to look for but the amount.
+            (rule.amount_min, rule.amount_max) = (Some(t.amount.saturating_abs()), Some(t.amount.saturating_abs()));
+            rule.sign = if t.amount < 0 { Sign::Out } else { Sign::In };
+            (rule.account_id, rule.account) = (Some(t.account_id), t.account.clone());
+        } else if of_payee {
             rule.payee = text;
         } else {
             rule.memo = text;
         }
         rule.tags = t.tags.into_iter().take(MAX_TAGS).collect();
-        if t.payee.trim() != payee && !payee.is_empty() {
-            // A name that was cut or has a $ is written again.
-            let name: String = t.payee.trim().chars().take(MAX_REPLACEMENT).collect();
-            rule.rename_payee = if rule.regex { name.replace('$', "$$") } else { name };
+        if renamed {
+            // What is not a group is written twice, and what does not fit any more is cut.
+            let mut left = MAX_REPLACEMENT;
+            for c in name.chars() {
+                let n = if rule.regex && c == '$' { 2 } else { 1 };
+                if n > left {
+                    break;
+                }
+                left -= n;
+                (0..n).for_each(|_| rule.rename_payee.push(c));
+            }
         }
         Ok(rule)
     }
@@ -1018,7 +1170,14 @@ impl Db {
     // --------------------------------------------------- on what is added
 
     /// What the rules give a transaction that has no category.
-    pub(crate) fn apply_to_new(&self, set: &Ruleset, payee: &str, memo: &str, s: &Subject) -> Result<Applied> {
+    pub(crate) fn apply_to_new(
+        &self,
+        set: &Ruleset,
+        payee: &str,
+        memo: &str,
+        s: &Subject,
+        typed: bool,
+    ) -> Result<Applied> {
         let o = set.evaluate(s);
         let mut marks = Marks::default();
         if let Some((rule, category)) = o.category {
@@ -1026,14 +1185,15 @@ impl Db {
         }
         let (mut payee, mut memo) = (payee.to_string(), memo.to_string());
         if let Some((rule, name)) = o.payee {
-            if memo.is_empty() {
+            if memo.is_empty() && !payee.is_empty() {
                 memo = payee;
+                marks.memo = Some(rule);
             }
             payee = name;
-            marks.payee = Some(rule);
+            (marks.payee, marks.typed) = (Some(rule), typed);
         }
         let tags: Vec<String> = o.tags.iter().take(MAX_TAGS).map(|t| t.1.clone()).collect();
-        marks.tags = o.tags.iter().map(|(r, t)| (t.to_lowercase(), *r)).collect();
+        marks.tags = o.tags.iter().take(MAX_TAGS).map(|(r, t)| (t.to_lowercase(), *r)).collect();
         Ok(Applied { payee, memo, tags: store_tags(&tags), rules: marks.write()?, category: o.category.map(|c| c.1) })
     }
 
@@ -1058,13 +1218,12 @@ impl Db {
         let o = set.evaluate(&Subject::of(t));
         let by_hand = t.category_id.is_some() && t.rules.category.is_none();
         let category = o.category.filter(|(_, c)| (!by_hand || scope.overwrite) && t.category_id != Some(*c));
-        // The payee that the user wrote: neither that of the bank nor that of a rule.
-        let written = t.original_payee.is_some() && t.rules.payee.is_none();
-        let payee = o.payee.filter(|(_, p)| {
-            (!written || scope.overwrite) && (*p != t.payee || (category.is_some() && t.memo.is_empty()))
-        });
+        let source = Source::of(t);
+        // What may be the user's stays: only the bank's text, or what a rule wrote, is replaced.
+        let open = t.rules.payee.is_some() || (source.bank && !t.marks.own_payee && t.payee == source.payee);
+        let payee = o.payee.filter(|(_, p)| (open || scope.overwrite) && *p != t.payee);
         let wanted =
-            |tag: &str| !has_tag(&t.tags, tag) && (scope.overwrite || !t.marks.tags.contains_key(&tag.to_lowercase()));
+            |tag: &str| !has_tag(&t.tags, tag) && (scope.overwrite || !t.marks.removed.contains(&tag.to_lowercase()));
         let room = MAX_TAGS.saturating_sub(t.tags.len());
         let tags: Vec<(i64, String)> = o.tags.into_iter().filter(|(_, tag)| wanted(tag)).take(room).collect();
         if category.is_none() && payee.is_none() && tags.is_empty() {
@@ -1087,6 +1246,7 @@ impl Db {
             rules,
             entry: t.entry_id,
             memo: t.memo.clone(),
+            own_memo: t.marks.own_memo,
             category_rule: done.category.map(|c| c.0),
             payee_rule: done.payee.map(|p| p.0),
             tag_rules: done.tags.iter().map(|t| t.0).collect(),
@@ -1116,6 +1276,7 @@ impl Db {
                 [Local::now().format("%Y-%m-%d %H:%M:%S").to_string()],
             )?;
             let run = self.conn.last_insert_rowid();
+            out.run = Some(run);
             for c in &plan.changes {
                 self.make_change(run, c)?;
                 out.changed += 1;
@@ -1129,6 +1290,8 @@ impl Db {
         let mut d = self.load_draft(c.entry)?;
         let before = State::of(&d, c.id).ok_or_else(|| no_transaction(c.id))?;
         let account = c.new_category_id.map(|id| self.category_ledger(Some(id))).transpose()?;
+        // The notes that the user emptied stay empty.
+        let fill = c.memo.is_empty() && !c.payee.is_empty() && !c.own_memo;
         for l in &mut d.lines {
             if l.id != Some(c.id) {
                 l.account = account.unwrap_or(l.account);
@@ -1140,21 +1303,31 @@ impl Db {
                 marks.category = Some((rule, account));
             }
             if c.new_payee.is_some() {
-                marks.payee = c.payee_rule;
-                l.original_payee.get_or_insert_with(|| c.payee.clone());
-                l.original_memo.get_or_insert_with(|| c.memo.clone());
+                l.rules = marks.write()?;
+                l.keep_bank_text(&d2s(c.date), &c.payee, &c.memo)?;
+                marks = Marks::read(l.rules.as_deref());
+                if l.original_payee.is_none() {
+                    marks.typed = true;
+                    l.original_payee = Some(c.payee.clone());
+                    l.original_memo = marks.memo.is_none().then(|| c.memo.clone());
+                }
+                (marks.payee, marks.own_payee) = (c.payee_rule, false);
+                if fill {
+                    marks.memo = c.payee_rule;
+                }
                 (l.payee, l.memo) = (None, None);
             }
             let mut tags = stored_tags(l.tags.as_deref());
             for (rule, tag) in c.tag_rules.iter().zip(&c.new_tags) {
                 marks.tags.insert(tag.to_lowercase(), *rule);
+                marks.removed.remove(&tag.to_lowercase());
                 tags.push(tag.clone());
             }
             l.tags = store_tags(&tags);
             l.rules = marks.write()?;
         }
         if let Some(p) = &c.new_payee {
-            d.memo = if c.memo.is_empty() { c.payee.clone() } else { c.memo.clone() };
+            d.memo = if fill { c.payee.clone() } else { c.memo.clone() };
             d.payee.clone_from(p);
         }
         self.save_entry(&d)?;
@@ -1175,29 +1348,48 @@ impl Db {
         Ok(())
     }
 
+    /// How many rules go with an account.
+    pub fn rules_of_account(&self, id: i64) -> Result<usize> {
+        Ok(self.load_rules()?.iter().filter(|r| r.account_id == Some(id)).count())
+    }
+
+    /// How many rules go with a category and those under it.
+    pub fn rules_of_category(&self, id: i64) -> Result<usize> {
+        let all = self.categories()?;
+        let path = all.iter().find(|c| c.id == id).map(|c| c.path.clone()).unwrap_or_default();
+        let below = format!("{path}:");
+        let goes = |c: i64| c == id || all.iter().any(|x| x.id == c && x.path.starts_with(&below));
+        Ok(self.load_rules()?.iter().filter(|r| r.category_id.is_some_and(goes)).count())
+    }
+
     /// The run on demand that can be undone.
     pub fn last_rule_run(&self) -> Result<Option<LastRun>> {
         let found = self
             .conn
             .query_row(
-                "SELECT made_at, (SELECT COUNT(*) FROM rule_changes c WHERE c.run_id=r.id)
+                "SELECT r.id, made_at, (SELECT COUNT(*) FROM rule_changes c WHERE c.run_id=r.id)
                  FROM rule_runs r ORDER BY id DESC LIMIT 1",
                 [],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                |r| Ok((r.get(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
             )
             .optional()?;
-        Ok(found.map(|(made_at, n)| LastRun { made_at, changed: usize::try_from(n).unwrap_or(0) }))
+        Ok(found.map(|(id, made_at, n)| LastRun { id, made_at, changed: usize::try_from(n).unwrap_or(0) }))
     }
 
-    /// Undoes the last run on demand. A transaction that was changed since stays as it is and is listed; when
-    /// all were, nothing is done and the run can still be undone.
+    /// [`Db::undo_run`] of the last one.
     pub fn undo_rules(&self) -> Result<Undone> {
+        let last = self.last_rule_run()?.ok_or_else(|| anyhow!(tr("there is no run of the rules to undo")))?;
+        self.undo_run(last.id)
+    }
+
+    /// Undoes a run on demand, the last one. A transaction that was changed since stays as it is and is listed;
+    /// when all were, nothing is done and the run can still be undone.
+    pub fn undo_run(&self, run: i64) -> Result<Undone> {
         self.atomically(|| {
-            let run: Option<i64> = self
-                .conn
-                .query_row("SELECT id FROM rule_runs ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
-                .optional()?;
-            let run = run.ok_or_else(|| anyhow!(tr("there is no run of the rules to undo")))?;
+            let last = self.last_rule_run()?.ok_or_else(|| anyhow!(tr("there is no run of the rules to undo")))?;
+            if last.id != run {
+                bail!(trf("run {id} cannot be undone: {what}", &[("id", &run), ("what", &last.text())]));
+            }
             let mut st = self.conn.prepare(
                 "SELECT posting_id, before_state, after_state, was_categorized, before_category
                  FROM rule_changes WHERE run_id=?1 ORDER BY posting_id",
@@ -1269,15 +1461,52 @@ impl Db {
 
     // ------------------------------------------------------------------ tags
 
-    /// Gives a transaction these tags instead of those it has.
+    /// Gives a transaction these tags instead of those it has. No rule adds again one that is removed.
     pub fn set_tags(&self, id: i64, tags: &[String]) -> Result<()> {
-        let all = store_tags(&parse_tags(&tags.join(","))?);
+        self.change_tags(id, |old| {
+            let all = parse_tags(&tags.join(","))?;
+            check_number(&all, old.len())?;
+            Ok(all)
+        })
+    }
+
+    /// The tags given with a transaction that is recorded: those of the rules make room for them.
+    pub fn add_tags(&self, id: i64, tags: &[String]) -> Result<()> {
+        let mut all = parse_tags(&tags.join(","))?;
+        check_number(&all, 0)?;
         self.atomically(|| {
             let entry = self.entry_of_transaction(id)?.ok_or_else(|| no_transaction(id))?;
             let mut d = self.load_draft(entry)?;
             for l in d.lines.iter_mut().filter(|l| l.id == Some(id)) {
-                l.tags.clone_from(&all);
+                for t in stored_tags(l.tags.as_deref()) {
+                    if all.len() < MAX_TAGS && !has_tag(&all, &t) {
+                        all.push(t);
+                    }
+                }
+                l.tags = store_tags(&all);
             }
+            self.save_entry(&d)?;
+            Ok(())
+        })
+    }
+
+    fn change_tags(&self, id: i64, new: impl FnOnce(&[String]) -> Result<Vec<String>>) -> Result<()> {
+        self.atomically(|| {
+            let entry = self.entry_of_transaction(id)?.ok_or_else(|| no_transaction(id))?;
+            let mut d = self.load_draft(entry)?;
+            let Some(l) = d.lines.iter_mut().find(|l| l.id == Some(id)) else { return Err(no_transaction(id)) };
+            let old = stored_tags(l.tags.as_deref());
+            let new = new(&old)?;
+            let mut marks = Marks::read(l.rules.as_deref());
+            for t in old.iter().filter(|t| !has_tag(&new, t)).map(|t| t.to_lowercase()) {
+                marks.tags.remove(&t);
+                marks.removed.insert(t);
+            }
+            for t in &new {
+                marks.removed.remove(&t.to_lowercase());
+            }
+            l.tags = store_tags(&new);
+            l.rules = marks.write()?;
             self.save_entry(&d)?;
             Ok(())
         })
@@ -1293,6 +1522,14 @@ impl Db {
             }
         }
         Ok(all.into_values().collect())
+    }
+}
+
+impl LastRun {
+    /// For people.
+    pub fn text(&self) -> String {
+        let n = trn(self.changed, "{n} transaction", "{n} transactions");
+        trf("the last run is {id}, of {when} ({n})", &[("id", &self.id), ("when", &self.made_at), ("n", &n)])
     }
 }
 
@@ -1329,8 +1566,27 @@ pub fn broken_message(broken: &[Broken]) -> String {
     if all.is_empty() { String::new() } else { trf("rules skipped: {list}", &[("list", &all.join("; "))]) }
 }
 
+/// How many transactions a rule that is not saved yet matches, until the time is over or `stop`: then the second
+/// value is false. Needs no data file, so that it can be done beside the window.
+pub fn count_matches(rule: &Rule, among: &[Transaction], limit: Duration, stop: &AtomicBool) -> Result<(usize, bool)> {
+    let compiled = Compiled::new(&Rule { problem: None, ..rule.clone() })?;
+    let start = Instant::now();
+    let mut n = 0;
+    for t in among.iter().filter(|t| is_for_rules(t)) {
+        if stop.load(Ordering::Relaxed) || start.elapsed() > limit {
+            return Ok((n, false));
+        }
+        n += usize::from(compiled.met(&Subject::of(t)).is_some());
+    }
+    Ok((n, true))
+}
+
 fn is_for_rules(t: &Transaction) -> bool {
     matches!(t.kind, TxKind::Category | TxKind::Uncategorized)
+}
+
+fn names_a_group(name: &str) -> bool {
+    name.split('$').skip(1).any(|t| t.starts_with(|c: char| c.is_ascii_digit() || c == '{'))
 }
 
 fn no_rule(id: i64) -> anyhow::Error {

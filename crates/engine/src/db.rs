@@ -155,8 +155,20 @@ pub struct Transaction {
     /// The rules that set its category, payee or tags, by id.
     #[serde(skip_serializing_if = "RuleUse::is_empty")]
     pub rules: RuleUse,
+    /// What was typed before a rule changed the payee or the notes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typed_payee: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typed_memo: Option<String>,
     #[serde(skip)]
     pub(crate) marks: Marks,
+    /// The texts of before, whoever wrote them, and the import keys.
+    #[serde(skip)]
+    pub(crate) source_payee: Option<String>,
+    #[serde(skip)]
+    pub(crate) source_memo: Option<String>,
+    #[serde(skip)]
+    pub(crate) keys: String,
     /// Saldo progressivo (solo quando si filtra per un conto).
     pub balance: Option<Cents>,
 }
@@ -770,7 +782,8 @@ impl Db {
         let mut sql = String::from(
             "SELECT p.id, a.id, a.name, COALESCE(p.date, e.date), p.amount, COALESCE(p.payee, e.payee), COALESCE(p.memo, e.memo),
                     ol.category_id, p.cleared, o.id, e.id, oa.id, oa.name, ol.system, ol.name, p.origin,
-                    p.original_payee, p.original_memo, p.tags, p.rules, ol.id
+                    p.original_payee, p.original_memo, p.tags, p.rules, ol.id,
+                    p.import_hash, p.other_hashes
              FROM book_postings p JOIN entries e ON e.id=p.entry_id
              JOIN ledger_accounts l ON l.id=p.ledger_account_id JOIN accounts a ON a.id=l.money_account_id
              LEFT JOIN book_postings o ON o.entry_id=p.entry_id AND o.id<>p.id
@@ -806,9 +819,19 @@ impl Db {
             let (payee, memo): (String, String) = (r.get(5)?, r.get(6)?);
             let tags = stored_tags(r.get::<_, Option<String>>(18)?.as_deref());
             let marks = Marks::read(r.get::<_, Option<String>>(19)?.as_deref());
+            let (source_payee, source_memo): (Option<String>, Option<String>) = (r.get(16)?, r.get(17)?);
+            let others = [source_payee.clone().filter(|p| *p != payee), source_memo.clone().filter(|m| *m != memo)];
+            let ([original_payee, original_memo], [typed_payee, typed_memo]) =
+                if marks.typed { ([None, None], others) } else { (others, [None, None]) };
+            let keys = [r.get::<_, Option<String>>(21)?, r.get::<_, Option<String>>(22)?];
             Ok(Transaction {
-                original_payee: r.get::<_, Option<String>>(16)?.filter(|p| *p != payee),
-                original_memo: r.get::<_, Option<String>>(17)?.filter(|m| *m != memo),
+                original_payee,
+                original_memo,
+                typed_payee,
+                typed_memo,
+                source_payee,
+                source_memo,
+                keys: keys.into_iter().flatten().collect::<Vec<_>>().join(" "),
                 rules: RuleUse::of(&marks, &tags, r.get(20)?),
                 tags,
                 marks,
@@ -876,7 +899,7 @@ impl Db {
             }
             if !needle.is_empty() {
                 let tags: Vec<String> = t.tags.iter().map(|x| format!("#{}", x.to_lowercase())).collect();
-                let original = t.original_payee.iter().chain(&t.original_memo);
+                let original = t.source_payee.iter().chain(&t.source_memo);
                 let hay = format!(
                     "{} {} {} {} {} {}",
                     t.payee.to_lowercase(),
@@ -931,7 +954,7 @@ impl Db {
         let (mut tags, mut marks) = (None, None);
         if let (None, Some(set)) = (tx.category_id, rules) {
             let s = Subject::new(&tx.payee, &tx.memo, tx.amount, Some(tx.account_id));
-            let done = self.apply_to_new(set, &tx.payee, &tx.memo, &s)?;
+            let done = self.apply_to_new(set, &tx.payee, &tx.memo, &s, tx.import_hash.is_none())?;
             (tx.payee, tx.memo, tx.category_id) = (done.payee, done.memo, done.category);
             (tags, marks) = (done.tags, done.rules);
         }
