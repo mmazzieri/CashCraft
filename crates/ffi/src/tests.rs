@@ -76,6 +76,23 @@ fn an_old_log_does_not_follow_a_new_file() {
     assert_sound(&a);
 }
 
+/// Two phones that add a row each to the same file do not give it the same id.
+#[test]
+fn two_phones_number_rows_apart() {
+    let d = Dir::new("ids");
+    let (a, b) = (d.file("a.db"), d.file("b.db"));
+    ask(json!({"op": "new", "path": a}));
+    tool(&a, "create_account", json!({"name": "Wallet"}));
+    std::fs::copy(&a, &b).unwrap();
+    let ids: Vec<Value> = [&a, &b]
+        .iter()
+        .map(|f| tool(f, "add_transaction", json!({"account": "Wallet", "amount": -1, "payee": "x"}))["id"].clone())
+        .collect();
+    assert_ne!(ids[0], ids[1]);
+    assert!(ids[0].as_i64().unwrap() > 1_000_000, "a spread id, not the next number");
+    assert_sound(&a);
+}
+
 #[test]
 fn what_is_not_a_whole_data_file_is_not_adopted() {
     let d = Dir::new("bad");

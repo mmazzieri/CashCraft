@@ -11,7 +11,9 @@ The file is the desktop's, with the same `SCHEMA_VERSION`; a newer one is refuse
 - When a log (`-wal`, `-journal`) lies beside the shared file, a computer has it open: the phone only reads.
 - **Android** writes in place, without an atomic rename: what is being written is kept, and a write that stopped is done again. **iOS** replaces the file atomically.
 
-**Limit:** the desktop still opens the file where it is, and a sync app may not carry the log that says so. Close CashCraft on the computer, and let the folder sync, before using the same file on the phone. The change of the desktop is part of issue #19.
+New rows get ids that no other phone or computer gives (`Db::open_copy`, see [data-file.md](data-file.md)), so several phones and computers can add to the same file.
+
+**Limit:** a computer must use the file in the shared way, which is chosen by itself in the synced folders it recognizes ([data-file.md](data-file.md)). A computer that uses it directly leaves a log beside it, and then the phone only reads.
 
 ## The bridge
 
