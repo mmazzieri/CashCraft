@@ -1,0 +1,347 @@
+import CryptoKit
+import Foundation
+
+struct Account: Identifiable, Hashable {
+    let id: Int
+    let name: String
+    let currency: String
+    let balance: Decimal
+}
+
+struct Movement: Identifiable {
+    let id: Int
+    let account: String
+    let date: String
+    let amount: Decimal
+    let payee: String
+    let memo: String
+    let category: String
+    /// Only a plain movement is edited on the phone; a transfer or a split is seen and deleted.
+    let plain: Bool
+}
+
+struct BudgetLine: Identifiable {
+    var id: String { category }
+    let category: String
+    let budget: Decimal
+    let spent: Decimal
+    let remaining: Decimal
+}
+
+/// What the screens show.
+struct Shown {
+    var accounts: [Account] = []
+    var worth: Decimal?
+    var movements: [Movement] = []
+    var categories: [String] = []
+    var budget: [BudgetLine] = []
+    /// The shared file could not be reached: changes wait on the phone.
+    var offline = false
+    /// A computer has the file open: the phone only reads.
+    var inUse = false
+    /// A copy written because both the phone and a computer had changed the file.
+    var notice: String?
+}
+
+/// The shared data file and its private copy on this phone. File work runs on a queue of its own,
+/// one task at a time.
+@MainActor
+final class Books: ObservableObject {
+    @Published private(set) var ready = false
+    @Published private(set) var open = false
+    @Published private(set) var busy = false
+    @Published private(set) var shown = Shown()
+    /// Data files of the folder just picked, when there is not exactly one.
+    @Published var picked: [String]?
+    @Published var notice: String?
+    @Published var error: String?
+
+    private let work = DispatchQueue(label: "cashcraft.file")
+    private let worker = Worker()
+
+    init() {
+        let language = Locale.preferredLanguages.first ?? "en"
+        run { w in
+            try Core.ask("lang", ["lang": language])
+            if try w.restore() {
+                try w.sync()
+                try w.show()
+            }
+        } then: {
+            $0.ready = true
+        }
+    }
+
+    /// Looks for the data files of a folder the person picked: one is opened, of more the person chooses.
+    func choose(_ folder: URL) {
+        guard folder.startAccessingSecurityScopedResource() else {
+            error = String(localized: "The folder cannot be opened.")
+            return
+        }
+        var names: [String] = []
+        run { w in
+            names = try w.look(folder)
+            if names.count == 1 { try w.open(names[0]) }
+        } then: {
+            if names.count != 1 { $0.picked = names }
+        }
+    }
+
+    func pick(_ name: String) { run { w in try w.open(name) } }
+
+    func create() { run { w in try w.create() } }
+
+    func reload() { run { w in try w.refresh() } }
+
+    func search(_ text: String) { run { w in try w.find(text) } }
+
+    /// A change: an operation of the engine.
+    func change(_ tool: String, _ args: [String: Any]) { run { w in try w.change(tool, args) } }
+
+    private func run(_ body: @escaping (Worker) throws -> Void, then: @escaping (Books) -> Void = { _ in }) {
+        busy = true
+        let worker = self.worker
+        work.async {
+            var failure: String?
+            do { try body(worker) } catch { failure = error.localizedDescription }
+            let (shown, open) = (worker.shown, worker.isOpen)
+            worker.shown.notice = nil
+            Task { @MainActor in
+                self.busy = false
+                self.shown = shown
+                self.open = open
+                if let notice = shown.notice { self.notice = notice }
+                if let failure { self.error = failure }
+                then(self)
+                self.ready = true
+            }
+        }
+    }
+}
+
+/// The file work, done on one queue.
+final class Worker: @unchecked Sendable {
+    var shown = Shown()
+    private var folder: URL?
+    private var looked: URL?
+    private var name = ""
+    private var query = ""
+    private let defaults = UserDefaults.standard
+    private let manager = FileManager.default
+    private static let extensions = ["db", "sqlite", "cashcraft"]
+
+    var isOpen: Bool { folder != nil }
+
+    private var dirty: Bool {
+        get { defaults.bool(forKey: "dirty") }
+        set { defaults.set(newValue, forKey: "dirty") }
+    }
+
+    /// The file opened before, if the phone still lets the app use its folder.
+    func restore() throws -> Bool {
+        guard let saved = defaults.data(forKey: "folder"), let name = defaults.string(forKey: "name") else { return false }
+        var stale = false
+        let url = try URL(resolvingBookmarkData: saved, bookmarkDataIsStale: &stale)
+        guard url.startAccessingSecurityScopedResource() else { throw CoreError(message: "the folder cannot be opened") }
+        if stale, let fresh = try? url.bookmarkData() { defaults.set(fresh, forKey: "folder") }
+        folder = url
+        self.name = name
+        return true
+    }
+
+    func look(_ url: URL) throws -> [String] {
+        if dirty { try sync() }
+        if dirty { throw CoreError(message: String(localized: "There are changes not yet written to the shared file.")) }
+        looked = url
+        return try manager.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
+            .map { Self.visible($0.lastPathComponent) }
+            .filter { Self.extensions.contains(($0 as NSString).pathExtension) }
+            .sorted()
+    }
+
+    /// The name of a file; one that iCloud has not downloaded is `.name.icloud`.
+    private static func visible(_ n: String) -> String {
+        n.hasPrefix(".") && n.hasSuffix(".icloud") ? String(n.dropFirst().dropLast(7)) : n
+    }
+
+    func open(_ name: String) throws {
+        guard let url = looked else { return }
+        let bytes = try read(url.appendingPathComponent(name))
+        try adopt(bytes)
+        defaults.set(try url.bookmarkData(), forKey: "folder")
+        defaults.set(name, forKey: "name")
+        defaults.set(hash(bytes), forKey: "base")
+        dirty = false
+        folder = url
+        self.name = name
+        shown = Shown()
+        try refresh()
+    }
+
+    func create() throws {
+        guard let url = looked else { return }
+        let file = try support("new.db")
+        try? manager.removeItem(at: file)
+        try Core.ask("new", ["path": file.path])
+        let bytes = try Data(contentsOf: file)
+        try manager.removeItem(at: file)
+        try write(bytes, url.appendingPathComponent("cashcraft.db"), new: true)
+        try open("cashcraft.db")
+    }
+
+    func refresh() throws {
+        guard isOpen else { return }
+        try sync()
+        try show()
+    }
+
+    func find(_ text: String) throws {
+        query = text
+        if isOpen { try show() }
+    }
+
+    func change(_ tool: String, _ args: [String: Any]) throws {
+        try sync()
+        if shown.inUse { throw CoreError(message: String(localized: "The file is open on a computer. Close CashCraft there to write from the phone.")) }
+        let before = dirty
+        // Said before it happens: a change that stops halfway is carried or kept, never forgotten.
+        dirty = true
+        defaults.synchronize()
+        do {
+            _ = try call(tool, args)
+        } catch {
+            // Refused: the copy is as it was.
+            if !before, let now = try? Data(contentsOf: try work()), hash(now) == defaults.string(forKey: "base") { dirty = false }
+            throw error
+        }
+        try refresh()
+    }
+
+    /// Brings the shared file here, or carries the copy there.
+    func sync() throws {
+        guard let folder else { return }
+        let shared = folder.appendingPathComponent(name)
+        let copy = try work()
+        let here = manager.fileExists(atPath: copy.path)
+        if here { try Core.ask("settle", ["path": copy.path]) }
+        let bytes: Data
+        do {
+            shown.inUse = ["-wal", "-journal"].contains { suffix in
+                let log = folder.appendingPathComponent(name + suffix)
+                return ((try? log.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
+            }
+            bytes = try read(shared)
+        } catch {
+            if !here { throw error }
+            shown.offline = true
+            return
+        }
+        let now = hash(bytes)
+        let changedThere = now != defaults.string(forKey: "base")
+        if !dirty {
+            if changedThere || !here {
+                try adopt(bytes)
+                defaults.set(now, forKey: "base")
+            }
+        } else if changedThere {
+            let ours = try Data(contentsOf: copy)
+            if ours != bytes {
+                // Both changed: the phone's goes beside, whole, and the shared one is taken.
+                let stamp = DateFormatter()
+                stamp.locale = Locale(identifier: "en_US_POSIX")
+                stamp.dateFormat = "yyyyMMdd-HHmmss"
+                let parts = name as NSString
+                let beside = "\(parts.deletingPathExtension) (phone \(stamp.string(from: Date()))).\(parts.pathExtension)"
+                try write(ours, folder.appendingPathComponent(beside), new: true)
+                try adopt(bytes)
+                shown.notice = beside
+            }
+            defaults.set(now, forKey: "base")
+            dirty = false
+        } else if !shown.inUse {
+            let ours = try Data(contentsOf: copy)
+            do {
+                try write(ours, shared, new: false)
+            } catch {
+                shown.offline = true
+                return
+            }
+            defaults.set(hash(ours), forKey: "base")
+            dirty = false
+        }
+        shown.offline = false
+    }
+
+    private func adopt(_ bytes: Data) throws {
+        let from = try support("fetched.db")
+        try bytes.write(to: from, options: .atomic)
+        try Core.ask("adopt", ["from": from.path, "path": try work().path])
+    }
+
+    private func call(_ tool: String, _ args: [String: Any] = [:]) throws -> [String: Any] {
+        try Core.ask("call", ["path": try work().path, "tool": tool, "args": args]) as? [String: Any] ?? [:]
+    }
+
+    func show() throws {
+        let accounts = try call("list_accounts")
+        let movements = try call("list_transactions", ["limit": 300, "search": query])
+        let categories = try call("list_categories")
+        let budget = try call("budget_status")
+        shown.worth = money(accounts["net_worth"])
+        shown.accounts = list(accounts["accounts"]).compactMap { a in
+            guard let id = a["id"] as? Int else { return nil }
+            return Account(id: id, name: string(a["name"]), currency: string(a["currency"]), balance: money(a["balance"]))
+        }
+        shown.movements = list(movements["transactions"]).compactMap { m in
+            guard let id = m["id"] as? Int else { return nil }
+            return Movement(
+                id: id, account: string(m["account"]), date: string(m["date"]), amount: money(m["amount"]),
+                payee: string(m["payee"]), memo: string(m["memo"]), category: string(m["category"]),
+                plain: ["category", "uncategorized"].contains(string(m["kind"]))
+            )
+        }
+        shown.categories = list(categories["categories"]).map { string($0["path"]) }
+        shown.budget = list(budget["lines"]).map {
+            BudgetLine(category: string($0["category"]), budget: money($0["budget"]), spent: money($0["spent"]), remaining: money($0["remaining"]))
+        }
+    }
+
+    private func list(_ v: Any?) -> [[String: Any]] { v as? [[String: Any]] ?? [] }
+    private func string(_ v: Any?) -> String { v as? String ?? "" }
+
+    /// Two exact decimals: the engine counts whole cents.
+    private func money(_ v: Any?) -> Decimal {
+        guard let n = v as? NSNumber else { return 0 }
+        return Decimal(Int((n.doubleValue * 100).rounded())) / 100
+    }
+
+    private func read(_ url: URL) throws -> Data {
+        var result: Result<Data, Error> = .failure(CoreError(message: "not read"))
+        var coordination: NSError?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordination) { at in
+            result = Result { try Data(contentsOf: at) }
+        }
+        if let coordination { throw coordination }
+        return try result.get()
+    }
+
+    private func write(_ bytes: Data, _ url: URL, new: Bool) throws {
+        var failure: Error?
+        var coordination: NSError?
+        NSFileCoordinator().coordinate(writingItemAt: url, options: new ? [] : .forReplacing, error: &coordination) { at in
+            do { try bytes.write(to: at, options: new ? .withoutOverwriting : .atomic) } catch { failure = error }
+        }
+        if let coordination { throw coordination }
+        if let failure { throw failure }
+        guard try read(url) == bytes else { throw CoreError(message: "the file was not written whole") }
+    }
+
+    private func hash(_ bytes: Data) -> String { SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() }
+
+    private func support(_ file: String) throws -> URL {
+        try manager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            .appendingPathComponent(file)
+    }
+
+    private func work() throws -> URL { try support("work.db") }
+}
