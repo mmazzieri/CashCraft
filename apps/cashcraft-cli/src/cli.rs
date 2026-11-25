@@ -1211,24 +1211,30 @@ fn date(v: &Value) -> String {
     parse_date(&st(v)).map(fmt_date).unwrap_or_else(|| st(v))
 }
 
+/// The width of a column of ids: those of a shared data file are long.
+fn id_width(rows: &[Value], key: &str, least: usize) -> usize {
+    rows.iter().map(|r| st(field(r, key)).len()).max().unwrap_or(0).max(least)
+}
+
 fn print_human(tool: &str, r: &Value) {
     let arr = |k: &str| r.get(k).and_then(|x| x.as_array()).cloned().unwrap_or_default();
     match tool {
         "list_accounts" => {
-            println!("{:>4}  {:<28} {:<18} {:>16}", "ID", head(tr("Account")), head(tr("Type")), head(tr("Balance")));
+            let w = id_width(&arr("accounts"), "id", 4);
+            println!("{:>w$}  {:<28} {:<18} {:>16}", "ID", head(tr("Account")), head(tr("Type")), head(tr("Balance")));
             for a in arr("accounts") {
                 let kind = cashcraft_engine::db::AccountKind::from_code(&st(field(&a, "kind")))
                     .map(|k| k.label())
                     .unwrap_or("");
                 println!(
-                    "{:>4}  {:<28} {:<18} {:>16}",
+                    "{:>w$}  {:<28} {:<18} {:>16}",
                     st(field(&a, "id")),
                     cut(&st(field(&a, "name")), 28),
                     kind,
                     eur(field(&a, "balance"))
                 );
             }
-            println!("{:>69}", trf("Net worth: {amount}", &[("amount", &eur(field(r, "net_worth")))]));
+            println!("{:>1$}", trf("Net worth: {amount}", &[("amount", &eur(field(r, "net_worth")))]), w + 65);
         }
         "get_transaction" => {
             let t = field(r, "transaction");
@@ -1318,8 +1324,9 @@ fn print_human(tool: &str, r: &Value) {
             print_broken(r);
         }
         "list_transactions" | "transfer_candidates" => {
+            let w = id_width(&arr("transactions"), "id", 5);
             println!(
-                "{:>5}  {:<10}  {:<16} {:<30} {:<24} {:>13}",
+                "{:>w$}  {:<10}  {:<16} {:<30} {:<24} {:>13}",
                 "ID",
                 head(tr("Date")),
                 head(tr("Account")),
@@ -1329,7 +1336,7 @@ fn print_human(tool: &str, r: &Value) {
             );
             for t in arr("transactions") {
                 println!(
-                    "{:>5}  {:<10}  {:<16} {:<30} {:<24} {:>13}  {}",
+                    "{:>w$}  {:<10}  {:<16} {:<30} {:<24} {:>13}  {}",
                     st(field(&t, "id")),
                     date(field(&t, "date")),
                     cut(&st(field(&t, "account")), 16),
@@ -1429,7 +1436,8 @@ fn print_human(tool: &str, r: &Value) {
             }
         }
         "list_ledger_accounts" => {
-            println!("{:>4}  {:<8} {:<44} {}", "ID", head(tr("Code")), head(tr("Account")), head(tr("Balance")));
+            let w = id_width(&arr("accounts"), "ledger_account_id", 4);
+            println!("{:>w$}  {:<8} {:<44} {}", "ID", head(tr("Code")), head(tr("Account")), head(tr("Balance")));
             let all = arr("accounts");
             for class in Class::ALL {
                 println!("{}", class.label());
@@ -1441,7 +1449,7 @@ fn print_human(tool: &str, r: &Value) {
                         .map(|b| exact(field(b, "amount"), field(b, "currency")))
                         .collect();
                     println!(
-                        "{:>4}  {:<8} {:<44} {}",
+                        "{:>w$}  {:<8} {:<44} {}",
                         st(field(a, "ledger_account_id")),
                         cut(&st(field(a, "code")), 8),
                         cut(&st(field(a, "path")), 44),

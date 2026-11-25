@@ -1090,7 +1090,8 @@ fn keeping_a_file_elsewhere_fails_whole_or_not_at_all() {
         let old = p.0.join("old.db");
         let (db, _) = Db::open(&old).unwrap();
         add(&db, "x");
-        let died = keep_through(die_at(&Shared::new(&home, &p.file()), n).0, &old, &old).is_err();
+        let kept = keep_through(die_at(&Shared::new(&home, &p.file()), n).0, &old, &old);
+        let died = kept.and_then(|k| k.finish()).is_err();
         // The old one goes on, and is the one in use until all is done.
         add(&db, "y");
         assert_eq!(home.recent().is_some(), !died);
@@ -1103,28 +1104,96 @@ fn keeping_a_file_elsewhere_fails_whole_or_not_at_all() {
         }
         steps += 1;
     }
-    assert!(steps >= 4, "{steps}");
-    // While it is kept nobody writes in the old one, so that nothing stays behind.
+    assert!(steps >= 5, "{steps}");
+    // However slow the folder is, the old file can be written; what is written comes too.
     let p = Place::new();
     let home = p.home("one");
     let old = p.0.join("old.db");
     let (db, _) = Db::open(&old).unwrap();
     add(&db, "x");
     db.conn.busy_timeout(Duration::from_millis(20)).unwrap();
-    let kept = keep(&home, &old, &old, &p.file()).unwrap();
-    assert!(db.set_meta("late", "1").is_err());
-    let new = kept.release();
-    db.set_meta("late", "1").unwrap();
-    assert_eq!(payees(&new.db), set(&["x"]));
+    let count = AtomicUsize::new(0);
+    let faults: Faults = {
+        let old = old.clone();
+        Arc::new(move |step| {
+            if step == "finishing" {
+                return Ok(());
+            }
+            let (other, _) = Db::open(&old)?;
+            other.conn.busy_timeout(Duration::from_millis(20))?;
+            add(&other, &format!("during {step} {}", count.fetch_add(1, Ordering::Relaxed)));
+            Ok(())
+        })
+    };
+    let slow = Shared { faults: Some(faults), ..Shared::new(&home, &p.file()) };
+    let kept = keep_through(slow, &old, &old).unwrap();
+    add(&db, "before the end");
+    // Somebody writes just then: said, and not remembered.
+    db.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(kept.finish().is_err() && home.recent().is_none() && home.moved(&old).is_none());
+    db.conn.execute_batch("ROLLBACK").unwrap();
+    kept.finish().unwrap();
+    assert!(payees(&db).len() > 4);
+    assert_eq!(payees(&kept.opened.db), payees(&db));
+    assert!(!kept.opened.shared.as_ref().unwrap().0.sync().unwrap().pending);
+    assert_eq!(payees_of(&p.file()), payees(&db));
     assert_eq!(home.recent(), Some(resolved(&p.file())));
     assert!(keep(&home, &old, &old, &p.file()).is_err());
-    // A folder that is not there: nothing is remembered.
-    home.remember(None).unwrap();
-    assert!(keep(&home, &old, &old, &p.0.join("nowhere").join("a.db")).is_err());
-    assert_eq!(home.recent(), None);
-    // Back to the old one.
+    // Given up: nothing of it stays.
     home.remember(Some(&old)).unwrap();
-    assert_eq!(home.moved(&old), None);
+    let other = p.folder().join("other.db");
+    keep(&home, &old, &old, &other).unwrap().discard();
+    assert!(!other.exists() && !Shared::new(&home, &other).copy().exists());
+    assert_eq!((home.recent(), home.moved(&old)), (Some(old.clone()), None));
+    // A folder that is not there.
+    assert!(keep(&home, &old, &old, &p.0.join("nowhere").join("a.db")).is_err());
+    assert_eq!(home.recent(), Some(old));
+}
+
+#[test]
+fn going_back_to_the_default_file_ends_the_notice() {
+    let p = Place::new();
+    let home = p.home("one");
+    // The mark alone: the default file of whoever runs the tests is not touched.
+    let default = crate::db::default_db_path();
+    let mark = home.copy_of(&resolved(&default));
+    Home::make(&mark).unwrap();
+    std::fs::write(mark.join("moved"), "elsewhere").unwrap();
+    assert!(home.moved(&default).is_some());
+    home.remember(None).unwrap();
+    assert_eq!(home.moved(&default), None);
+}
+
+#[test]
+fn what_was_taken_is_known_also_when_the_folder_is_away() {
+    for log in [false, true] {
+        let p = Place::new();
+        let (a, sa, _) = p.start("one");
+        let (b, sb, _) = p.start("two");
+        add(&b, "theirs");
+        sb.sync().unwrap();
+        // Dies once the copy has it.
+        let dying: Faults = Arc::new(|step| if step == "adopted" { bail!("killed") } else { Ok(()) });
+        assert!(Shared { faults: Some(dying), ..sa.clone() }.sync().is_err());
+        assert_eq!(payees(&a), set(&["theirs"]));
+        let (aside, journal) = (p.0.join("aside"), content::log(&p.file(), "-journal"));
+        if log {
+            std::fs::write(&journal, "").unwrap();
+        } else {
+            std::fs::rename(p.folder(), &aside).unwrap();
+        }
+        let (again, sa, report) = p.start("one");
+        assert!(report.status != Status::Saved && !report.pending);
+        add(&again, "mine");
+        assert!(sa.sync().unwrap().pending);
+        if log {
+            std::fs::remove_file(journal).unwrap();
+        } else {
+            std::fs::rename(aside, p.folder()).unwrap();
+        }
+        assert_eq!(sa.sync().unwrap().conflict, None);
+        assert_eq!((payees_of(&p.file()), p.names()), (set(&["theirs", "mine"]), vec!["books.db".into()]));
+    }
 }
 
 #[test]
@@ -1254,7 +1323,11 @@ fn the_old_file_goes_only_when_it_is_safe() {
     let o = open(&home, &old, Use::Auto, Lang::En, false).unwrap();
     assert!(o.shared.is_none());
     add(&o.db, "x");
-    let new = keep(&home, &old, &old, &p.file()).unwrap().release();
+    let new = {
+        let k = keep(&home, &old, &old, &p.file()).unwrap();
+        k.finish().unwrap();
+        k.opened
+    };
     assert_eq!((payees_of(&p.file()), p.names()), (set(&["x"]), vec!["books.db".into()]));
     assert!(new.shared.is_some() && way(&home, &p.file(), Use::Auto).0);
     // Open elsewhere, or changed since.
@@ -1265,7 +1338,11 @@ fn the_old_file_goes_only_when_it_is_safe() {
     drop(o.db);
     assert!(retire(&old, new.db.path.as_ref().unwrap()).is_err());
     assert!(old.exists());
-    let second = keep(&home, &old, &old, &p.folder().join("second.db")).unwrap().release();
+    let second = {
+        let k = keep(&home, &old, &old, &p.folder().join("second.db")).unwrap();
+        k.finish().unwrap();
+        k.opened
+    };
     retire(&old, second.db.path.as_ref().unwrap()).unwrap();
     assert!(!old.exists() && !content::log(&old, "-wal").exists());
 }

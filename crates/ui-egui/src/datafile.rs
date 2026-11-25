@@ -359,13 +359,32 @@ impl App {
 
     fn switch(&mut self, ui: &Ui, loaded: Loaded) {
         let Some(home) = self.file.home.clone() else { return };
+        let loaded = match loaded {
+            Loaded::Kept(kept) => match kept.finish() {
+                Ok(()) => Loaded::Kept(kept),
+                Err(e) => {
+                    // The folder may be slow.
+                    std::thread::spawn(move || kept.discard());
+                    (self.file.opening, self.file.old) = (None, None);
+                    match &mut self.file.window {
+                        Some(w) => w.error = error_text(&e),
+                        None => self.notify(ui, error_text(&e)),
+                    }
+                    return;
+                }
+            },
+            opened => opened,
+        };
         self.file_leave();
         let old = self.file.old.take().filter(|_| self.file.shared.is_none());
         let (path, opened) = match loaded {
             Loaded::Opened(path, opened) => (path, *opened),
-            Loaded::Kept(kept) => (kept.path.clone(), kept.release()),
+            Loaded::Kept(kept) => (kept.path.clone(), kept.opened),
         };
         *self = App::of(opened, home, path.clone(), Use::Auto, ui.ctx());
+        if let Some(syncer) = &self.file.syncer {
+            syncer.now();
+        }
         self.notify(ui, trf("The data file is now {path}", &[("path", &path.display())]));
         if let (Some(old), Some(copy), Some(syncer)) = (old, self.db.path.clone(), &self.file.syncer) {
             let (seen, language) = (syncer.seen.clone(), lang());
@@ -628,6 +647,8 @@ pub struct Start {
     /// A log lies beside the file.
     log: bool,
     closed: bool,
+    /// Chosen here: remembered once it has opened.
+    chosen: bool,
     opening: Option<mpsc::Receiver<std::result::Result<Opened, (String, bool)>>>,
 }
 
@@ -642,6 +663,7 @@ impl Start {
             app: None,
             log: false,
             closed: false,
+            chosen: false,
             opening: None,
         }
     }
@@ -650,10 +672,17 @@ impl Start {
     pub fn open(&mut self, first: impl FnOnce(&Home, &Path) -> Result<()> + Send + 'static) {
         let (send, receive) = mpsc::channel();
         let (home, path, asked, must_exist) = (self.home.clone(), self.path.clone(), self.asked, self.must_exist);
-        let language = lang();
+        let (language, chosen) = (lang(), self.chosen);
         std::thread::spawn(move || {
             let opened = i18n::with_lang(language, || {
-                first(&home, &path).and_then(|()| open(&home, &path, asked, must_exist)).map_err(|e| {
+                let opened = first(&home, &path).and_then(|()| {
+                    let mut opened = open(&home, &path, asked, must_exist)?;
+                    if chosen && let Err(e) = home.remember(Some(&store::resolved(&path))) {
+                        opened.notices.push(error_text(&e));
+                    }
+                    Ok(opened)
+                });
+                opened.map_err(|e| {
                     let shared = store::way(&home, &path, asked).0;
                     (error_text(&e), shared && Shared::new(&home, &path).has_log())
                 })
@@ -704,7 +733,8 @@ impl Start {
                 self.asked = Use::Auto;
                 self.must_exist = true;
                 self.path = p;
-                self.open(|home, path| home.remember(Some(&store::resolved(path))));
+                self.chosen = true;
+                self.open(|_, _| Ok(()));
             }
             if ui.button(tr("Quit")).clicked() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -967,6 +997,10 @@ mod tests {
         };
         go(&mut start);
         assert!(start.app.is_none() && start.error.contains("not there") && !p.file().exists());
+        // One that is chosen is remembered when it opens.
+        start.chosen = true;
+        go(&mut start);
+        assert_eq!(p.home("one").recent(), None);
         ctx.run_ui(Default::default(), |ui| start.draw(ui)).textures_delta.clear();
         start.must_exist = false;
         std::fs::write(p.0.join("folder").join("books.db-wal"), "").unwrap();
@@ -975,6 +1009,7 @@ mod tests {
         std::fs::remove_file(p.0.join("folder").join("books.db-wal")).unwrap();
         go(&mut start);
         assert!(start.app.is_some());
+        assert_eq!(p.home("one").recent(), Some(store::resolved(&p.file())));
         eframe::App::on_exit(&mut start);
         assert!(p.file().exists());
     }

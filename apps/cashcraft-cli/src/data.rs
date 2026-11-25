@@ -158,8 +158,17 @@ pub fn run(home: &Home, path: &Path, asked: Use, cmd: DataCmd, as_json: bool) ->
             let from = opened.db.path.clone().unwrap_or_else(|| path.to_path_buf());
             let direct = opened.shared.is_none();
             let kept = store::keep(home, path, &from, &target)?;
+            if let Err(e) = kept.finish() {
+                kept.discard();
+                return Err(e);
+            }
             println!("{}", trf("The data file is now {path}", &[("path", &kept.path.display())]));
-            let new = kept.release();
+            let new = kept.opened;
+            if let Some((shared, _)) = &new.shared {
+                for n in shared.sync()?.notices() {
+                    eprintln!("! {n}");
+                }
+            }
             drop(opened);
             if moving
                 && direct

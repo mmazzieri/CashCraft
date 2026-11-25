@@ -80,6 +80,19 @@ mod tests {
         assert!(d.ok("two", &["tx", "list"]).0.contains("first"));
         d.ok("two", &["tx", "add", "--account", "Bank", "--amount=-2", "--payee", "second"]);
         assert!(d.ok("one", &["tx", "list"]).0.contains("second"));
+        // The columns stand under their names, whatever the length of the ids.
+        for args in [&["tx", "list"][..], &["accounts", "list"], &["ledger", "accounts"]] {
+            let table = d.ok("one", args).0;
+            let mut lines = table.lines();
+            let head = lines.next().unwrap();
+            let at = head.find("ID").unwrap() + 2;
+            let rows: Vec<&str> = lines.filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit())).collect();
+            let rows: Vec<&&str> = rows.iter().filter(|l| l.contains("Bank")).collect();
+            assert!(!rows.is_empty(), "{table}");
+            for row in rows {
+                assert_eq!(row.trim_start().find(' ').unwrap() + row.len() - row.trim_start().len(), at, "{table}");
+            }
+        }
         let status = d.ok("one", &["data", "status"]).0;
         assert!(status.contains("private copy, in OneDrive") && status.contains("saved"), "{status}");
         // The folder goes away, and both change.
@@ -139,6 +152,14 @@ mod tests {
         assert!(list.status.success() && !d.names().contains("kept.db"));
         assert!(d.run("one", &["data", "put-back"]).status.success() && d.names().contains("kept.db"));
         assert!(d.run("one", &["data", "use"]).status.success());
+        // The default file too can be put elsewhere, and come back to.
+        assert!(d.run("four", &["accounts", "add", "Bank"]).status.success());
+        let folder = d.folder();
+        let keep = ["data", "keep", folder.to_str().unwrap(), "--name", "four.db"];
+        assert!(d.run("four", &keep).status.success());
+        assert!(d.run("four", &["data", "use"]).status.success());
+        let said = d.run("four", &["accounts", "list"]);
+        assert!(said.status.success() && said.stderr.is_empty(), "{}", String::from_utf8_lossy(&said.stderr));
         assert!(!d.run("one", &["data", "use", "nowhere.db"]).status.success());
     }
 

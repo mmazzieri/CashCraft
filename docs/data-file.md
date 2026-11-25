@@ -55,7 +55,8 @@ conflict. Files of passage have the permissions of the shared file from the star
 **Ids.** In a working copy every new row has a number that no other computer gives (`Db::new_id`: minutes since 2026 and eight
 random digits, growing, exact in JSON), in every table whose ids are seen. An id that was read before another computer's changes came
 in is of the same row, or of none. Rows written while the file was used directly keep their small ids, which all copies of it share.
-Operations run on what has just come in, and say so.
+Operations run on what has just come in, and say so. The phone apps number rows as a direct file does: to be safe with several
+phones they should open their copy with the same helper (`Db::open_copy`).
 
 **Waiting.** When the folder is away, the file can only be read or is gone, or a `-wal` or `-journal` lies beside it, changes stay
 in the copy, the program goes on and says so. A shared file that disappears is written again only if the user asks
@@ -73,8 +74,8 @@ say, and one a day old is removed.
 ## Moving into a synced folder
 
 *Keep it in a synced folder…*, behind the path at the bottom of the window, or `data keep <folder>`: a complete copy is made under a free
-name, read back and compared, opened, and used from then on, through a private copy whatever the folder is called. Meanwhile nobody can write
-in the old file, so that nothing stays behind; if anything fails nothing is remembered. The old file stays, or is removed (`--move`) if
+name, read back and compared, opened, and used from then on, through a private copy whatever the folder is called. The old file can be written
+meanwhile: at the end it is locked for an instant, what came into it is taken too, and the new one is remembered. If anything fails nothing is. The old file stays, or is removed (`--move`) if
 nobody has it open and it still holds the same. An MCP server that had it open says where it went.
 
 ## Files that 0.3.0 left

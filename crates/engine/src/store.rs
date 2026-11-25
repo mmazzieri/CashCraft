@@ -145,19 +145,24 @@ impl Home {
 
     /// Opens this file when none is named, from now on; `None` for the default one.
     pub fn remember(&self, path: Option<&Path>) -> Result<()> {
+        // It is in use again.
+        let used = path.map_or_else(crate::db::default_db_path, Path::to_path_buf);
+        let _ = std::fs::remove_file(self.copy_of(&resolved(&used)).join("moved"));
         let Some(path) = path else {
             return match std::fs::remove_file(self.last_file()) {
                 Err(e) if e.kind() != ErrorKind::NotFound => Err(e.into()),
                 _ => Ok(()),
             };
         };
+        self.note_last(path)
+    }
+
+    fn note_last(&self, path: &Path) -> Result<()> {
         // On Windows the encoded bytes of a name that is not Unicode could not be read back.
         if cfg!(not(unix)) && path.to_str().is_none() {
             bail!(tr("the path has characters that cannot be remembered"));
         }
         Home::make(&self.dir)?;
-        // It is in use again.
-        let _ = std::fs::remove_file(self.copy_of(&resolved(path)).join("moved"));
         replace(&self.last_file(), path.as_os_str().as_encoded_bytes())
     }
 
@@ -859,6 +864,13 @@ impl Shared {
 
     /// One look at the two files. `None` when it must be done again.
     fn turn(&self, st: &mut State, report: &mut Report) -> Result<Option<Status>> {
+        // A content that was taken and not noted: told now, whatever the folder is like, before anything is changed.
+        if let Some((taken, print)) = st.taking.take() {
+            if copy_print(&self.copy())? == Some(print) {
+                st.base = Some(taken);
+            }
+            st.save(&self.dir)?;
+        }
         // Whose it is cannot be told: the user says when nobody has the file open.
         if self.has_log() {
             return Ok(Some(Status::InUse));
@@ -881,13 +893,6 @@ impl Shared {
         if let Some(w) = st.writing.take() {
             if w.sha == fetched.base.sha {
                 st.base = Some(w);
-            }
-            st.save(&self.dir)?;
-        }
-        // And a content that was taken.
-        if let Some((taken, print)) = st.taking.take() {
-            if copy_print(&self.copy())? == Some(print) {
-                st.base = Some(taken);
             }
             st.save(&self.dir)?;
         }
@@ -1471,23 +1476,57 @@ pub fn around<T>(shared: &Shared, f: impl FnOnce() -> T) -> Result<(T, Vec<Strin
     Ok((out, notices))
 }
 
-/// A data file put in a folder and opened there. While it lives nobody can write in the old one.
+/// A data file put in a folder and opened there. It is in use once [`Kept::finish`] has said so.
 pub struct Kept {
     pub opened: Opened,
     pub path: PathBuf,
-    _source: Connection,
+    shared: Shared,
+    from: PathBuf,
+    bytes: Vec<u8>,
+    print: String,
+    /// Where it is noted that the old file was moved.
+    mark: PathBuf,
 }
 
 impl Kept {
-    /// Lets others write in the old file again.
-    pub fn release(self) -> Opened {
-        self.opened
+    /// What came into the old file meanwhile comes too, and the new one is remembered. Nobody can write in the old one
+    /// for this time, which is short: the folder is not looked at. On failure nothing is remembered.
+    pub fn finish(&self) -> Result<()> {
+        let source = content::open(&self.from)?;
+        source.busy_timeout(Duration::from_millis(500))?;
+        source.execute_batch("BEGIN IMMEDIATE")?;
+        if content::fingerprint_in(&source)? != self.print {
+            let mut copy = content::open(&self.shared.copy())?;
+            // Through another connection: SQLite copies from none that is writing.
+            content::copy_into(&content::open(&self.from)?, &mut copy)?;
+        }
+        self.shared.step("finishing")?;
+        self.shared.home.note_last(&self.path)?;
+        Home::make(&self.mark)?;
+        // For people: a path with other characters is shown as it can be.
+        replace(&self.mark.join("moved"), self.path.display().to_string().as_bytes())
+    }
+
+    /// Takes the new file away, if it is still the one that was put there.
+    pub fn discard(self) {
+        drop(self.opened);
+        undo_keep(&self.shared, &self.bytes);
+    }
+}
+
+fn undo_keep(shared: &Shared, bytes: &[u8]) {
+    if shared.read_whole().is_ok_and(|f| f.bytes == bytes) {
+        let _ = std::fs::remove_file(&shared.path);
+        content::remove_with_logs(&shared.copy());
+        for name in ["state.json", "mode"] {
+            let _ = std::fs::remove_file(shared.dir.join(name));
+        }
     }
 }
 
 /// Puts a complete copy of a data file, or of a working copy (`from`), into a folder, under a name that must be free,
-/// opens it there and remembers it. Nobody writes in the old one (`old`) meanwhile, and programs that still have it
-/// are told. Whatever the folder is, the new file is used through a private copy. On failure nothing is remembered.
+/// and opens it there. The old one (`old`) goes on being used meanwhile. Whatever the folder is, the new file is used
+/// through a private copy. Nothing is remembered until [`Kept::finish`].
 pub fn keep(home: &Home, old: &Path, from: &Path, target: &Path) -> Result<Kept> {
     keep_through(Shared::new(home, target), old, from)
 }
@@ -1498,8 +1537,6 @@ fn keep_through(shared: Shared, old: &Path, from: &Path) -> Result<Kept> {
     if std::fs::symlink_metadata(&target).is_ok() || copy_print(&shared.copy())?.is_some() {
         return Err(there());
     }
-    let source = content::open(from)?;
-    source.execute_batch("BEGIN IMMEDIATE")?;
     let scratch = home.scratch()?;
     let (bytes, print) = snapshot(from, &scratch.0.join("out.db"))?;
     let lock = shared.lock_file("sync.lock")?;
@@ -1511,7 +1548,7 @@ fn keep_through(shared: Shared, old: &Path, from: &Path) -> Result<Kept> {
         Err(why) => bail!(trf("{path} cannot be written: {error}", &[("path", &target.display()), ("error", &why)])),
     }
     drop(lock);
-    let finish = || -> Result<Opened> {
+    let check = || -> Result<Opened> {
         if !shared.read_whole().is_ok_and(|f| f.bytes == bytes) {
             bail!(trf("{path} was not written whole", &[("path", &target.display())]));
         }
@@ -1522,23 +1559,17 @@ fn keep_through(shared: Shared, old: &Path, from: &Path) -> Result<Kept> {
             bail!(trf("{path} was not written whole", &[("path", &target.display())]));
         }
         shared.step("opened")?;
-        home.remember(Some(&target))?;
-        let mark = home.copy_of(&resolved(old));
-        Home::make(&mark)?;
-        // For people: a path with other characters is shown as it can be.
-        replace(&mark.join("moved"), target.display().to_string().as_bytes())?;
         Ok(opened)
     };
-    match finish() {
-        Ok(opened) => Ok(Kept { opened, path: target, _source: source }),
+    match check() {
+        Ok(opened) => {
+            let mark = home.copy_of(&resolved(old));
+            Ok(Kept { opened, path: target, shared, from: from.to_path_buf(), bytes, print, mark })
+        }
         Err(e) => {
-            // Nothing of it stays, if the file is still the one that was put there. Not after a kill, in the tests.
-            if e.to_string() != KILLED && shared.read_whole().is_ok_and(|f| f.bytes == bytes) {
-                let _ = std::fs::remove_file(&target);
-                content::remove_with_logs(&shared.copy());
-                for name in ["state.json", "mode"] {
-                    let _ = std::fs::remove_file(shared.dir.join(name));
-                }
+            // Not after a kill, in the tests.
+            if e.to_string() != KILLED {
+                undo_keep(&shared, &bytes);
             }
             Err(e)
         }
