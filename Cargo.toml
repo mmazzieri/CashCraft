@@ -46,4 +46,5 @@ hayro-interpret = { version = "=0.7.0", default-features = false }
 hayro-syntax = { version = "=0.7.2", default-features = false }
 kurbo = "0.13"
 regex = "1.13"
+sha2 = "0.10"
 rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal", "wayland"] }

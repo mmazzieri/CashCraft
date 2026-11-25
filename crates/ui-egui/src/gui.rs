@@ -1,6 +1,7 @@
 //! Finestra di CashCraft (eframe/egui): avvio, stato, stile e widget comuni.
 //! Le singole schermate sono in `views.rs`, le finestre di dialogo in `dialogs.rs`.
 
+use crate::datafile::{self, DataFile, Start};
 use crate::ledger::{EntryForm, LedgerAccountForm, LedgerData};
 use crate::rules::{RuleForm, RunForm};
 use anyhow::Result;
@@ -12,6 +13,7 @@ use cashcraft_engine::importer::{self, ImportResult, Mapping, ParsedRow, Problem
 
 use cashcraft_engine::money::{DateOrder, fmt_date, fmt_eur, fmt_number, month_short, total};
 use cashcraft_engine::rules::{LastRun, Rule};
+use cashcraft_engine::store::{Home, Opened, Use};
 use cashcraft_engine::transfers::OtherSide;
 use cashcraft_engine::{demo, ops, rules};
 use chrono::{Datelike, NaiveDate};
@@ -724,7 +726,9 @@ pub struct App {
     /// The language chosen in the window, `None` for the system's.
     pub language: Option<Lang>,
     pub theme: Theme,
-    data_version: i64,
+    /// Where the data is.
+    pub file: DataFile,
+    pub(crate) data_version: i64,
     last_check: f64,
     pub demo: bool,
     screenshot: Option<PathBuf>,
@@ -735,22 +739,24 @@ pub struct App {
 
 // ------------------------------------------------------------------ avvio
 
-pub fn run(path: PathBuf, screenshot: Option<PathBuf>) -> Result<()> {
+/// Opens the window on a data file, which must be there or is made.
+pub fn run(home: Home, (path, must_exist): (PathBuf, bool), asked: Use, screenshot: Option<PathBuf>) -> Result<()> {
     // The language of a new file and of the errors while opening; then the one the file asks for.
     i18n::set_lang(Lang::at_start(None));
-    let db = if screenshot.is_some() && !path.exists() {
-        // For a screenshot: sample data in memory, no file created.
+    // A picture is taken of what is there at once; a window opens first, and the file beside it.
+    let opened = if screenshot.is_none() {
+        None
+    } else if !path.exists() {
+        // Sample data in memory, no file created.
         let d = Db::open_in_memory()?;
         demo::seed(&d)?;
-        d
+        Some(Opened { db: d, is_new: false, shared: None, notices: Vec::new() })
     } else {
-        let (d, is_new) = Db::open(&path)?;
-        if is_new {
-            demo::seed(&d)?;
-        }
-        d
+        Some(datafile::open(&home, &path, asked, must_exist)?)
     };
-    i18n::set_lang(Lang::at_start(db.meta(i18n::META_KEY).as_deref()));
+    if let Some(o) = &opened {
+        i18n::set_lang(Lang::at_start(o.db.meta(i18n::META_KEY).as_deref()));
+    }
     let shooting = screenshot.is_some();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("CashCraft")
@@ -773,9 +779,17 @@ pub fn run(path: PathBuf, screenshot: Option<PathBuf>) -> Result<()> {
         options,
         Box::new(move |cc| {
             setup_style(&cc.egui_ctx);
-            let app = App::new(db, screenshot);
-            cc.egui_ctx.set_theme(app.theme.preference());
-            Ok(Box::new(app))
+            let mut start = Start::new(home, path, must_exist, asked);
+            match opened {
+                None => start.open(|_, _| Ok(())),
+                Some(o) => {
+                    let (home, path) = (start.home.clone(), start.path.clone());
+                    let mut app = App::of(o, home, path, asked, &cc.egui_ctx);
+                    app.screenshot = screenshot;
+                    start.app = Some(Box::new(app));
+                }
+            }
+            Ok(Box::new(start))
         }),
     )
     .map_err(|e| anyhow::anyhow!(trf("the window cannot be opened: {error}", &[("error", &e)])))
@@ -878,6 +892,7 @@ impl App {
             journal: None,
             language,
             theme,
+            file: DataFile::default(),
             data_version: 0,
             last_check: 0.0,
             demo,
@@ -1175,6 +1190,11 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         set_dark(ui.visuals().dark_mode);
 
+        let steady = self.file_before(ui);
+        if !steady {
+            ui.disable();
+        }
+
         // Foto di controllo (--screenshot): ~120 fotogrammi, poi salva ed esce.
         if let Some(path) = self.screenshot.clone() {
             self.frame_count += 1;
@@ -1213,12 +1233,12 @@ impl eframe::App for App {
         let dropped: Vec<PathBuf> = ui.input(|i| {
             i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect()
         });
-        if let Some(p) = dropped.into_iter().next() {
+        if let Some(p) = dropped.into_iter().next().filter(|_| steady && self.file.window.is_none()) {
             self.open_import(Some(p));
         }
 
         // Scorciatoie.
-        if self.dialog.is_none() {
+        if steady && self.dialog.is_none() && self.file.window.is_none() {
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
                 self.open_new_tx();
             }
@@ -1253,7 +1273,13 @@ impl eframe::App for App {
             },
         );
         self.dialogs(&ctx);
+        self.file_window(&ctx);
         self.draw_toast(&ctx);
+        self.file_after(ui);
+    }
+
+    fn on_exit(&mut self) {
+        self.file_close();
     }
 }
 

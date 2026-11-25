@@ -3,8 +3,8 @@
 // No console window behind the app on Windows (release builds).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-use cashcraft_engine::db;
 use cashcraft_engine::i18n::trf;
+use cashcraft_engine::store::{Home, Use};
 use cashcraft_ui_egui::gui;
 use clap::Parser;
 use std::path::PathBuf;
@@ -14,12 +14,18 @@ use std::path::PathBuf;
     name = "cashcraft",
     version,
     about = "CashCraft — personal finance",
-    after_help = "For the terminal and AI agents (MCP) use `cashcraft-cli`. Default data file: CashCraft/cashcraft.db in your user data folder (or the variable CASHCRAFT_DB). Language: CASHCRAFT_LANG=en or it, else the one chosen in the window, else the system's."
+    after_help = "For the terminal and AI agents (MCP) use `cashcraft-cli`. Default data file: CashCraft/cashcraft.db in your user data folder (or the variable CASHCRAFT_DB, or the file chosen last). Language: CASHCRAFT_LANG=en or it, else the one chosen in the window, else the system's."
 )]
 struct Args {
     /// Data file to use
     #[arg(long)]
     db: Option<PathBuf>,
+    /// Use the data file where it lies, even in a synced folder
+    #[arg(long, conflicts_with = "shared")]
+    direct: bool,
+    /// Use the data file through a private copy, as in a synced folder
+    #[arg(long)]
+    shared: bool,
     /// Open the window, draw it, save a PNG picture of it and quit
     #[arg(long)]
     screenshot: Option<PathBuf>,
@@ -30,8 +36,14 @@ fn main() {
         return;
     }
     let args = Args::parse();
-    let path = args.db.unwrap_or_else(db::default_db_path);
-    if let Err(e) = gui::run(path, args.screenshot) {
+    let asked = match (args.direct, args.shared) {
+        (true, _) => Use::Direct,
+        (_, true) => Use::Shared,
+        _ => Use::Auto,
+    };
+    let home = Home::user();
+    let file = home.pick(args.db);
+    if let Err(e) = gui::run(home, file, asked, args.screenshot) {
         eprintln!("{}", trf("Error: {error}", &[("error", &format_args!("{e:#}"))]));
         std::process::exit(1);
     }

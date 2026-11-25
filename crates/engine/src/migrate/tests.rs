@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// The tables of formats 0 and 1, as CashCraft 0.2.0 created them. Never change this text.
-const V1_SCHEMA: &str = r#"
+pub(crate) const V1_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY,
@@ -680,7 +680,11 @@ fn without_a_backup_nothing_is_migrated() {
     let old = seed_v1(&dir.file(), 1, 8);
     let before = dump(&old);
     // The copy would go to a folder that is not there.
-    let db = Db { conn: Connection::open(dir.file()).unwrap(), path: Some(dir.0.join("gone").join("books.db")) };
+    let db = Db {
+        conn: Connection::open(dir.file()).unwrap(),
+        path: Some(dir.0.join("gone").join("books.db")),
+        spread_ids: false,
+    };
     assert!(db.init().is_err());
     drop(db);
     assert_eq!(dump(&old), before);

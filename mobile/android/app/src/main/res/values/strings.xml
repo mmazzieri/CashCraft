@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CashCraft</string>
+    <string name="welcome">Choose the folder that holds your CashCraft data file, or where to make a new one. Close CashCraft on the computer before using the same file on the phone.</string>
+    <string name="choose_folder">Choose the folder</string>
+    <string name="which">Which data file?</string>
+    <string name="no_file">There is no data file in this folder.</string>
+    <string name="new_file">New data file</string>
+    <string name="open">Open</string>
+    <string name="reload">Read again</string>
+    <string name="accounts">Accounts</string>
+    <string name="movements">Transactions</string>
+    <string name="budget">Budget</string>
+    <string name="net_worth">Net worth</string>
+    <string name="search">Search</string>
+    <string name="new_account">New account</string>
+    <string name="new_movement">New transaction</string>
+    <string name="movement">Transaction</string>
+    <string name="transfer">Transfer</string>
+    <string name="new_budget">Monthly budget</string>
+    <string name="account">Account</string>
+    <string name="amount">Amount (negative: money out)</string>
+    <string name="payee">Payee</string>
+    <string name="date">Date</string>
+    <string name="category">Category</string>
+    <string name="memo">Notes</string>
+    <string name="from">From</string>
+    <string name="to">To</string>
+    <string name="name">Name</string>
+    <string name="opening_balance">Opening balance</string>
+    <string name="monthly_amount">Amount each month</string>
+    <string name="spent_of">%1$s spent of %2$s</string>
+    <string name="save">Save</string>
+    <string name="close">Close</string>
+    <string name="delete">Delete</string>
+    <string name="delete_sure">Delete for good</string>
+    <string name="not_plain">A transfer or a split transaction is edited on the computer.</string>
+    <string name="offline">The shared file could not be reached. Changes are kept on the phone and written at the next try.</string>
+    <string name="in_use">The file is open on a computer. Close CashCraft there to write from the phone.</string>
+    <string name="conflict">The phone\'s changes could not be put in the shared file, which was changed elsewhere or cannot be reached. They are in %1$s.</string>
+</resources>

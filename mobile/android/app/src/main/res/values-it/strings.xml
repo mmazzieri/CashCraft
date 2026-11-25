@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CashCraft</string>
+    <string name="welcome">Scegli la cartella che contiene il file dei dati di CashCraft, o dove crearne uno nuovo. Chiudi CashCraft sul computer prima di usare lo stesso file sul telefono.</string>
+    <string name="choose_folder">Scegli la cartella</string>
+    <string name="which">Quale file dei dati?</string>
+    <string name="no_file">In questa cartella non c’è nessun file dei dati.</string>
+    <string name="new_file">Nuovo file</string>
+    <string name="open">Apri</string>
+    <string name="reload">Rileggi</string>
+    <string name="accounts">Conti</string>
+    <string name="movements">Movimenti</string>
+    <string name="budget">Budget</string>
+    <string name="net_worth">Patrimonio</string>
+    <string name="search">Cerca</string>
+    <string name="new_account">Nuovo conto</string>
+    <string name="new_movement">Nuovo movimento</string>
+    <string name="movement">Movimento</string>
+    <string name="transfer">Giroconto</string>
+    <string name="new_budget">Budget mensile</string>
+    <string name="account">Conto</string>
+    <string name="amount">Importo (negativo: uscita)</string>
+    <string name="payee">Beneficiario</string>
+    <string name="date">Data</string>
+    <string name="category">Categoria</string>
+    <string name="memo">Note</string>
+    <string name="from">Da</string>
+    <string name="to">A</string>
+    <string name="name">Nome</string>
+    <string name="opening_balance">Saldo iniziale</string>
+    <string name="monthly_amount">Importo al mese</string>
+    <string name="spent_of">Spesi %1$s su %2$s</string>
+    <string name="save">Salva</string>
+    <string name="close">Chiudi</string>
+    <string name="delete">Elimina</string>
+    <string name="delete_sure">Elimina definitivamente</string>
+    <string name="not_plain">Un giroconto o un movimento suddiviso si modifica sul computer.</string>
+    <string name="offline">Il file condiviso non è raggiungibile. Le modifiche restano sul telefono e verranno scritte al prossimo tentativo.</string>
+    <string name="in_use">Il file è aperto su un computer. Chiudi lì CashCraft per scrivere dal telefono.</string>
+    <string name="conflict">Le modifiche del telefono non potevano entrare nel file condiviso, cambiato altrove o non raggiungibile. Sono in %1$s.</string>
+</resources>

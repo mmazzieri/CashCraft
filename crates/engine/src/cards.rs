@@ -64,9 +64,9 @@ impl Db {
         key: &str,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO card_statements(account_id,closing_date,debit_date,amount,import_key) VALUES(?1,?2,?3,?4,?5)
+            "INSERT INTO card_statements(id,account_id,closing_date,debit_date,amount,import_key) VALUES(?6,?1,?2,?3,?4,?5)
              ON CONFLICT(account_id,import_key) DO NOTHING",
-            params![account, d2s(closing), d2s(debit_date), amount, key],
+            params![account, d2s(closing), d2s(debit_date), amount, key, self.new_id("card_statements")?],
         )?;
         Ok(())
     }

@@ -4,16 +4,19 @@
 //! Example of configuration for an MCP client:
 //! { "mcpServers": { "cashcraft": { "command": "cashcraft-cli", "args": ["mcp", "--automation-read-root", "…", "--automation-write-root", "…"] } } }
 
+use crate::cli::Guard;
 use anyhow::Result;
 use cashcraft_engine::db::Db;
 use cashcraft_engine::i18n::{Lang, with_lang};
 use cashcraft_engine::ops;
+use cashcraft_engine::store;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 
 const PROTOCOL: &str = "2025-06-18";
 
-pub fn serve(db: &Db, roots: &ops::Roots) -> Result<()> {
+pub fn serve(db: &Db, guard: &Guard, roots: &ops::Roots) -> Result<()> {
+    let session = Session::new(guard);
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -31,8 +34,8 @@ pub fn serve(db: &Db, roots: &ops::Roots) -> Result<()> {
             }
         };
         let replies: Vec<Value> = match msg {
-            Value::Array(batch) => batch.iter().filter_map(|m| handle(db, m, roots)).collect(),
-            m => handle(db, &m, roots).into_iter().collect(),
+            Value::Array(batch) => batch.iter().filter_map(|m| session.answer(db, m, roots)).collect(),
+            m => session.answer(db, &m, roots).into_iter().collect(),
         };
         for r in replies {
             writeln!(out, "{r}")?;
@@ -40,6 +43,65 @@ pub fn serve(db: &Db, roots: &ops::Roots) -> Result<()> {
         out.flush()?;
     }
     Ok(())
+}
+
+fn failed(msg: &Value, error: &str) -> Option<Value> {
+    let id = msg.get("id").cloned()?;
+    let content = json!([{"type": "text", "text": format!("Error: {error}")}]);
+    Some(json!({"jsonrpc": "2.0", "id": id, "result": {"content": content, "isError": true}}))
+}
+
+/// What the agent knows of the data file.
+pub struct Session<'a> {
+    guard: &'a Guard,
+    /// The file had been moved before.
+    moved: bool,
+}
+
+impl<'a> Session<'a> {
+    pub fn new(guard: &'a Guard) -> Self {
+        let mut session = Session { guard, moved: false };
+        session.moved = session.moved_to().is_some();
+        session
+    }
+
+    fn moved_to(&self) -> Option<std::path::PathBuf> {
+        match self.guard {
+            Guard::Open(home, path) => home.moved(path),
+            Guard::Shared(s) => s.home().moved(s.path()),
+        }
+    }
+
+    /// [`handle`], and on a shared file what others wrote comes in before a call, what it changed goes out after. What
+    /// the user should know is in `data_file`, and in the text.
+    pub fn answer(&self, db: &Db, msg: &Value, roots: &ops::Roots) -> Option<Value> {
+        if msg.get("method").and_then(Value::as_str) != Some("tools/call") {
+            return handle(db, msg, roots);
+        }
+        with_lang(Lang::En, || {
+            if !self.moved
+                && let Some(now) = self.moved_to()
+            {
+                return failed(msg, &format!("the data file was moved to {}: start the server again", now.display()));
+            }
+            let Guard::Shared(shared) = self.guard else { return handle(db, msg, roots) };
+            let (reply, notices) = match store::around(shared, || handle(db, msg, roots)) {
+                Ok(done) => done,
+                Err(e) => return failed(msg, &format!("{e:#}")),
+            };
+            let mut reply = reply?;
+            let result = reply.get_mut("result").and_then(Value::as_object_mut);
+            if let Some(result) = result.filter(|_| !notices.is_empty()) {
+                if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
+                    content.extend(notices.iter().map(|n| json!({"type": "text", "text": n})));
+                }
+                if let Some(o) = result.get_mut("structuredContent").and_then(Value::as_object_mut) {
+                    o.insert("data_file".into(), json!(notices));
+                }
+            }
+            Some(reply)
+        })
+    }
 }
 
 /// Handles a message; notifications (without an id) get no reply.
