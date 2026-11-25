@@ -19,6 +19,9 @@
 + New account	+ Nuovo conto
 + New scheduled transaction	+ Nuovo pianificato
 + Transaction	+ Movimento
+A complete copy is put in the folder you choose, checked, and used from then on.	Una copia completa va nella cartella scelta, viene verificata e da allora si usa quella.
+a network drive	un'unità di rete
+a synced folder	una cartella sincronizzata
 Account	Conto
 Account created	Conto creato
 Account deleted	Conto eliminato
@@ -33,6 +36,7 @@ All accounts	Tutti i conti
 All categories	Tutte le categorie
 All of its {n} lines will be deleted, in every account they are on. This cannot be undone.	Verranno eliminate tutte le sue {n} righe, in ogni conto in cui compaiono. Non si può annullare.
 All transactions	Tutti i movimenti
+Also open on {computer}	Aperto anche su {computer}
 Amount	Importo
 Amount (signed)	Importo (con segno)
 Amount €	Importo €
@@ -44,6 +48,7 @@ April	aprile
 Archived (hidden from the sidebar)	Archiviato (nascosto dalla barra laterale)
 Assets	Attività
 August	agosto
+Automatic	Automatico
 Automatic (rules)	Automatica (regole)
 Automatic rules	Regole automatiche
 Balance	Saldo
@@ -68,6 +73,8 @@ Category created	Categoria creata
 Category deleted	Categoria eliminata
 Category renamed	Categoria rinominata
 Category updated	Categoria aggiornata
+changed on another computer: close the form that is open to see it	modificato su un altro computer: chiudi la scheda aperta per vederlo
+Changes not written to {file} yet are in {copy}	Modifiche non ancora scritte in {file} sono in {copy}
 Chart of accounts	Piano dei conti
 Checked against the bank statement	Verificato sull'estratto conto
 Choose a category…	Scegli categoria…
@@ -80,6 +87,8 @@ Clothes Shop	Negozio Abbigliamento
 Clothing	Abbigliamento
 Code	Codice
 Column {n}	Colonna {n}
+conflict	conflitto
+Conflict file: {path}	File di conflitto: {path}
 Credit	Avere
 Credit card	Carta di credito
 Credit cards	Carte di credito
@@ -89,7 +98,9 @@ Current accounts	Conti correnti
 Current balance	Saldo attuale
 Current month	Mese corrente
 Current net worth: {amount}	Patrimonio netto attuale: {amount}
+Data file	Archivio
 Data file: {path}	Archivio: {path}
+Data file: {status}	Archivio: {status}
 Date	Data
 Debit	Dare
 Debits and credits must be equal.	Il totale dare e il totale avere devono essere uguali.
@@ -108,6 +119,8 @@ Details	Dettagli
 Details by category	Dettaglio per categoria
 Difference: {amount}	Differenza: {amount}
 Dinner	Cena
+Directly, where it lies	Direttamente, dove si trova
+Do not report these conflicts any more	Non segnalare più questi conflitti
 Double-entry ledger: every amount has a debit and a credit	Partita doppia: ogni importo è in dare e in avere
 Downtown Supermarket	Supermercato Centro
 Edit account	Modifica conto
@@ -142,6 +155,7 @@ Home:Maintenance	Casa:Manutenzione
 Home:Rent and mortgage	Casa:Affitto e mutuo
 Home:Utilities	Casa:Bollette
 How income and expenses are grouped	Come raggruppare entrate e uscite
+How to use it	Come usarlo
 Import a bank statement (⌘I). You can also drop the file on the window.	Importa l'estratto conto della banca (⌘I). Puoi anche trascinare il file sulla finestra.
 Import into the account:	Importa nel conto:
 Import {n} transaction	Importa {n} movimento
@@ -157,10 +171,13 @@ Internet subscription	Abbonamento internet
 Invert the sign (credit cards)	Inverti segno (carte di credito)
 Investment	Investimento
 Investments	Investimenti
+it is not a data file of CashCraft	non è un archivio di CashCraft
+It will be used in the other way when CashCraft is started again.	Sarà usato nell'altro modo al prossimo avvio di CashCraft.
 Its {n} line will be deleted. This cannot be undone.	La sua riga verrà eliminata ({n}). Non si può annullare.
 January	gennaio
 July	luglio
 June	giugno
+Keep it in a synced folder…	Tienilo in una cartella sincronizzata…
 Language	Lingua
 Last 12 months	Ultimi 12 mesi
 Last 3 months	Ultimi 3 mesi
@@ -210,18 +227,27 @@ Nothing has been recorded yet.	Non è ancora stato registrato nulla.
 November	novembre
 October	ottobre
 Older	Meno recenti
+Only in the data file	Solo nell'archivio
+Only in the other file	Solo nell'altro file
 Only uncategorized	Solo senza categoria
+Open another file, synced folders…	Apri un altro file, cartelle sincronizzate…
+Open it	Apri
+Open the default one	Apri quello predefinito
 Opening balance	Saldo iniziale
 Opening balance €	Saldo iniziale €
 Opening balances	Saldi iniziali
+Opening…	Apertura…
 Organize	Organizza
 Other	Altro
 Other expenses	Altre spese
 Other income	Altre entrate
+Other versions beside it, such as those of conflicts:	Altre versioni accanto, come quelle dei conflitti:
 Overview	Panoramica
 Page {n}	Pagina {n}
 Payee	Beneficiario
 Post	Registra
+Private copy: {path}	Copia privata: {path}
+Quit	Esci
 Ready: create your first account or import a CSV	Pronto: crea il tuo primo conto o importa un CSV
 Record	Registra
 Recurring transactions and due dates	Movimenti ricorrenti e scadenze
@@ -243,10 +269,12 @@ Salary transfer	Bonifico emolumenti
 Sample accounts, transactions, budgets and scheduled transactions will be deleted.	Conti, movimenti, budget e pianificati di esempio saranno eliminati.
 Save	Salva
 Saved	Risparmio
+saved	salvato
 Saved this month	Risparmio del mese
 Savings	Risparmi
 Savings account	Risparmio
 Savings rate	Tasso di risparmio
+saving…	salvataggio…
 Scheduled	Pianificati
 Scheduled transaction added	Pianificato aggiunto
 Scheduled transaction deleted	Pianificato eliminato
@@ -255,6 +283,7 @@ See the transactions	Vedi i movimenti
 September	settembre
 Show its entries	Mostra le sue registrazioni
 Show the entry	Mostra la registrazione
+Show what differs	Mostra le differenze
 Sort them out	Sistemali
 Spent	Speso
 Split	Suddiviso
@@ -264,12 +293,36 @@ Subscriptions	Abbonamenti
 System	Sistema
 The account "{name}" and all its transactions will be deleted. This cannot be undone.	Il conto "{name}" e tutti i suoi movimenti saranno eliminati. Non si può annullare.
 The books are sound: {entries} entries, {postings} postings	I conti quadrano: {entries} registrazioni, {postings} righe
+The changes are safe on this computer and will be written later. Data file: {status}	Le modifiche sono al sicuro su questo computer e saranno scritte più tardi. Archivio: {status}
+the changes of this computer cannot be put beside the data file	le modifiche di questo computer non si possono mettere accanto all'archivio
+the data file can only be read	l'archivio è di sola lettura
+The data file cannot be opened	L'archivio non si può aprire
+the data file has not been downloaded yet	l'archivio non è ancora stato scaricato
+the data file is busy: try again	l'archivio è occupato: riprova
+the data file is changing	l'archivio sta cambiando
+the data file is damaged	l'archivio è danneggiato
+the data file is damaged, or has not been downloaded whole	l'archivio è danneggiato o non è stato scaricato per intero
+the data file is not there	l'archivio non c'è
+The data file is now {path}	L'archivio ora è {path}
+the data file is used directly	l'archivio è usato direttamente
+The data file was changed on another computer too. Nothing was lost: the changes of this computer are in "{name}", beside it, and the data file now shows those of the other.	L'archivio è stato modificato anche su un altro computer. Non si è perso nulla: le modifiche di questo computer sono in "{name}", accanto all'archivio, che ora mostra quelle dell'altro.
+The entries are the same; something else is different, such as names, budgets or rules.	Le registrazioni sono le stesse; è diverso qualcos'altro, come nomi, budget o regole.
+the folder {path} is not there	la cartella {path} non c'è
+the log beside the data file does not belong to it; move {path} elsewhere	il registro accanto all'archivio non è il suo; sposta altrove {path}
+the old data file was changed or is open in another program: it was left where it is	il vecchio archivio è cambiato o è aperto in un altro programma: è rimasto dov'è
+The old one stays: {path}	Quello vecchio resta: {path}
 The other side of its transfers stays in the other account, against the opening balances: no other balance changes.	L'altro lato dei suoi giroconti resta nell'altro conto, contro i saldi iniziali: nessun altro saldo cambia.
+the path has characters that cannot be remembered	il percorso ha caratteri che non si possono ricordare
 The picture cannot be saved: {error}	Errore nel salvare l'immagine: {error}
+The two files hold the same.	I due file contengono le stesse cose.
+the working copy {path} cannot be read	la copia di lavoro {path} non si può leggere
+then remove the old file	poi elimina il vecchio file
 They categorize imported transactions	Assegnano la categoria ai movimenti importati
 This month	Questo mese
 This year	Quest'anno
+Through a private copy (synced folders, network drives)	Tramite una copia privata (cartelle sincronizzate, unità di rete)
 To	A
+to be saved	da salvare
 Total	Totale
 Town Pharmacy	Farmacia Comunale
 Transaction	Movimento
@@ -286,12 +339,20 @@ Transport:Fuel	Trasporti:Carburante
 Transport:Public transport	Trasporti:Mezzi pubblici
 Travel	Viaggi
 Trial balance	Bilancio di verifica
+Try again	Riprova
 Two-monthly bill	Bolletta bimestrale
 Type	Tipo
 Uncategorized	Senza categoria
 Under	Sotto
+unknown mode "{mode}": auto, direct or shared	modo "{mode}" sconosciuto: auto, direct o shared
 Upcoming	Prossime scadenze
+Used directly	Usato direttamente
+Used directly, in {service}	Usato direttamente, in {service}
+Used through a private copy	Usato tramite una copia privata
+Used through a private copy, in {service}	Usato tramite una copia privata, in {service}
 Video streaming	Streaming Video
+waiting for the folder: {reason}	in attesa della cartella: {reason}
+waiting: another program has the data file open	in attesa: un altro programma ha aperto l'archivio
 Wallet	Portafoglio
 Weekly shopping	Spesa settimanale
 Where your money goes	Dove vanno i tuoi soldi
@@ -437,6 +498,7 @@ unknown repetition unit "{unit}" (day, week, month, year)	unità di ripetizione 
 up to	fino al
 weeks	settimane
 write a description	scrivi una descrizione
+Write it again where it was	Riscrivilo dov'era
 write the payee or a description	scrivi il beneficiario o una descrizione
 years	anni
 yes	sì
@@ -461,6 +523,11 @@ yyyy-mm-dd	gg/mm/aaaa
 {n} transactions found	{n} movimenti trovati
 {n} transactions imported	{n} movimenti importati
 {n} transactions recorded	{n} movimenti registrati
+{path} cannot be used directly: there are changes in its private copy that are not in it yet. Use it through the copy first (--shared).	{path} non si può usare direttamente: nella sua copia privata ci sono modifiche che non contiene ancora. Usalo prima tramite la copia (--shared).
+{path} cannot be written: {error}	{path} non si può scrivere: {error}
+{path} is not there	{path} non c'è
+{path} is there already	{path} c'è già
+{path} was not written whole	{path} non è stato scritto per intero
 {path}: the file is larger than {mb} MB	{path}: il file supera i {mb} MB
 {percent}% of income	{percent}% delle entrate
 {spent} spent of {budget}	{spent} spesi su {budget}
@@ -486,6 +553,7 @@ yyyy-mm-dd	gg/mm/aaaa
 ⬇ Import a statement	⬇ Importa un estratto conto
 🏷 Category	🏷 Categoria
 📂 Choose file…	📂 Scegli file…
+📂 Open another data file…	📂 Apri un altro archivio…
 📖 Entry…	📖 Registrazione…
 🔁 Transfer	🔁 Giroconto
 🔍 Search payee, notes, amount…	🔍 Cerca beneficiario, note, importo…

@@ -118,12 +118,12 @@ impl Home {
     }
 
     /// What the user said of this file.
-    pub fn choice(&self, path: &Path) -> Choice {
+    pub fn choice(&self, path: &Path) -> Use {
         let text = std::fs::read_to_string(self.copy_of(&resolved(path)).join("mode")).unwrap_or_default();
-        Choice::from_code(text.trim()).unwrap_or(Choice::Auto)
+        Use::from_code(text.trim()).unwrap_or(Use::Auto)
     }
 
-    pub fn set_choice(&self, path: &Path, choice: Choice) -> Result<()> {
+    pub fn set_choice(&self, path: &Path, choice: Use) -> Result<()> {
         let dir = self.copy_of(&resolved(path));
         Home::make(&dir)?;
         replace(&dir.join("mode"), choice.code().as_bytes())
@@ -187,7 +187,7 @@ impl Home {
 
 /// How a file is used.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Choice {
+pub enum Use {
     /// Shared when it is seen to be in a synced folder or on a network drive.
     #[default]
     Auto,
@@ -195,19 +195,19 @@ pub enum Choice {
     Shared,
 }
 
-impl Choice {
-    pub const ALL: [Choice; 3] = [Choice::Auto, Choice::Direct, Choice::Shared];
+impl Use {
+    pub const ALL: [Use; 3] = [Use::Auto, Use::Direct, Use::Shared];
 
     pub fn code(self) -> &'static str {
         match self {
-            Choice::Auto => "auto",
-            Choice::Direct => "direct",
-            Choice::Shared => "shared",
+            Use::Auto => "auto",
+            Use::Direct => "direct",
+            Use::Shared => "shared",
         }
     }
 
-    pub fn from_code(code: &str) -> Option<Choice> {
-        Choice::ALL.into_iter().find(|c| c.code() == code)
+    pub fn from_code(code: &str) -> Option<Use> {
+        Use::ALL.into_iter().find(|c| c.code() == code)
     }
 }
 
@@ -227,14 +227,14 @@ pub fn resolved(path: &Path) -> PathBuf {
 }
 
 /// How this file is to be used, and the service that keeps it.
-pub fn way(home: &Home, path: &Path, asked: Choice) -> (bool, Option<Service>) {
+pub fn way(home: &Home, path: &Path, asked: Use) -> (bool, Option<Service>) {
     let system = System::here();
     let service = service_of(&resolved(path), &system).or_else(|| service_of(path, &system));
-    let choice = if asked == Choice::Auto { home.choice(path) } else { asked };
+    let choice = if asked == Use::Auto { home.choice(path) } else { asked };
     let shared = match choice {
-        Choice::Auto => service.is_some(),
-        Choice::Direct => false,
-        Choice::Shared => true,
+        Use::Auto => service.is_some(),
+        Use::Direct => false,
+        Use::Shared => true,
     };
     (shared, service)
 }
@@ -248,11 +248,20 @@ pub struct Opened {
 }
 
 /// Opens a data file, or makes it unless it must be there.
-pub fn open(home: &Home, path: &Path, asked: Choice, seed: Lang, must_exist: bool) -> Result<Opened> {
+pub fn open(home: &Home, path: &Path, asked: Use, seed: Lang, must_exist: bool) -> Result<Opened> {
     let missing = || anyhow!(trf("{path} is not there", &[("path", &path.display())]));
     if !way(home, path, asked).0 {
         if must_exist && !path.exists() {
             return Err(missing());
+        }
+        // What waits in a private copy would be forgotten.
+        let copy = Shared::new(home, path);
+        let base = State::load(&copy.dir).base;
+        if base.is_some() && copy_print(&copy.copy())? != base.map(|b| b.print) {
+            bail!(trf(
+                "{path} cannot be used directly: there are changes in its private copy that are not in it yet. Use it through the copy first (--shared).",
+                &[("path", &path.display())]
+            ));
         }
         let (db, is_new) = Db::open_seeding(path, seed)?;
         return Ok(Opened { db, is_new, shared: None });
@@ -1055,7 +1064,7 @@ impl Shared {
                 }
             }
         }
-        if let Err(e) = content::open(&tested).map_err(Into::into).and_then(|c| {
+        if let Err(e) = content::open(&tested).and_then(|c| {
             content::settle(c, &tested)?;
             self.check(&tested)
         }) {

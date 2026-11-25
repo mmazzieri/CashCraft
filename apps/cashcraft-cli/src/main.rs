@@ -6,7 +6,7 @@ mod data;
 mod mcp;
 
 use cashcraft_engine::i18n::{Lang, META_KEY, set_lang, trf};
-use cashcraft_engine::store::{self, Choice, Home};
+use cashcraft_engine::store::{self, Home, Use};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -42,9 +42,9 @@ fn main() {
     let home = Home::user();
     let (path, must_exist) = home.pick(args.db);
     let asked = match (args.direct, args.shared) {
-        (true, _) => Choice::Direct,
-        (_, true) => Choice::Shared,
-        _ => Choice::Auto,
+        (true, _) => Use::Direct,
+        (_, true) => Use::Shared,
+        _ => Use::Auto,
     };
     let user = Lang::at_start(None);
     // An agent gets English, but a data file it creates is the user's.
@@ -57,7 +57,7 @@ fn main() {
                 set_lang(Lang::at_start(o.db.meta(META_KEY).as_deref()));
             }
             let Some((shared, report)) = &o.shared else { return cli::run(&o.db, None, cmd, args.json) };
-            for n in report.conflict_notice() {
+            if let Some(n) = report.conflict_notice() {
                 eprintln!("! {n}");
             }
             if mcp {

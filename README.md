@@ -53,6 +53,9 @@
   the card, whichever of the two is imported first, and linked when you confirm. See [docs/cards.md](docs/cards.md).
 - **Command line and MCP**: every operation also works without the window, from
   `cashcraft-cli` or an AI agent. The window refreshes when they change the data.
+- **Synced folders**: the data file can be in OneDrive, iCloud Drive, Google Drive, Dropbox or Syncthing and on a network
+  drive. CashCraft works on a private copy and replaces the file whole; when two computers change it, both
+  versions are kept. Click the path at the bottom of the window. See [docs/data-file.md](docs/data-file.md).
 
 The interface and the command line are in English and Italian: CashCraft follows the system,
 and **System / English / Italiano** at the bottom of the sidebar chooses another language for the
@@ -64,7 +67,7 @@ it: `1.234` is 1234 in Italian, `1,234` is 1234 in English. Bank statements are 
 every language.
 
 Data stays on your computer in a single SQLite file. A file of an older format is updated when it
-is first opened, after a copy of it is saved beside it (`cashcraft.v1-backup.db` for version 0.1 or 0.2).
+is first opened, after a copy of it is saved beside it (`cashcraft.v1-backup.db` for version 0.1 or 0.2), or in the private folder for one in a synced folder.
 
 ## Install
 

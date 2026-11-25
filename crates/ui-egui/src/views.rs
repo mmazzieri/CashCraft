@@ -275,13 +275,7 @@ impl App {
             .frame(Frame::new().fill(SIDEBAR).inner_margin(Margin::symmetric(14, 4)).stroke(Stroke::new(1.0, BORDER)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let path = self
-                        .db
-                        .path
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| tr("trial data in memory").into());
-                    ui.label(RichText::new(trf("Data file: {path}", &[("path", &path)])).size(11.5).color(MUTED));
+                    self.file_status(ui);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
                             RichText::new(tr(

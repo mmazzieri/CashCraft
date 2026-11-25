@@ -131,7 +131,7 @@ statements of format 4 are taken as rows of those statements.
 On the first opening, in one transaction that holds the write lock (the version is read again inside
 it, so that programs starting together migrate once):
 
-1. A copy of the old file is made beside it: `cashcraft.v1-backup.db`, or `-2`, `-3`… when that name is
+1. A copy of the old file is made beside it (beside its working copy for one in a synced folder, see [data-file.md](data-file.md)): `cashcraft.v1-backup.db`, or `-2`, `-3`… when that name is
    taken; nothing is overwritten. The name appears only once the copy is complete, with as many rows in every
    table and the permissions of the file. Without it, there is no migration.
 2. Each transaction becomes an entry, and its id the id of the posting on its account.

@@ -4,7 +4,7 @@
 use anyhow::{Result, anyhow, bail};
 use cashcraft_engine::i18n::{lang, tr, trf};
 use cashcraft_engine::money::fmt_date;
-use cashcraft_engine::store::{self, Choice, Home, Presence, Shared};
+use cashcraft_engine::store::{self, Home, Presence, Shared, Use};
 use clap::Subcommand;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ pub enum DataCmd {
     Dismiss,
 }
 
-pub fn run(home: &Home, path: &Path, asked: Choice, cmd: DataCmd, as_json: bool) -> Result<()> {
+pub fn run(home: &Home, path: &Path, asked: Use, cmd: DataCmd, as_json: bool) -> Result<()> {
     let (is_shared, service) = store::way(home, path, asked);
     let shared = || Shared::new(home, path);
     let only_shared = || {
@@ -107,7 +107,7 @@ pub fn run(home: &Home, path: &Path, asked: Choice, cmd: DataCmd, as_json: bool)
             }
         }
         DataCmd::Mode { mode } => {
-            let choice = Choice::from_code(&mode)
+            let choice = Use::from_code(&mode)
                 .ok_or_else(|| anyhow!(trf("unknown mode \"{mode}\": auto, direct or shared", &[("mode", &mode)])))?;
             home.set_choice(path, choice)?;
             println!("{}", tr("Saved"));
@@ -151,7 +151,7 @@ pub fn run(home: &Home, path: &Path, asked: Choice, cmd: DataCmd, as_json: bool)
             let target = folder.join(name);
             store::copy_to(home, &opened.db, &target)?;
             let target = store::resolved(&target);
-            let new = store::open(home, &target, Choice::Auto, lang(), true)?;
+            let new = store::open(home, &target, Use::Auto, lang(), true)?;
             home.remember(Some(&target))?;
             println!("{}", trf("The data file is now {path}", &[("path", &target.display())]));
             let direct = opened.shared.is_none();

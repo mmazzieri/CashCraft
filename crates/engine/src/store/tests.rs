@@ -24,7 +24,8 @@ impl Place {
         Place(dir)
     }
     fn home(&self, computer: &str) -> Home {
-        Home { dir: self.0.join(computer), computer: computer.into() }
+        let name: String = computer.chars().filter(|c| c.is_alphanumeric()).collect();
+        Home { dir: self.0.join(name), computer: computer.into() }
     }
     fn folder(&self) -> PathBuf {
         self.0.join("folder")
@@ -44,7 +45,7 @@ impl Place {
         self.names().iter().filter(|n| n.contains("(conflict ")).map(|n| self.folder().join(n)).collect()
     }
     fn start(&self, computer: &str) -> (Db, Shared, Report) {
-        let o = open(&self.home(computer), &self.file(), Choice::Shared, Lang::En, false).unwrap();
+        let o = open(&self.home(computer), &self.file(), Use::Shared, Lang::En, false).unwrap();
         let (shared, report) = o.shared.unwrap();
         (o.db, shared, report)
     }
@@ -158,7 +159,7 @@ fn when_both_change_both_are_kept() {
     sa.dismiss_conflicts().unwrap();
     assert!(sa.conflicts().is_empty() && sa.versions().len() == 1);
     // The conflict file can be opened like any other.
-    let o = open(&p.home("one"), &p.conflicts()[0], Choice::Shared, Lang::En, true).unwrap();
+    let o = open(&p.home("one"), &p.conflicts()[0], Use::Shared, Lang::En, true).unwrap();
     assert_eq!(payees(&o.db), set(&["common", "mine"]));
 }
 
@@ -349,7 +350,7 @@ fn what_is_not_whole_is_neither_read_nor_replaced() {
         assert!(report.notices()[0].contains("safe on this computer"));
         // Nor is it opened by a computer that has nothing.
         let home = p.home(&format!("new {what}"));
-        assert!(open(&home, &p.file(), Choice::Shared, Lang::En, false).is_err(), "{what}");
+        assert!(open(&home, &p.file(), Use::Shared, Lang::En, false).is_err(), "{what}");
         assert_eq!(&std::fs::read(p.file()).unwrap(), bytes, "{what}");
     }
     std::fs::write(p.file(), good).unwrap();
@@ -385,11 +386,11 @@ fn a_file_or_a_folder_that_goes_away_is_waited_for() {
     assert_eq!(payees_of(&p.file()), set(&["x", "y"]));
     // Not downloaded: nothing is made in its place.
     std::fs::rename(p.file(), p.folder().join(".books.db.icloud")).unwrap();
-    assert!(open(&p.home("two"), &p.file(), Choice::Shared, Lang::En, false).is_err());
+    assert!(open(&p.home("two"), &p.file(), Use::Shared, Lang::En, false).is_err());
     assert!(matches!(sa.sync().unwrap().status, Status::Waiting(_)) && !p.file().exists());
     // A file that must be there.
     let absent = p.folder().join("other.db");
-    for how in [Choice::Shared, Choice::Direct] {
+    for how in [Use::Shared, Use::Direct] {
         assert!(open(&p.home("two"), &absent, how, Lang::En, true).is_err());
     }
     assert!(!absent.exists());
@@ -439,7 +440,7 @@ fn a_link_to_the_file_is_followed_and_names_that_are_not_utf8_work() {
     let name = std::ffi::OsStr::from_bytes(b"conti \xe8.db");
     let odd = p.folder().join(name);
     let home = p.home("one");
-    let o = open(&home, &odd, Choice::Shared, Lang::En, false).unwrap();
+    let o = open(&home, &odd, Use::Shared, Lang::En, false).unwrap();
     add(&o.db, "x");
     let s = o.shared.unwrap().0;
     s.sync().unwrap();
@@ -482,7 +483,7 @@ fn a_log_left_by_0_3_0_is_recovered_unless_it_is_in_use() {
     std::fs::copy(&live, p.file()).unwrap();
     std::fs::copy(content::log(&live, "-wal"), &wal).unwrap();
     let home = p.home("one");
-    let start = || open(&home, &p.file(), Choice::Shared, Lang::En, false);
+    let start = || open(&home, &p.file(), Use::Shared, Lang::En, false);
     // Just written: a program may be running.
     assert!(start().is_err() && wal.exists());
     quiet(&wal);
@@ -539,7 +540,7 @@ fn a_file_of_an_older_format_is_updated_with_a_private_backup() {
     drop(c);
     let old = std::fs::read(p.file()).unwrap();
     let home = p.home("one");
-    let o = open(&home, &p.file(), Choice::Shared, Lang::En, false).unwrap();
+    let o = open(&home, &p.file(), Use::Shared, Lang::En, false).unwrap();
     let (shared, report) = o.shared.unwrap();
     assert_eq!((report.status, report.conflict), (Status::Saved, None));
     assert_eq!(payees(&o.db), set(&["old"]));
@@ -563,8 +564,8 @@ fn programs_of_one_computer_share_the_copy() {
     let (other, so, _) = p.start("one");
     assert_eq!(window.path, other.path);
     add(&window, "w");
-    let (done, notices) = around(&so, || add(&other, "o")).unwrap();
-    assert!(done == () && notices.is_empty());
+    let ((), notices) = around(&so, || add(&other, "o")).unwrap();
+    assert!(notices.is_empty());
     assert_eq!(payees_of(&p.file()), set(&["w", "o"]));
     // All at once.
     std::thread::scope(|s| {
@@ -620,13 +621,13 @@ fn a_copy_is_put_in_a_folder_and_the_old_file_goes_only_when_it_is_safe() {
     let p = Place::new();
     let old = p.0.join("old.db");
     let home = p.home("one");
-    let o = open(&home, &old, Choice::Auto, Lang::En, false).unwrap();
+    let o = open(&home, &old, Use::Auto, Lang::En, false).unwrap();
     assert!(o.shared.is_none());
     add(&o.db, "x");
     copy_to(&home, &o.db, &p.file()).unwrap();
     assert!(copy_to(&home, &o.db, &p.file()).is_err());
     assert_eq!((payees_of(&p.file()), p.names()), (set(&["x"]), vec!["books.db".into()]));
-    let new = open(&home, &p.file(), Choice::Shared, Lang::En, true).unwrap();
+    let new = open(&home, &p.file(), Use::Shared, Lang::En, true).unwrap();
     // Open elsewhere, or changed since.
     o.db.conn.execute_batch("BEGIN; SELECT * FROM meta;").unwrap();
     let _ = retire(&old, &new.db).unwrap_err();
@@ -637,10 +638,10 @@ fn a_copy_is_put_in_a_folder_and_the_old_file_goes_only_when_it_is_safe() {
     assert!(old.exists());
     add(&new.db, "late");
     // Not the same entry for a computer: it has another id.
-    let same = open(&home, &old, Choice::Direct, Lang::En, true).unwrap().db;
+    let same = open(&home, &old, Use::Direct, Lang::En, true).unwrap().db;
     copy_to(&home, &same, &p.folder().join("second.db")).unwrap();
     drop(same);
-    let second = open(&home, &p.folder().join("second.db"), Choice::Shared, Lang::En, true).unwrap();
+    let second = open(&home, &p.folder().join("second.db"), Use::Shared, Lang::En, true).unwrap();
     retire(&old, &second.db).unwrap();
     assert!(!old.exists() && !content::log(&old, "-wal").exists());
     assert!(copy_to(&home, &new.db, &p.0.join("nowhere").join("a.db")).is_err());
@@ -650,19 +651,19 @@ fn a_copy_is_put_in_a_folder_and_the_old_file_goes_only_when_it_is_safe() {
 fn what_the_user_says_of_a_file_is_remembered() {
     let p = Place::new();
     let home = p.home("one");
-    assert!(!way(&home, &p.file(), Choice::Auto).0);
-    home.set_choice(&p.file(), Choice::Shared).unwrap();
-    assert!(way(&home, &p.file(), Choice::Auto).0);
-    assert!(!way(&home, &p.file(), Choice::Direct).0);
-    home.set_choice(&p.file(), Choice::Auto).unwrap();
+    assert!(!way(&home, &p.file(), Use::Auto).0);
+    home.set_choice(&p.file(), Use::Shared).unwrap();
+    assert!(way(&home, &p.file(), Use::Auto).0);
+    assert!(!way(&home, &p.file(), Use::Direct).0);
+    home.set_choice(&p.file(), Use::Auto).unwrap();
     std::fs::write(p.folder().join(".stfolder"), "").unwrap();
-    assert_eq!(way(&home, &p.file(), Choice::Auto), (true, Some(Service::Syncthing)));
-    home.set_choice(&p.file(), Choice::Direct).unwrap();
-    assert!(!way(&home, &p.file(), Choice::Auto).0);
-    let o = open(&home, &p.file(), Choice::Auto, Lang::En, false).unwrap();
+    assert_eq!(way(&home, &p.file(), Use::Auto), (true, Some(Service::Syncthing)));
+    home.set_choice(&p.file(), Use::Direct).unwrap();
+    assert!(!way(&home, &p.file(), Use::Auto).0);
+    let o = open(&home, &p.file(), Use::Auto, Lang::En, false).unwrap();
     assert!(o.is_new && o.shared.is_none() && o.db.path == Some(p.file()));
     assert_eq!(home.pick(Some("a.db".into())), ("a.db".into(), false));
-    assert_eq!(Choice::from_code("other"), None);
+    assert_eq!(Use::from_code("other"), None);
 }
 
 #[test]
