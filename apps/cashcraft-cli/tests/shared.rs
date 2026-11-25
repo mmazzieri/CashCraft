@@ -57,6 +57,15 @@ mod tests {
         }
     }
 
+    /// A server that ends with the test.
+    struct Server(std::process::Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
     fn complete(file: &Path) {
         let bytes = std::fs::read(file).unwrap();
         assert!(bytes.starts_with(b"SQLite format 3\0") && bytes.len().is_multiple_of(4096) && bytes[18] == 1);
@@ -290,16 +299,17 @@ mod tests {
         let args = ["--shared", "mcp", "--automation-read-root", &root, "--automation-write-root", &root];
         let serve = |file: PathBuf, shared: bool| {
             let args = if shared { &args[..] } else { &args[1..] };
-            let mut child = d
+            let child = d
                 .command("two", &[&["--db", file.to_str().unwrap()], args].concat())
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .spawn()
                 .unwrap();
-            let mut stdin = child.stdin.take().unwrap();
-            let mut lines = std::io::BufRead::lines(std::io::BufReader::new(child.stdout.take().unwrap()));
+            let mut server = Server(child);
+            let mut stdin = server.0.stdin.take().unwrap();
+            let mut lines = std::io::BufRead::lines(std::io::BufReader::new(server.0.stdout.take().unwrap()));
             move |tool: &str, arguments: serde_json::Value| -> serde_json::Value {
-                let _child = &child;
+                let _server = &server;
                 let params = serde_json::json!({"name": tool, "arguments": arguments});
                 let msg = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params});
                 writeln!(stdin, "{msg}").unwrap();
