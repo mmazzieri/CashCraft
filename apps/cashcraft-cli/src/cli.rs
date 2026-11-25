@@ -226,6 +226,27 @@ pub enum TxCmd {
     },
     /// Delete a transaction
     Delete { id: i64 },
+    /// Turn a transaction into a transfer with another account
+    ToTransfer {
+        id: i64,
+        /// The other account (name or id)
+        account: String,
+        /// Transaction to join as the other side
+        #[arg(long, conflicts_with = "no_match")]
+        join: Option<i64>,
+        /// Add the other side even if some transactions match
+        #[arg(long)]
+        no_match: bool,
+    },
+    /// List what may be the other side of a transaction in another account
+    Matches { id: i64, account: String },
+    /// Separate a transfer into two transactions
+    Separate {
+        id: i64,
+        /// Remove the other side
+        #[arg(long)]
+        drop_other: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -503,6 +524,18 @@ pub fn run(db: &Db, cmd: Cmd, as_json: bool) -> Result<()> {
                 ]),
             ),
             TxCmd::Delete { id } => ("delete_transaction", args(&[("id", v(id))])),
+            TxCmd::ToTransfer { id, account, join, no_match } => (
+                "turn_into_transfer",
+                args(&[
+                    ("id", v(id)),
+                    ("account", v(account)),
+                    ("match", if no_match { v("none") } else { join.map(|j| json!(j)) }),
+                ]),
+            ),
+            TxCmd::Matches { id, account } => ("transfer_candidates", args(&[("id", v(id)), ("account", v(account))])),
+            TxCmd::Separate { id, drop_other } => {
+                ("separate_transfer", args(&[("id", v(id)), ("keep_other", v(!drop_other))]))
+            }
         },
         Cmd::Transfer { from, to, amount, date, memo } => (
             "add_transfer",
@@ -651,6 +684,34 @@ fn print_entry(e: &Value) {
     }
 }
 
+/// Imported lines that are sides of transfers, or may be.
+fn print_transfers(result: &Value) {
+    let line = |t: &Value| {
+        format!(
+            "{:>5}  {}  {:<40} {:>13}",
+            st(field(t, "id")),
+            date(field(t, "date")),
+            cut(&st(field(t, "payee")), 40),
+            eur(field(t, "amount"))
+        )
+    };
+    for t in field(result, "adopted").as_array().into_iter().flatten() {
+        println!("{}", trf("Side of a transfer that was there: {line}", &[("line", &line(t))]));
+    }
+    for m in field(result, "maybe_transfers").as_array().into_iter().flatten() {
+        println!(
+            "{}",
+            trf(
+                "It may be the side of a transfer (tx to-transfer --join): {line}",
+                &[("line", &line(field(m, "transaction")))]
+            )
+        );
+        for c in field(m, "candidates").as_array().into_iter().flatten() {
+            println!("  {}", line(c));
+        }
+    }
+}
+
 fn st(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -695,7 +756,7 @@ fn print_human(tool: &str, r: &Value) {
             }
             println!("{:>69}", trf("Net worth: {amount}", &[("amount", &eur(field(r, "net_worth")))]));
         }
-        "list_transactions" => {
+        "list_transactions" | "transfer_candidates" => {
             println!(
                 "{:>5}  {:<10}  {:<16} {:<30} {:<24} {:>13}",
                 "ID",
@@ -877,6 +938,7 @@ fn print_human(tool: &str, r: &Value) {
             }
             if let Some(msg) = r.get("message") {
                 println!("{}", st(msg));
+                print_transfers(field(r, "result"));
             } else {
                 println!(
                     "{}",

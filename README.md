@@ -28,7 +28,9 @@
 - **Accounts** grouped by type (current accounts, cash, credit cards, savings, investments,
   loans) with live balances and net worth.
 - **Register** for each account with running balance, a "cleared" mark, search and filters by
-  period and category; transfers between accounts.
+  period and category; transfers between accounts. **Turn into transfer…** (selected row, context menu
+  or ⌘T/Ctrl+T) makes a transfer of an imported line and joins the other side when it is there already;
+  a transfer can be separated again.
 - **Overview, reports and budgets**: income vs. spending by month, spending by category,
   net worth over time, monthly budgets per category with progress bars.
 - **Categories and rules**: nested categories and keyword rules that categorize new and imported
@@ -53,8 +55,8 @@ styles can be typed in either language. Only one separator before exactly three 
 it: `1.234` is 1234 in Italian, `1,234` is 1234 in English. Bank statements are read the same in
 every language.
 
-Data stays on your computer in a single SQLite file. A file of version 0.1 or 0.2 is updated when it
-is first opened, after a copy of it is saved beside it as `cashcraft.v1-backup.db`.
+Data stays on your computer in a single SQLite file. A file of an older format is updated when it
+is first opened, after a copy of it is saved beside it (`cashcraft.v1-backup.db` for version 0.1 or 0.2).
 
 ## Install
 
@@ -81,6 +83,7 @@ On macOS, drag CashCraft to Applications. Until a release is signed with a Devel
     cashcraft-cli import statement.csv --account "Main account"
     cashcraft-cli tx list --account "Main account" --from 2026-01-01
     cashcraft-cli tx add -a "Main account" --amount -12,50 -p "Bar" -c "Restaurants and bars"
+    cashcraft-cli tx to-transfer 12 "Savings"       # or tx matches, tx separate
     cashcraft-cli report categories --month 2026-10
     cashcraft-cli budget set Groceries 400
     cashcraft-cli rules add "panificio|forno" Groceries

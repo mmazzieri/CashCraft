@@ -9,6 +9,7 @@ use crate::ledger::{
     Class, Entry, EntryFilter, MAX_LINES, NewEntry, NewLine, TrialBalance, find_ledger_account, too_big,
 };
 use crate::money::{checked_total, fmt_date, fmt_eur, fmt_machine, fmt_plain, parse_amount, parse_date};
+use crate::transfers::OtherSide;
 use anyhow::{Result, anyhow, bail};
 use chrono::{Datelike, Months, NaiveDate};
 use serde_json::{Map, Value, json};
@@ -100,6 +101,31 @@ pub fn tools() -> Vec<ToolDef> {
                 json!({"from": s("Account to transfer from."), "to": s("Account to transfer to."), "amount": s("Positive amount in euros."),
                 "date": s(DATE), "memo": s("Notes.")}),
                 &["from", "to", "amount"],
+            ),
+        },
+        ToolDef {
+            name: "transfer_candidates",
+            description: "Lists the transactions of another account that may be the other side of a transaction (opposite amount, within 10 days, nearest first). One of kind transfer is a transfer whose other side this transaction would confirm.",
+            schema: obj(
+                json!({"id": n("Id of the transaction."), "account": s("The other account: numeric id or name.")}),
+                &["id", "account"],
+            ),
+        },
+        ToolDef {
+            name: "turn_into_transfer",
+            description: "Turns a transaction into a transfer with another account. If transactions there may be the other side already, the call is refused and lists them: ask the user, then pass one as match, or none. Ids, texts, dates and import keys are kept.",
+            schema: obj(
+                json!({"id": n("Id of the transaction."), "account": s("The other account: numeric id or name."),
+                "match": s("\"auto\" (default), \"none\" to add the other side anyway, or the id of the transaction to join.")}),
+                &["id", "account"],
+            ),
+        },
+        ToolDef {
+            name: "separate_transfer",
+            description: "Separates a transfer: both sides become uncategorized transactions.",
+            schema: obj(
+                json!({"id": n("Id of one side, which stays."), "keep_other": b("Keep the other side too (default true).")}),
+                &["id"],
             ),
         },
         ToolDef {
@@ -337,12 +363,16 @@ fn req_str(a: &Value, k: &str) -> Result<String> {
     opt_str(a, k).filter(|s| !s.trim().is_empty()).ok_or_else(|| missing(k))
 }
 
-fn opt_bool(a: &Value, k: &str) -> bool {
+/// `false` when it is not given; anything but a boolean is an error.
+fn opt_bool(a: &Value, k: &str) -> Result<bool> {
+    Ok(given_bool(a, k)?.unwrap_or(false))
+}
+
+fn given_bool(a: &Value, k: &str) -> Result<Option<bool>> {
     match a.get(k) {
-        Some(Value::Bool(b)) => *b,
-        Some(Value::String(s)) => matches!(s.to_lowercase().as_str(), "true" | "1" | "si" | "sì" | "yes"),
-        Some(Value::Number(n)) => n.as_i64().unwrap_or(0) != 0,
-        _ => false,
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => bail!(trf("the parameter \"{name}\" must be true or false", &[("name", &k)])),
     }
 }
 
@@ -392,7 +422,7 @@ fn entry_json(e: &Entry) -> Value {
         .iter()
         .map(|p| {
             json!({"id": p.id, "ledger_account_id": p.account_id, "account": p.account, "amount": fmt_machine(p.amount),
-                   "currency": p.currency, "cleared": p.cleared})
+                   "currency": p.currency, "cleared": p.cleared, "date": p.date})
         })
         .collect();
     json!({"id": e.id, "date": e.date, "payee": e.payee, "memo": e.memo, "opening": e.opening, "postings": postings})
@@ -590,7 +620,7 @@ pub fn call(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
 fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Value> {
     Ok(match name {
         "list_accounts" => {
-            let accts = db.accounts(opt_bool(a, "include_archived"))?;
+            let accts = db.accounts(opt_bool(a, "include_archived")?)?;
             json!({"accounts": accts, "net_worth": db.net_worth(None)?})
         }
         "create_account" => {
@@ -618,7 +648,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 from: opt_date(a, "from")?,
                 to: opt_date(a, "to")?,
                 search: opt_str(a, "search").unwrap_or_default(),
-                uncategorized: opt_bool(a, "uncategorized"),
+                uncategorized: opt_bool(a, "uncategorized")?,
                 limit: Some(opt_i64(a, "limit").unwrap_or(100).max(1) as usize),
                 ..Default::default()
             };
@@ -644,7 +674,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 payee: req_str(a, "payee")?,
                 memo: opt_str(a, "memo").unwrap_or_default(),
                 category_id,
-                cleared: opt_bool(a, "cleared"),
+                cleared: opt_bool(a, "cleared")?,
                 import_hash: None,
             };
             db.atomically(|| {
@@ -673,7 +703,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                         payee: opt_str(a, "payee").unwrap_or(t.payee),
                         memo: opt_str(a, "memo").unwrap_or(t.memo),
                         category_id,
-                        cleared: if a.get("cleared").is_some() { opt_bool(a, "cleared") } else { t.cleared },
+                        cleared: given_bool(a, "cleared")?.unwrap_or(t.cleared),
                     },
                 )?;
                 Ok(json!({"transaction": db.transaction(id)?}))
@@ -702,6 +732,32 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             )?;
             json!({"ids": [x, y], "message": tr("transfer recorded")})
         }
+        "transfer_candidates" => {
+            let acc = db.find_account(&req_str(a, "account")?)?;
+            let found = db.transfer_candidates(req_i64(a, "id")?, acc.id)?;
+            json!({"count": found.len(), "transactions": found})
+        }
+        "turn_into_transfer" => {
+            let id = req_i64(a, "id")?;
+            let acc = db.find_account(&req_str(a, "account")?)?;
+            let other = match opt_str(a, "match").unwrap_or_default().trim() {
+                "" | "auto" => OtherSide::Auto,
+                "none" => OtherSide::New,
+                x => OtherSide::Join(x.parse().map_err(|_| {
+                    anyhow!(trf("\"{match}\" is neither auto, none nor the id of a transaction", &[("match", &x)]))
+                })?),
+            };
+            let done = db.turn_into_transfer(id, acc.id, other)?;
+            let message =
+                if done.joined { tr("the two transactions are one transfer now") } else { tr("transfer recorded") };
+            json!({"ids": [done.id, done.other_id], "joined": done.joined, "message": message})
+        }
+        "separate_transfer" => {
+            let id = req_i64(a, "id")?;
+            let keep = given_bool(a, "keep_other")?.unwrap_or(true);
+            let other = db.separate_transfer(id, keep)?;
+            json!({"id": id, "other_id": other, "message": tr("transfer separated")})
+        }
         "preview_csv" | "import_csv" => {
             let raw = req_str(a, "path")?;
             let path = match roots {
@@ -716,9 +772,9 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
             if m.amount.is_none() && m.credit.is_none() && m.debit.is_none() {
                 bail!(tr("the amount column was not found: give it with amount_column or credit_column/debit_column"));
             }
-            let (rows, skipped) = importer::parse_rows(&t, &m, opt_bool(a, "invert"));
+            let (rows, skipped) = importer::parse_rows(&t, &m, opt_bool(a, "invert")?);
             let info = importer::describe(&t, &m);
-            if name == "preview_csv" || opt_bool(a, "dry_run") {
+            if name == "preview_csv" || opt_bool(a, "dry_run")? {
                 let limit = opt_i64(a, "limit").unwrap_or(10).max(1) as usize;
                 let total = checked_total(rows.iter().map(|r| r.amount)).ok_or_else(too_big)?;
                 json!({"format": info, "rows_found": rows.len(), "rows_skipped": skipped, "sum": total,
@@ -733,7 +789,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
         }
         "list_categories" => json!({"categories": db.categories()?}),
         "create_category" => {
-            let id = db.category_by_path(&req_str(a, "path")?, opt_bool(a, "income"), true)?;
+            let id = db.category_by_path(&req_str(a, "path")?, opt_bool(a, "income")?, true)?;
             json!({"id": id})
         }
         "delete_category" => {
@@ -1159,7 +1215,7 @@ mod tests {
                         "category": "Svago", "amount": 1, "monthly_amount": 1, "date": "2025-01-31",
                         "next_date": "2025-01-31", "id": 1, "class": "asset",
                         "posting_id": 2, "currency": "USD",
-                        "parent": "Conto corrente", "ledger_account": "Conto corrente", "code": "1",
+                        "parent": "Conto corrente", "match": "none", "ledger_account": "Conto corrente", "code": "1",
                         "postings": [{"account": "Conto corrente", "amount": "1,00"}, {"account": "Svago", "amount": -1}],
                         "path": "out.csv", "pattern": "x", "unit": "month"});
                     a[hostile.as_str()] = v.clone();

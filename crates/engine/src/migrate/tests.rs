@@ -534,6 +534,59 @@ fn a_file_without_transactions_and_an_empty_file_open() {
 }
 
 #[test]
+fn files_of_formats_2_and_3_open() {
+    ledger_file_opens(2, include_str!("v2.sql"));
+    ledger_file_opens(3, include_str!("v3.sql"));
+}
+
+/// What is new is added, after a copy; everything else stays as it was.
+fn ledger_file_opens(version: i64, schema: &str) {
+    let dir = Dir::new(&format!("format-{version}"));
+    let old = Connection::open(dir.file()).unwrap();
+    old.execute_batch(schema).unwrap();
+    old.execute_batch(
+        "INSERT INTO accounts(id,name,kind) VALUES (1,'Bank','bank'), (2,'Card','credit_card');
+         INSERT INTO categories(id,name) VALUES (1,'Home');
+         INSERT INTO entries(id,date,payee) VALUES (1,'2026-01-05','Shop'), (2,'2026-01-06','Moved');
+         INSERT INTO postings(id,entry_id,ledger_account_id,amount,currency,import_hash)
+         SELECT 1,1,id,-500,'EUR','h' FROM ledger_accounts WHERE money_account_id=1 UNION ALL
+         SELECT 2,1,id,500,'EUR',NULL FROM ledger_accounts WHERE category_id=1 UNION ALL
+         SELECT 3,2,id,-900,'EUR',NULL FROM ledger_accounts WHERE money_account_id=1 UNION ALL
+         SELECT 4,2,id,900,'EUR',NULL FROM ledger_accounts WHERE money_account_id=2;
+         UPDATE postings SET payee='side', import_hash='k' WHERE id=3;
+         UPDATE postings SET payee='side' WHERE id=4;",
+    )
+    .unwrap();
+    old.pragma_update(None, "user_version", version).unwrap();
+    if version > 2 {
+        // What format 3 left of a transfer whose other account was deleted.
+        old.execute_batch("UPDATE postings SET date='2026-02-01' WHERE id=1").unwrap();
+    }
+    let before = dump(&old);
+    let (db, _) = Db::open(&dir.file()).unwrap();
+    assert_sound(&db, "opened");
+    let t = db.transaction(1).unwrap();
+    let date = if version > 2 { "2026-02-01" } else { "2026-01-05" };
+    assert_eq!((d2s(t.date), d2s(db.entry(1).unwrap().date)), (date.into(), date.into()));
+    assert_eq!((db.transaction(3).unwrap().added, db.transaction(4).unwrap().added), (false, true));
+    let figures = v2_figures(&db);
+    assert_eq!(figures.register.len(), 3);
+    assert_eq!(figures.accounts.iter().map(|a| a.2).collect::<Vec<_>>(), [-1400, 900]);
+    db.separate_transfer(3, true).unwrap();
+    assert_sound(&db, "changed");
+    let copy = Connection::open(dir.0.join(format!("books.v{version}-backup.db"))).unwrap();
+    assert_eq!(dump(&copy), before);
+    drop(db);
+    Db::open(&dir.file()).unwrap();
+    assert!(!dir.0.join(format!("books.v{version}-backup-2.db")).exists());
+    // A number written by an older program on a present file changes nothing.
+    old.pragma_update(None, "user_version", 1).unwrap();
+    let (db, _) = Db::open(&dir.file()).unwrap();
+    assert_sound(&db, "stamped");
+    assert_eq!(db.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
 fn a_backup_is_never_overwritten() {
     let dir = Dir::new("backup");
     let first = dir.0.join("books.v1-backup.db");

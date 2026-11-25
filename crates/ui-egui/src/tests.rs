@@ -224,3 +224,71 @@ fn deleting_a_split_asks_first() {
     let l = app.ledger.as_ref().unwrap();
     assert!(l.trial.is_err() && l.journal.is_err());
 }
+
+/// From the dialog: one candidate is proposed, several are not chosen, and a transfer is separated.
+#[test]
+fn a_transaction_is_turned_into_a_transfer() {
+    use cashcraft_engine::transfers::OtherSide;
+    use egui::{Event, Key, Modifiers};
+    with_lang(Lang::En, || {
+        let db = Db::open_in_memory().unwrap();
+        let bank = db.add_account("Bank", AccountKind::Bank, "EUR", 0, "").unwrap();
+        let savings = db.add_account("Savings", AccountKind::Savings, "EUR", 0, "").unwrap();
+        let date = parse_date("2026-03-04").unwrap();
+        let add = |db: &Db, account_id, amount| {
+            let tx = NewTx { account_id, amount, date, payee: "x".into(), ..Default::default() };
+            db.add_transaction(&tx).unwrap().unwrap()
+        };
+        let (out, into) = (add(&db, bank, -50), add(&db, savings, 50));
+        let mut app = App::new(db, None);
+        let t = app.db.transaction(out).unwrap();
+        let choice = |app: &mut App, account| {
+            app.open_turn(&t);
+            let Some(Dialog::TurnIntoTransfer(f)) = &mut app.dialog else { panic!("no dialog") };
+            f.account = Some(account);
+            f.reload(&app.db);
+            (f.other, f.error.is_empty())
+        };
+        assert_eq!(choice(&mut app, bank), (OtherSide::New, false));
+        // Never chosen for the user, however few.
+        assert_eq!(choice(&mut app, savings), (OtherSide::Auto, true));
+        let second = add(&app.db, savings, 50);
+        assert_eq!(choice(&mut app, savings).0, OtherSide::Auto);
+        app.db.delete_transaction(second).unwrap();
+        choice(&mut app, savings);
+        if let Some(Dialog::TurnIntoTransfer(f)) = &mut app.dialog {
+            f.other = OtherSide::Join(into);
+        }
+        // Account, the candidate, none of these, then the button.
+        let ctx = egui::Context::default();
+        let send = |app: &mut App, events: Vec<Event>| {
+            for events in [events, vec![]] {
+                let screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0)));
+                let input = egui::RawInput { events, screen_rect, ..Default::default() };
+                ctx.run_ui(input, |ui| app.dialogs(&ui.ctx().clone())).textures_delta.clear();
+            }
+        };
+        let press = |key| {
+            let event =
+                |pressed| Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+            vec![event(true), event(false)]
+        };
+        send(&mut app, vec![]);
+        for _ in 0..4 {
+            send(&mut app, press(Key::Tab));
+        }
+        send(&mut app, press(Key::Enter));
+        assert!(app.dialog.is_none());
+        let t = app.db.transaction(out).unwrap();
+        assert_eq!(t.transfer_peer, Some(into));
+        app.open_turn(&t);
+        assert!(matches!(&app.dialog, Some(Dialog::SeparateTransfer(_, true))));
+        send(&mut app, vec![]);
+        for _ in 0..3 {
+            send(&mut app, press(Key::Tab));
+        }
+        send(&mut app, press(Key::Enter));
+        assert!(app.dialog.is_none() && app.db.transaction(out).unwrap().transfer_peer.is_none());
+        assert_eq!(app.db.transaction(into).unwrap().amount, 50);
+    });
+}

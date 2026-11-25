@@ -1,7 +1,7 @@
 //! Finestre di dialogo: movimento, giroconto, conto, pianificato, importazione CSV, conferme.
 
 use crate::gui::{
-    ACCENT, App, Dialog, GREEN, ImportState, MUTED, Period, RED, TxForm, View, ZEBRA, account_combo, card,
+    ACCENT, App, Dialog, GREEN, ImportState, MUTED, Period, RED, TurnForm, TxForm, View, ZEBRA, account_combo, card,
     category_combo, column_combo, cut, error_text, expense_toggle, form_row, kind_icon, money, primary_button,
 };
 use anyhow::Result;
@@ -9,6 +9,7 @@ use cashcraft_engine::db::{Account, AccountKind, NewScheduled, NewTx, TxEdit};
 use cashcraft_engine::i18n::{tr, trf, trn};
 use cashcraft_engine::importer::{self, ImportResult};
 use cashcraft_engine::money::{fmt_date, fmt_eur, fmt_plain, parse_amount, parse_date, total};
+use cashcraft_engine::transfers::OtherSide;
 use egui::{self, Color32, CornerRadius, Frame, Id, Margin, RichText, Ui};
 
 impl App {
@@ -27,7 +28,7 @@ impl App {
                     ui.heading(if f.id.is_some() { tr("Edit transaction") } else { tr("New transaction") });
                     ui.add_space(8.0);
                     if f.is_transfer {
-                        ui.label(RichText::new(tr("Transfer: changes apply to both accounts.")).color(MUTED));
+                        ui.label(RichText::new(tr("Transfer: the amount changes in both accounts.")).color(MUTED));
                     } else {
                         expense_toggle(ui, &mut f.expense);
                         ui.add_space(6.0);
@@ -89,6 +90,21 @@ impl App {
                                 Err(e) => f.error = format!("{e:#}"),
                             }
                         }
+                        if let Some(id) = f.id
+                            && f.has_category
+                            && ui
+                                .button(tr("🔁 Turn into transfer…"))
+                                .on_hover_text(tr("What was changed here is not saved."))
+                                .clicked()
+                        {
+                            match self.db.transaction(id) {
+                                Ok(t) => {
+                                    self.open_turn(&t);
+                                    keep = false;
+                                }
+                                Err(e) => f.error = format!("{e:#}"),
+                            }
+                        }
                         if ui.button(tr("Cancel")).clicked() {
                             keep = false;
                         }
@@ -143,6 +159,32 @@ impl App {
                                 }
                                 Err(e) => f.error = format!("{e:#}"),
                             }
+                        }
+                        if ui.button(tr("Cancel")).clicked() {
+                            keep = false;
+                        }
+                    });
+                }
+                Dialog::TurnIntoTransfer(f) => {
+                    (keep, message) = self.turn_dialog(ui, f, &accounts);
+                }
+                Dialog::SeparateTransfer(t, keep_other) => {
+                    ui.heading(tr("Separate the transfer?"));
+                    ui.label(format!("{} · {} · {}", fmt_date(t.date), cut(&t.payee, 40), fmt_eur(t.amount)));
+                    ui.label(RichText::new(tr("It becomes an ordinary transaction, without a category.")).color(MUTED));
+                    ui.add_space(6.0);
+                    ui.radio_value(keep_other, true, tr("Keep the other side as a transaction of its account"));
+                    ui.radio_value(
+                        keep_other,
+                        false,
+                        tr("Delete the other side (the balance of its account changes)"),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if primary_button(ui, tr("Separate")).clicked() {
+                            let done = self.db.separate_transfer(t.id, *keep_other);
+                            message = Some(done.map(|_| tr("Transfer separated").into()));
+                            keep = false;
                         }
                         if ui.button(tr("Cancel")).clicked() {
                             keep = false;
@@ -468,6 +510,82 @@ impl App {
         }
     }
 
+    fn turn_dialog(&mut self, ui: &mut Ui, f: &mut TurnForm, accounts: &[Account]) -> (bool, Option<Result<String>>) {
+        let (mut keep, mut message) = (true, None);
+        ui.heading(tr("Turn into a transfer"));
+        ui.label(format!(
+            "{} · {} · {} · {}",
+            fmt_date(f.tx.date),
+            cut(&f.tx.payee, 40),
+            f.tx.account,
+            fmt_eur(f.tx.amount)
+        ));
+        ui.label(
+            RichText::new(tr("Money moved between two of your accounts: it no longer counts as income or an expense."))
+                .color(MUTED),
+        );
+        ui.add_space(8.0);
+        let others: Vec<Account> = accounts.iter().filter(|a| a.id != f.tx.account_id).cloned().collect();
+        form_row(ui, if f.tx.amount < 0 { tr("To account") } else { tr("From account") }, |ui| {
+            if account_combo(ui, "turnacc", &others, &mut f.account) {
+                f.reload(&self.db);
+            }
+        });
+        if f.account.is_some() && f.error.is_empty() {
+            ui.add_space(6.0);
+            if f.candidates.is_empty() {
+                ui.label(
+                    RichText::new(tr("No matching transaction in that account: the other side will be added."))
+                        .color(MUTED),
+                );
+            } else {
+                ui.label(tr("The other side is already in that account?"));
+                egui::ScrollArea::vertical().id_salt("turn_candidates").max_height(220.0).show(ui, |ui| {
+                    for c in &f.candidates {
+                        let category = if c.category.is_empty() { tr("Uncategorized") } else { &c.category };
+                        let text = format!(
+                            "{} · {} · {} · {}",
+                            fmt_date(c.date),
+                            cut(&c.payee, 44),
+                            fmt_eur(c.amount),
+                            cut(category, 30)
+                        );
+                        ui.radio_value(&mut f.other, OtherSide::Join(c.id), text);
+                    }
+                });
+                ui.radio_value(&mut f.other, OtherSide::New, tr("None of these: add the other side"));
+            }
+        }
+        if !f.error.is_empty() {
+            ui.label(RichText::new(&f.error).color(RED));
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            let account = f.account.filter(|_| f.error.is_empty() && f.other != OtherSide::Auto);
+            let button = egui::Button::new(RichText::new(tr("Turn into transfer")).color(Color32::WHITE).strong());
+            if ui.add_enabled(account.is_some(), button.fill(ACCENT)).clicked()
+                && let Some(account) = account
+            {
+                match self.db.turn_into_transfer(f.tx.id, account, f.other) {
+                    Ok(done) => {
+                        let text = if done.joined {
+                            tr("The two transactions are one transfer now")
+                        } else {
+                            tr("Transfer recorded")
+                        };
+                        message = Some(Ok(text.into()));
+                        keep = false;
+                    }
+                    Err(e) => f.error = format!("{e:#}"),
+                }
+            }
+            if ui.button(tr("Cancel")).clicked() {
+                keep = false;
+            }
+        });
+        (keep, message)
+    }
+
     fn save_tx(&mut self, f: &TxForm) -> Result<String> {
         let account = f.account.ok_or_else(|| anyhow::anyhow!(tr("choose an account")))?;
         let date = parse_date(&f.date).ok_or_else(|| anyhow::anyhow!(tr("the date is not valid (yyyy-mm-dd)")))?;
@@ -565,7 +683,12 @@ impl App {
                         .color(MUTED),
                     );
                 }
+                for a in &res.adopted {
+                    let line = format!("{} · {} · {}", fmt_date(a.date), cut(&a.payee, 44), fmt_eur(a.amount));
+                    ui.label(trf("Side of a transfer that was there: {line}", &[("line", &line)]));
+                }
             });
+            self.maybe_transfers(ui, st);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if primary_button(ui, tr("Go to the account")).clicked() {
@@ -713,5 +836,39 @@ impl App {
             }
         });
         (keep, msg)
+    }
+
+    /// Imported lines that may be the side of a transfer that is there.
+    fn maybe_transfers(&mut self, ui: &mut Ui, st: &mut ImportState) {
+        let Some(res) = st.result.as_mut().filter(|r| !r.maybe_transfers.is_empty()) else { return };
+        let mut joined: Option<(usize, Result<()>)> = None;
+        ui.add_space(8.0);
+        card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(tr("Sides of transfers that are there already?")).strong());
+            egui::ScrollArea::vertical().id_salt("maybe_transfers").max_height(160.0).show(ui, |ui| {
+                for (i, m) in res.maybe_transfers.iter().enumerate() {
+                    let t = &m.transaction;
+                    ui.label(format!("{} · {} · {}", fmt_date(t.date), cut(&t.payee, 44), fmt_eur(t.amount)));
+                    for c in &m.candidates {
+                        ui.horizontal(|ui| {
+                            if ui.button(tr("Join")).clicked() {
+                                let done = self.db.turn_into_transfer(t.id, c.account_id, OtherSide::Join(c.id));
+                                joined = Some((i, done.map(|_| ())));
+                            }
+                            ui.label(format!("{} · {} · {}", fmt_date(c.date), c.account, cut(&c.payee, 40)));
+                        });
+                    }
+                }
+            });
+        });
+        match joined {
+            Some((i, Ok(()))) => {
+                res.maybe_transfers.remove(i);
+                self.reload();
+            }
+            Some((_, Err(e))) => st.error = format!("{e:#}"),
+            None => {}
+        }
     }
 }

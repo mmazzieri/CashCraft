@@ -1,9 +1,9 @@
 //! From formats 0 (CashCraft 0.1) and 1 (0.2.0), where money was a table of transactions, to the
-//! double-entry ledger of format 2. `docs/ledger.md` describes what becomes what.
+//! double-entry ledger of format 2, and from that to the present one. `docs/ledger.md` describes what becomes what.
 
-use crate::db::{Cents, Db, RENAMED, SCHEMA};
+use crate::db::{Cents, Db, RENAMED, SCHEMA, SCHEMA_VERSION};
 use crate::i18n::{tr, trf};
-use crate::ledger::{Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
+use crate::ledger::{ADDED, Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
 use anyhow::{Context, Result, bail};
 use rusqlite::backup::Backup;
 use rusqlite::{Connection, OpenFlags, params};
@@ -43,9 +43,9 @@ fn beside(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// The file of the first of these names that is not there, created empty.
-fn create_free(path: &Path) -> Result<PathBuf> {
+fn create_free(path: &Path, from: i64) -> Result<PathBuf> {
     for n in 0..1000 {
-        let p = beside(path, &format!(".v1-backup.{}-{n}.tmp", std::process::id()));
+        let p = beside(path, &format!(".v{from}-backup.{}-{n}.tmp", std::process::id()));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -59,11 +59,11 @@ fn create_free(path: &Path) -> Result<PathBuf> {
     bail!(tr("there are too many backup copies"))
 }
 
-/// A copy of the old file beside it, with the first free name of `cashcraft.v1-backup.db`,
+/// A copy of the old file, of format `from`, beside it, with the first free name of `cashcraft.v1-backup.db`,
 /// `cashcraft.v1-backup-2.db`… The name appears only on a complete copy; an existing file is never
 /// overwritten.
-fn backup(path: &Path) -> Result<PathBuf> {
-    let part = Temporary(create_free(path)?);
+fn backup(path: &Path, from: i64) -> Result<PathBuf> {
+    let part = Temporary(create_free(path, from)?);
     // Another connection: ours holds the write lock.
     let source = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     source.busy_timeout(Duration::from_secs(5))?;
@@ -81,8 +81,8 @@ fn backup(path: &Path) -> Result<PathBuf> {
     std::fs::set_permissions(&part.0, std::fs::metadata(path)?.permissions())?;
     for n in 1..1000 {
         let target = match n {
-            1 => beside(path, ".v1-backup.db"),
-            n => beside(path, &format!(".v1-backup-{n}.db")),
+            1 => beside(path, &format!(".v{from}-backup.db")),
+            n => beside(path, &format!(".v{from}-backup-{n}.db")),
         };
         // A link never replaces a file.
         match std::fs::hard_link(&part.0, &target) {
@@ -114,20 +114,48 @@ fn table_sizes(c: &Connection) -> Result<Vec<(String, i64)>> {
 }
 
 impl Db {
-    /// Turns the tables of format 0 or 1 into format 2. Runs inside the transaction of `init`, which
+    /// Turns the tables of an older format into the present one. Runs inside the transaction of `init`, which
     /// holds the write lock: nobody changes the file between the backup and the end.
-    pub(crate) fn migrate(&self) -> Result<()> {
+    pub(crate) fn migrate(&self, version: i64) -> Result<()> {
         let again = self.has_table("postings")?;
-        if again && !self.has_leftovers()? {
+        let dated = again && self.has_posting_column("date")?;
+        let current = dated && self.has_posting_column("origin")?;
+        if current && !self.has_leftovers()? {
             return self.drop_leftovers();
         }
+        // An older program may have written a lower number on a newer file.
+        let from = match (again, dated, current) {
+            (false, _, _) => 1,
+            (_, false, _) => 2,
+            (_, _, false) => version.max(3),
+            _ => SCHEMA_VERSION.max(version),
+        };
         let copy = match &self.path {
-            Some(p) => Some(backup(p).with_context(|| {
+            Some(p) => Some(backup(p, from).with_context(|| {
                 tr("the data file must be updated to a new format, but a backup copy of it cannot be made; nothing was changed")
             })?),
             None => None,
         };
-        let done = if again { self.merge_leftovers() } else { self.convert() };
+        let done = (|| -> Result<()> {
+            if !again {
+                self.convert()?;
+            }
+            if again && !dated {
+                self.conn.execute_batch("ALTER TABLE postings ADD COLUMN date TEXT")?;
+            }
+            if again && !current {
+                self.conn.execute_batch("ALTER TABLE postings ADD COLUMN origin TEXT")?;
+                self.repair_dates()?;
+            }
+            if again && self.has_leftovers()? {
+                self.merge_leftovers()?;
+            }
+            self.drop_leftovers()?;
+            if !current {
+                self.mark_added_sides()?;
+            }
+            Ok(())
+        })();
         if done.is_err()
             && let Some(p) = copy
         {
@@ -137,7 +165,39 @@ impl Db {
         done.context(tr("the data file cannot be updated to the new format; nothing was changed"))
     }
 
-    /// An older program can mark a file of format 2 with its own number, and add its tables, when both
+    fn has_posting_column(&self, name: &str) -> Result<bool> {
+        Ok(self.conn.prepare("SELECT 1 FROM pragma_table_info('postings') WHERE name=?1")?.exists([name])?)
+    }
+
+    /// Format 3 left the date of a side that had lost the other one apart from the entry's.
+    fn repair_dates(&self) -> Result<()> {
+        let mut st = self.conn.prepare("SELECT DISTINCT entry_id FROM postings WHERE date IS NOT NULL")?;
+        let entries: Vec<i64> = st.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+        for id in entries {
+            self.save_entry(&self.load_draft(id)?)?;
+        }
+        Ok(())
+    }
+
+    /// Sides of transfers that were never imported.
+    fn mark_added_sides(&self) -> Result<()> {
+        let mut st = self.conn.prepare(
+            "SELECT entry_id FROM postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+             GROUP BY entry_id HAVING COUNT(*)=2 AND SUM(l.money_account_id IS NOT NULL)=2
+                AND COUNT(p.import_hash)<2 AND COUNT(p.payee)>0",
+        )?;
+        let entries: Vec<i64> = st.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+        for id in entries {
+            let mut d = self.load_draft(id)?;
+            for l in d.lines.iter_mut().filter(|l| l.import_hash.is_none() && l.payee.is_some() && l.date.is_none()) {
+                l.origin = Some(ADDED.into());
+            }
+            self.save_entry(&d)?;
+        }
+        Ok(())
+    }
+
+    /// An older program can mark a newer file with its own number, and add its tables, when both
     /// open the file at the same moment. Whether it wrote in them.
     fn has_leftovers(&self) -> Result<bool> {
         for t in RENAMED.iter().map(|t| t.0).chain(["transactions"]) {
@@ -329,8 +389,7 @@ impl Db {
                 currency: currency.clone(),
                 cleared: r.cleared,
                 import_hash: r.import_hash.clone().filter(|_| here),
-                payee: None,
-                memo: None,
+                ..Default::default()
             }];
             match partner(r) {
                 Some(p) => {
@@ -348,6 +407,8 @@ impl Db {
                         import_hash: p.import_hash.clone(),
                         payee: Some(p.payee.clone()),
                         memo: Some(p.memo.clone()).filter(|m| *m != r.memo),
+                        date: None,
+                        origin: None,
                     });
                 }
                 None => {

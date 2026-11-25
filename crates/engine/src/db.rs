@@ -138,6 +138,8 @@ pub struct Transaction {
     pub category: String,
     pub cleared: bool,
     pub transfer_peer: Option<i64>,
+    /// A side of a transfer that was added and not seen on a statement yet.
+    pub added: bool,
     /// Saldo progressivo (solo quando si filtra per un conto).
     pub balance: Option<Cents>,
 }
@@ -291,8 +293,9 @@ pub struct Db {
 }
 
 /// Version of the data file format, kept in `PRAGMA user_version` (0 is CashCraft 0.1, 1 is 0.2.0 with
-/// the same tables, 2 the double-entry ledger: see `docs/ledger.md`).
-pub const SCHEMA_VERSION: i64 = 2;
+/// the same tables, 2 the double-entry ledger, 3 adds dates of single postings, 4 was never
+/// released, 5 tells the added sides of transfers: see `docs/ledger.md`).
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// Tables of formats 0 and 1 with their name in 2. A window of an older program that has the file open
 /// fails at once when it writes to one, instead of doing half of what it was asked.
@@ -350,7 +353,7 @@ pub fn default_db_path() -> PathBuf {
     crate::paths::data_dir().join("CashCraft").join("cashcraft.db")
 }
 
-fn no_transaction(id: i64) -> anyhow::Error {
+pub(crate) fn no_transaction(id: i64) -> anyhow::Error {
     anyhow!(trf("transaction {id} not found", &[("id", &id)]))
 }
 
@@ -420,7 +423,7 @@ impl Db {
                 old = old || self.has_table(t)?;
             }
             if old {
-                self.migrate()?;
+                self.migrate(version)?;
             } else {
                 self.conn.execute_batch(SCHEMA)?;
                 self.conn.execute_batch(LEDGER_SCHEMA)?;
@@ -751,8 +754,8 @@ impl Db {
             None => 0,
         };
         let mut sql = String::from(
-            "SELECT p.id, a.id, a.name, e.date, p.amount, COALESCE(p.payee, e.payee), COALESCE(p.memo, e.memo),
-                    ol.category_id, p.cleared, o.id, e.id, oa.id, oa.name, ol.system, ol.name
+            "SELECT p.id, a.id, a.name, COALESCE(p.date, e.date), p.amount, COALESCE(p.payee, e.payee), COALESCE(p.memo, e.memo),
+                    ol.category_id, p.cleared, o.id, e.id, oa.id, oa.name, ol.system, ol.name, p.origin
              FROM postings p JOIN entries e ON e.id=p.entry_id
              JOIN ledger_accounts l ON l.id=p.ledger_account_id JOIN accounts a ON a.id=l.money_account_id
              LEFT JOIN postings o ON o.entry_id=p.entry_id AND o.id<>p.id
@@ -766,7 +769,7 @@ impl Db {
             sql.push_str(" AND a.id=?");
             args.push(a.into());
         }
-        sql.push_str(" ORDER BY e.date ASC, p.id ASC");
+        sql.push_str(" ORDER BY COALESCE(p.date, e.date) ASC, p.id ASC");
         let mut st = self.conn.prepare(&sql)?;
         let rows = st.query_map(rusqlite::params_from_iter(args), |r| {
             let account_id: i64 = r.get(1)?;
@@ -805,6 +808,7 @@ impl Db {
                 },
                 cleared: r.get::<_, i64>(8)? != 0,
                 transfer_peer: peer.filter(|_| kind == TxKind::Transfer),
+                added: kind == TxKind::Transfer && r.get::<_, Option<String>>(15)?.as_deref() == Some(ledger::ADDED),
                 balance: None,
             })
         })?;
@@ -982,7 +986,7 @@ impl Db {
     }
 
     /// The two accounts of a transfer must have the same currency.
-    fn check_transfer(&self, from: i64, to: i64) -> Result<()> {
+    pub(crate) fn check_transfer(&self, from: i64, to: i64) -> Result<()> {
         let ((_, a), (_, b)) = (self.money_ledger(from)?, self.money_ledger(to)?);
         if a != b {
             bail!(trf(
@@ -1010,7 +1014,14 @@ impl Db {
         );
         let side = |account: i64, amount: Cents, payee: &str| -> Result<Line> {
             let (account, currency) = self.money_ledger(account)?;
-            Ok(Line { account, amount, currency, payee: Some(payee.into()), ..Default::default() })
+            Ok(Line {
+                account,
+                amount,
+                currency,
+                payee: Some(payee.into()),
+                origin: Some(ledger::ADDED.into()),
+                ..Default::default()
+            })
         };
         let (_, ids) = self.save_entry(&Draft {
             id: None,

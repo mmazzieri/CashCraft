@@ -12,9 +12,10 @@
 //! Le righe che non sono movimenti (saldi, totali, righe vuote) vengono saltate.
 //! Reimportare lo stesso file non crea doppioni.
 
-use crate::db::{Cents, Db, NewTx};
+use crate::db::{Cents, Db, NewTx, Transaction};
 use crate::i18n::{tr, trf};
 use crate::money::{parse_amount_with, parse_date};
+use crate::transfers::near;
 use crate::xls;
 use anyhow::{Context, Result, bail};
 use chrono::NaiveDate;
@@ -66,6 +67,25 @@ pub struct ImportResult {
     pub duplicates: usize,
     pub skipped: usize,
     pub categorized: usize,
+    /// Lines that took the place of the added side of a transfer.
+    pub adopted: Vec<Adopted>,
+    /// Lines that were added, and may be the side of a transfer that is there: the user chooses.
+    pub maybe_transfers: Vec<MaybeTransfer>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Adopted {
+    pub id: i64,
+    pub date: NaiveDate,
+    pub payee: String,
+    pub amount: Cents,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MaybeTransfer {
+    pub transaction: Transaction,
+    /// The far sides of the transfers it may belong to, for `turn_into_transfer`.
+    pub candidates: Vec<Transaction>,
 }
 
 /// Legge il file e lo converte in testo (UTF-8 o Windows-1252).
@@ -521,13 +541,36 @@ fn fnv(s: &str) -> u64 {
 /// Salva i movimenti nel conto, saltando quelli già importati in precedenza.
 pub fn import_rows(db: &Db, account_id: i64, rows: &[ParsedRow], skipped: usize) -> Result<ImportResult> {
     let mut res = ImportResult { read: rows.len(), skipped, ..Default::default() };
-    let mut seen: HashMap<String, usize> = HashMap::new();
     db.atomically(|| {
+        let (ledger, _) = db.money_ledger(account_id)?;
+        let mut known = db.conn.prepare("SELECT 1 FROM postings WHERE ledger_account_id=?1 AND import_hash=?2")?;
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        let mut fresh: Vec<(&ParsedRow, String)> = Vec::new();
         for row in rows {
             let key = format!("{}|{}|{}|{}", row.date, row.amount, row.payee.to_lowercase(), row.memo.to_lowercase());
             let n = seen.entry(key.clone()).or_default();
             *n += 1;
             let hash = format!("{:016x}", fnv(&format!("{key}|{n}")));
+            if known.exists(rusqlite::params![ledger, hash])? {
+                res.duplicates += 1;
+            } else {
+                fresh.push((row, hash));
+            }
+        }
+        let sides = db.added_sides(account_id)?;
+        let fits = |row: &ParsedRow, t: &Transaction| row.amount == t.amount && near(row.date, t.date);
+        let mut unsure = Vec::new();
+        for (row, hash) in &fresh {
+            let mine: Vec<&Transaction> = sides.iter().filter(|t| fits(row, t)).collect();
+            // Only when neither the line nor the side could be another one.
+            if let [side] = mine.as_slice()
+                && fresh.iter().filter(|(r, _)| fits(r, side)).count() == 1
+            {
+                db.adopt(side.id, row.date, &row.payee, &row.memo, hash)?;
+                let payee = row.payee.clone();
+                res.adopted.push(Adopted { id: side.id, date: row.date, payee, amount: row.amount });
+                continue;
+            }
             let id = db.add_transaction(&NewTx {
                 account_id,
                 date: row.date,
@@ -536,17 +579,23 @@ pub fn import_rows(db: &Db, account_id: i64, rows: &[ParsedRow], skipped: usize)
                 memo: row.memo.clone(),
                 category_id: None,
                 cleared: true,
-                import_hash: Some(hash),
+                import_hash: Some(hash.clone()),
             })?;
-            match id {
-                Some(id) => {
-                    res.added += 1;
-                    if db.category_of(id)?.is_some() {
-                        res.categorized += 1;
-                    }
-                }
-                None => res.duplicates += 1,
+            let Some(id) = id else {
+                res.duplicates += 1;
+                continue;
+            };
+            res.added += 1;
+            if db.category_of(id)?.is_some() {
+                res.categorized += 1;
             }
+            if !mine.is_empty() {
+                unsure.push((id, mine.iter().filter_map(|t| t.transfer_peer).collect::<Vec<_>>()));
+            }
+        }
+        for (id, peers) in unsure {
+            let candidates = peers.into_iter().map(|p| db.transaction(p)).collect::<Result<_>>()?;
+            res.maybe_transfers.push(MaybeTransfer { transaction: db.transaction(id)?, candidates });
         }
         Ok(())
     })?;
