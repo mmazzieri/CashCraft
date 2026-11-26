@@ -6,7 +6,7 @@ use crate::db::{Cents, Db, RENAMED, SCHEMA, SCHEMA_VERSION};
 use crate::i18n::{tr, trf};
 use crate::layouts::LAYOUT_SCHEMA;
 use crate::ledger::{ADDED, CARD_ROW, Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
-use crate::reconcile::RECONCILE_SCHEMA;
+use crate::reconcile::{POSTING_IDS, RECONCILE_SCHEMA};
 use crate::rules::RULE_SCHEMA;
 use anyhow::{Context, Result, bail};
 use rusqlite::backup::Backup;
@@ -136,7 +136,7 @@ impl Db {
         // Format 4 had the statements, without the marks.
         let sound_cards = marked && cards && !self.has_column("card_statements", "payment_joined")?;
         let ruled = sound_cards && self.has_table("transaction_rules")?;
-        let current = ruled && renamed && self.has_table("reconciliations")?;
+        let current = ruled && renamed && self.has_table("reconciliations")? && self.has_table("posting_ids")?;
         if current && !self.has_leftovers()? {
             return self.drop_leftovers();
         }
@@ -199,6 +199,7 @@ impl Db {
                 self.update_card_statements()?;
             }
             self.conn.execute_batch(LAYOUT_SCHEMA)?;
+            self.conn.execute_batch(POSTING_IDS)?;
             Ok(())
         })();
         if done.is_err()

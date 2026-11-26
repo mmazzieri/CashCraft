@@ -439,6 +439,8 @@ pub struct ImportState {
     pub allow_mismatch: bool,
     pub cards: CardPayments,
     pub loading: Option<mpsc::Receiver<Result<Table>>>,
+    /// A join that would change reconciled transactions, to be asked.
+    pub pending: Option<Box<(cashcraft_engine::reconcile::Reconciled, crate::reconcile::Unlock)>>,
 }
 
 /// Card statements, and what may pay those that are not paid.
@@ -451,6 +453,8 @@ pub struct CardPayments {
     /// The statement whose link is about to be undone.
     pub unlinking: Option<i64>,
     pub error: String,
+    /// A link or unlink that would change reconciled transactions, to be asked.
+    pub pending: Option<Box<(cashcraft_engine::reconcile::Reconciled, crate::reconcile::Unlock)>>,
 }
 
 impl CardPayments {
@@ -676,7 +680,9 @@ pub enum Dialog {
     /// A category with rules, its name and how many go.
     ConfirmDeleteCategory(i64, String, usize),
     /// A change to reconciled transactions, and how to make it once the user says yes.
-    ConfirmUnreconcile(Box<(cashcraft_engine::reconcile::Reconciled, crate::reconcile::Unlock)>),
+    /// The dialog to go back to afterwards, if any.
+    ConfirmUnreconcile(Box<(cashcraft_engine::reconcile::Reconciled, crate::reconcile::Unlock, Option<Dialog>)>),
+    ConfirmReconcile(crate::reconcile::Step),
 }
 
 pub struct Dash {

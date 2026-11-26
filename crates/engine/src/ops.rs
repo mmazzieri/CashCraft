@@ -200,7 +200,7 @@ fn transaction_json(db: &Db, id: i64) -> Result<Value> {
 }
 
 /// Operations that may change reconciled transactions: they take `unreconcile`.
-const UNRECONCILING: [&str; 7] = [
+const UNRECONCILING: [&str; 8] = [
     "update_transaction",
     "delete_transaction",
     "turn_into_transfer",
@@ -208,6 +208,7 @@ const UNRECONCILING: [&str; 7] = [
     "delete_entry",
     "link_card_payment",
     "unlink_card_payment",
+    "set_account_currency",
 ];
 const UNRECONCILE: &str = "The user confirmed changing reconciled transactions: their reconciliation no longer counts them and shows as broken. Only after a refusal that names them, and the user's yes.";
 const RECONCILIATION: &str = "Id of the reconciliation, from start_reconciliation or list_reconciliations.";
@@ -383,7 +384,7 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "start_reconciliation",
-            description: "Starts reconciling an account with a bank statement: the balance the bank states on a day against the cleared balance of the books (opening balance and cleared transactions up to that day). With path, the lines of a statement file (CSV, Excel, OFX, card PDF) are kept to be matched with the transactions, and the balance and date the file states are proposed (stated): show them to the user, who may give others. Without path, give balance and date, and clear transactions with clear_reconciliation_transactions. Changes no transaction; answers like preview_reconciliation.",
+            description: "Starts reconciling an account with a bank statement: the balance the bank states on a day against the balance of the books: the opening balance and the transactions of this reconciliation (matched with its lines or ticked) and of the finished ones before it. With path, the lines of a statement file (CSV, Excel, OFX, card PDF) are kept to be matched with the transactions, and the balance and date the file states are proposed (stated): show them to the user, who may give others. Without path, give balance and date: the cleared transactions up to that day are ticked, and clear_reconciliation_transactions ticks or unticks others. Changes no transaction; answers like preview_reconciliation.",
             schema: obj(
                 json!({"account": k(ACCOUNT), "date": s("Day of the statement (default: the one the file states, else its last line)."),
                 "balance": k("Balance on the statement, in the currency of the account, as the books have it: the debt of a card is negative (default: the one the file states)."),
@@ -395,7 +396,7 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "preview_reconciliation",
-            description: "A reconciliation: statement balance, cleared balance of the books and their difference; each line of the statement with the transaction it was matched with (matched), the one that came from it (exact), the one proposed by amount and date (proposed) and the others it may be; and the transactions of the books up to that day that no line is (books_only). Changes nothing. Proposals are never chosen by themselves: show them, and pass what the user confirms to match_reconciliation.",
+            description: "A reconciliation: statement balance, balance of the books (books_balance) and their difference; each line of the statement with the transaction it was matched with (matched), the one that came from it (exact), the one proposed by amount and date (proposed) and the others it may be; and the transactions of the books up to that day that no line is (books_only, ticked or not). Changes nothing. Proposals are never chosen by themselves: show them, and pass what the user confirms to match_reconciliation.",
             schema: obj(
                 json!({"id": n(RECONCILIATION), "limit": n("Lines and transactions shown at most (default 200).")}),
                 &["id"],
@@ -427,10 +428,10 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "clear_reconciliation_transactions",
-            description: "Marks transactions of the account up to the statement date as cleared (seen on the statement), or not with cleared false, as the user says.",
+            description: "Ticks transactions of the account up to the statement date (seen on the statement: they join the reconciliation, cleared), or unticks them with cleared false, as the user says. Lines of a statement are matched instead.",
             schema: obj(
                 json!({"id": n(RECONCILIATION), "transactions": rows("Transaction ids, such as \"41,42\"."),
-                "cleared": b("Cleared (default true).")}),
+                "cleared": b("Ticked (default true).")}),
                 &["id", "transactions"],
             ),
         },
@@ -446,7 +447,7 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_reconciliations",
-            description: "The reconciliations, the latest first, with their status: open, finished, broken (a transaction it checked was changed, or the cleared balance on its day is another: to be done again), redone or undone.",
+            description: "The reconciliations, the latest first, with their status: open, finished, broken (a transaction of it or of one before it was changed, or the opening balance or currency of the account: to be done again), redone or undone.",
             schema: obj(json!({"account": k(ACCOUNT)}), &[]),
         },
         ToolDef {
@@ -1050,11 +1051,9 @@ fn decision(a: &Value) -> Result<Decision> {
 /// A reconciliation, with its amounts in exact decimal text.
 fn reconciliation_value(r: &crate::reconcile::Reconciliation) -> Result<Value> {
     let mut v = serde_json::to_value(r)?;
-    for (k, c) in [
-        ("statement_balance", r.statement_balance),
-        ("cleared_balance", r.cleared_balance),
-        ("difference", r.difference),
-    ] {
+    for (k, c) in
+        [("statement_balance", r.statement_balance), ("books_balance", r.books_balance), ("difference", r.difference)]
+    {
         put(&mut v, k, json!(fmt_machine(c)));
     }
     put(&mut v, "status_text", json!(r.status.label()));
@@ -1073,7 +1072,7 @@ fn reconciliation_json(db: &Db, id: i64, a: &Value, message: Option<String>) -> 
     let p = db.preview_reconciliation(id)?;
     let limit = opt_i64(a, "limit").unwrap_or(200).clamp(1, 100_000) as usize;
     let lines: Vec<&crate::reconcile::LineView> = p.lines.iter().take(limit).collect();
-    let books: Vec<&db::Transaction> = p.books_only.iter().take(limit).collect();
+    let books: Vec<&crate::reconcile::BookLine> = p.books_only.iter().take(limit).collect();
     Ok(json!({"reconciliation": reconciliation_value(&p.reconciliation)?, "lines": lines, "lines_count": p.lines.len(),
               "books_only": books, "books_only_count": p.books_only.len(), "unmatched_lines": p.unmatched_lines,
               "exact_pending": p.exact_pending, "message": message}))
@@ -1136,7 +1135,7 @@ fn start_reconciliation(db: &Db, a: &Value, roots: Option<&Roots>) -> Result<Val
         }
         let (settings, _) = file_settings(db, &t, Some(acc.id), a)?;
         rows = importer::read_rows(&t, &settings).rows;
-        stated = stated_balance(&t, settings.invert, &rows);
+        stated = stated_balance(&t, &settings);
         source = Source::of(t.format());
     }
     let date = match (opt_date(a, "date")?, &stated) {
@@ -1150,18 +1149,10 @@ fn start_reconciliation(db: &Db, a: &Value, roots: Option<&Roots>) -> Result<Val
         (None, None) => return Err(missing("balance")),
     };
     let started = db.start_reconciliation(&Start { account: acc.id, date, balance, source, rows: &rows })?;
-    let mut message = tr("reconciliation started").to_string();
-    if started.later_lines > 0 {
-        let later = trn(
-            started.later_lines,
-            "{n} line after the statement date was left out",
-            "{n} lines after the statement date were left out",
-        );
-        message = format!("{message}; {later}");
-    }
-    let mut v = reconciliation_json(db, started.id, a, Some(message))?;
+    let mut v = reconciliation_json(db, started.id, a, Some(started.message()))?;
+    put(&mut v, "later_lines_left_out", json!(started.later_lines));
     let stated = match stated {
-        Some(s) => json!({"balance": fmt_machine(s.balance), "date": s.date, "label": s.label}),
+        Some(s) => json!({"balance": fmt_machine(s.balance), "date": s.date, "label": s.label, "notice": s.notice}),
         None => Value::Null,
     };
     put(&mut v, "stated", stated);
@@ -1242,7 +1233,11 @@ pub fn call(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
     if let Some(t) = tools().iter().find(|t| t.name == name) {
         check_types(&t.schema, a)?;
     }
-    let v = call_raw(db, name, a, roots)?;
+    // An agent is told what to do; the phone apps and the window ask the user themselves.
+    let v = call_raw(db, name, a, roots).map_err(|e| match crate::reconcile::reconciled_in(&e) {
+        Some(r) => anyhow!(trf("{error}; ask the user, then pass unreconcile: true", &[("error", r)])),
+        None => e,
+    })?;
     Ok(to_eur(v))
 }
 
@@ -1259,10 +1254,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
     if given_bool(a, "unreconcile")?.unwrap_or(false) {
         return db.unreconciling(|| call_op(db, name, a, roots));
     }
-    call_op(db, name, a, roots).map_err(|e| match crate::reconcile::reconciled_in(&e) {
-        Some(r) => anyhow!(trf("{error}; ask the user, then pass unreconcile: true", &[("error", r)])),
-        None => e,
-    })
+    call_op(db, name, a, roots)
 }
 
 fn call_op(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Value> {

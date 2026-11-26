@@ -634,7 +634,7 @@ fn a_run_is_undone_in_one_step() {
     assert!(e.contains("nothing was undone") && e.contains("shop"), "{e}");
     assert_eq!(dump(&db.conn), before);
 
-    // A category that went is not replaced by another with its number, nor a transaction by a new one.
+    // A category that went is not replaced by another with its number; a transaction never is.
     db.conn.execute("DELETE FROM rule_runs", []).unwrap();
     for t in db.transactions(&TxFilter::default()).unwrap() {
         db.delete_transaction(t.id).unwrap();
@@ -648,7 +648,8 @@ fn a_run_is_undone_in_one_step() {
     cat(&db, "Newcomer");
     db.delete_transaction(two).unwrap();
     let again = add(&db, a, "other", "", -5);
-    assert_eq!(again, two, "the number is used again");
+    // Since format 9 a posting never takes the number of one that went.
+    assert!(again > two, "the number is not used again");
     let e = db.undo_rules().unwrap_err().to_string();
     assert!(e.contains("category") && e.contains("changed since"), "{e}");
     assert_eq!(db.transaction(one).unwrap().category, "X");

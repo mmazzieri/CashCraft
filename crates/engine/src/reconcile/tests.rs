@@ -7,6 +7,7 @@ use crate::money::parse_date;
 use crate::ops;
 use crate::testing::Seeded;
 use serde_json::{Value, json};
+use std::collections::HashSet;
 
 const STATEMENT: &str =
     "Data;Descrizione;Importo\n02/01/2026;BAR;-1,20\n10/01/2026;STIPENDIO;1500,00\n20/01/2026;SUPERMERCATO;-80,30\n";
@@ -83,7 +84,8 @@ fn a_statement_fully_matched_closes_with_difference_zero() {
     let (db, a, r) = reconciled_bank();
     let all = db.transactions(&TxFilter { account_id: Some(a), ..Default::default() }).unwrap();
     assert!(all.iter().all(|t| t.reconciled && t.cleared));
-    assert_eq!(db.cleared_balance(a, day("2026-01-31")).unwrap(), db.reconciliation(r).unwrap().statement_balance);
+    let done = db.reconciliation(r).unwrap();
+    assert_eq!(done.books_balance, done.statement_balance);
     let v = ops::call(&db, "list_reconciliations", &json!({}), None).unwrap();
     assert_eq!(v["reconciliations"][0]["difference"], "0.00");
     assert_eq!(v["reconciliations"][0]["status"], "finished");
@@ -100,7 +102,10 @@ fn the_difference_is_shown_until_zero_and_finishing_is_refused_before() {
     let p = db.preview_reconciliation(r).unwrap();
     assert_eq!(p.reconciliation.difference, -50_120);
     // What comes after the statement is not there.
-    assert_eq!(p.books_only.iter().map(|t| t.id).collect::<Vec<_>>(), [bar, rent]);
+    assert_eq!(
+        p.books_only.iter().map(|b| (b.transaction.id, b.ticked)).collect::<Vec<_>>(),
+        [(bar, false), (rent, false)]
+    );
     assert!(db.finish_reconciliation(r).is_err());
     assert!(db.clear_for_reconciliation(r, &[later], true).is_err());
     db.clear_for_reconciliation(r, &[bar], true).unwrap();
@@ -148,14 +153,16 @@ fn editing_a_reconciled_transaction_asks_for_confirmation_and_unreconciles_it() 
     let t = db.transaction(bar).unwrap();
     assert!(!t.reconciled && t.amount == -130);
     let broken = db.reconciliation(r).unwrap();
-    assert_eq!((broken.status, broken.changed.as_slice(), broken.difference), (Status::Broken, [bar].as_slice(), 10));
+    // It is out of the set: the books lack it.
+    assert_eq!((broken.status, broken.changed.as_slice(), broken.difference), (Status::Broken, [bar].as_slice(), -120));
     // Back as it was, it stays out until it is reconciled again.
     edit(&db, bar, |e| e.amount = -120).unwrap();
     assert!(!db.transaction(bar).unwrap().reconciled);
     assert_eq!(status(&db, r), Status::Broken);
     // Done again on the same day.
     let again = start(&db, a, "2026-01-31", broken.statement_balance, &[]);
-    assert_eq!(db.preview_reconciliation(again).unwrap().books_only.iter().map(|t| t.id).collect::<Vec<_>>(), [bar]);
+    let ticked = db.preview_reconciliation(again).unwrap().books_only;
+    assert_eq!(ticked.iter().map(|b| (b.transaction.id, b.ticked)).collect::<Vec<_>>(), [(bar, true)]);
     assert_eq!(db.finish_reconciliation(again).unwrap().reconciled, 1);
     assert_eq!(status(&db, r), Status::Redone);
     assert!(db.transaction(bar).unwrap().reconciled);
@@ -212,8 +219,8 @@ fn lines_are_matched_exactly_first_then_by_amount_and_date_and_never_guessed() {
     // The line missing in the books is added; the other bar stays, not cleared, on the side of the books.
     let added = db.add_lines(r, &[3]).unwrap();
     let p = db.preview_reconciliation(r).unwrap();
-    assert_eq!(p.books_only.iter().map(|t| t.id).collect::<Vec<_>>(), [bar2]);
-    assert!(!p.books_only.iter().any(|t| t.cleared));
+    assert_eq!(p.books_only.iter().map(|b| b.transaction.id).collect::<Vec<_>>(), [bar2]);
+    assert!(!p.books_only.iter().any(|b| b.transaction.cleared || b.ticked));
     assert_eq!((p.unmatched_lines, p.reconciliation.difference), (0, 0));
     assert!(p.lines.last().unwrap().added);
     db.finish_reconciliation(r).unwrap();
@@ -341,7 +348,7 @@ fn a_split_and_a_card_are_reconciled_with_their_signs() {
         residual: Some(0),
         ..Default::default()
     });
-    let stated = stated_balance(&t, false, &[]).unwrap();
+    let stated = stated_balance(&t, &importer::Settings::detected(&t)).unwrap();
     assert_eq!((stated.balance, stated.date), (-6_010, Some(day("2026-01-31"))));
     let r = start(&db, card, "2026-01-31", stated.balance, &[]);
     assert_eq!(db.finish_reconciliation(r).unwrap().reconciled, 1);
@@ -354,7 +361,8 @@ fn a_split_and_a_card_are_reconciled_with_their_signs() {
         residual: Some(0),
         ..Default::default()
     });
-    let r2 = start(&db, card, "2026-02-28", stated_balance(&t, false, &[]).unwrap().balance, &[]);
+    let r2 =
+        start(&db, card, "2026-02-28", stated_balance(&t, &importer::Settings::detected(&t)).unwrap().balance, &[]);
     assert_eq!(db.reconciliation(r2).unwrap().difference, 0);
     db.finish_reconciliation(r2).unwrap();
     assert!(db.transaction(second).unwrap().reconciled && !db.transaction(pay).unwrap().reconciled);
@@ -408,21 +416,42 @@ fn an_ofx_statement_gives_its_balance_and_lines() {
     let _ = a;
 }
 
+/// The available balance of BPER is a proposal with a notice: it may count what is not booked yet. A booked one
+/// is preferred; the day is that the file says the balance is at, else the last movement, never the first date.
 #[test]
-fn bper_states_its_balance_in_the_heading() {
+fn the_balance_of_a_spreadsheet_is_a_proposal() {
     let t = importer::tests::load_bytes(&importer::tests::bper()).unwrap();
-    let stated = stated_balance(&t, false, &[]).unwrap();
-    assert_eq!((stated.balance, stated.label.as_str()), (100_000, "Saldo disponibile"));
+    let stated = stated_balance(&t, &importer::Settings::detected(&t)).unwrap();
+    assert_eq!(stated.label, "Saldo disponibile");
+    assert!(stated.notice.is_some());
+    // "Dati aggiornati al 01 dicembre 2025": not "Lunedì,01 dicembre 2025", which only looks like it.
     assert_eq!(stated.date, Some(day("2025-12-01")));
-    let csv = importer::analyze(
-        "Data;Descrizione;Importo\n02/01/2026;SALDO ZUCCHERO;-1,20\nSaldo contabile al 31/01/2026;;1.234,56\n",
-        "UTF-8",
-    )
-    .unwrap();
-    let r = importer::parse_rows(&csv, &csv.mapping, false).0;
-    let stated = stated_balance(&csv, true, &r).unwrap();
-    assert_eq!((stated.balance, stated.date), (-123_456, Some(day("2026-01-31"))));
-    assert!(stated_balance(&importer::analyze(STATEMENT, "UTF-8").unwrap(), false, &[]).is_none());
+    let csv = |text: &str| importer::analyze(text, "UTF-8").unwrap();
+    let both = csv(
+        "Saldo disponibile;;9.999,00\nData;Descrizione;Importo\n02/01/2026;SALDO ZUCCHERO;-1,20\nSaldo contabile al 31/01/2026;;1.234,56\n",
+    );
+    let mut settings = importer::Settings::detected(&both);
+    settings.invert = true;
+    let stated = stated_balance(&both, &settings).unwrap();
+    assert_eq!((stated.balance, stated.date, stated.notice), (-123_456, Some(day("2026-01-31")), None));
+    // Without a day of its own: the last movement, not the first date of the file.
+    let later = csv("Data;Descrizione;Importo\n02/01/2026;BAR;-1,20\n20/01/2026;SHOP;-2,00\nSaldo finale;;500,00\n");
+    let stated = stated_balance(&later, &importer::Settings::detected(&later)).unwrap();
+    assert_eq!((stated.balance, stated.date), (50_000, Some(day("2026-01-20"))));
+    let none = csv(STATEMENT);
+    assert!(stated_balance(&none, &importer::Settings::detected(&none)).is_none());
+}
+
+/// A movement whose text begins with "Saldo" is a movement, wherever it is, also after a row that was skipped.
+#[test]
+fn a_movement_is_never_read_as_the_balance() {
+    let csv = |text: &str| importer::analyze(text, "UTF-8").unwrap();
+    let t = csv("Data;Descrizione;Importo\n05/10/2025;BAR;-50,00\n;storno;\n20/10/2025;Saldo carta;-10,00\n");
+    assert!(stated_balance(&t, &importer::Settings::detected(&t)).is_none());
+    let t = csv(
+        "Data;Descrizione;Importo\n05/10/2025;BAR;-50,00\n;storno;\n20/10/2025;Saldo carta;-10,00\nSaldo finale;;940,00\n",
+    );
+    assert_eq!(stated_balance(&t, &importer::Settings::detected(&t)).map(|s| s.balance), Some(94_000));
 }
 
 /// What a program of format 8 that has the file open writes is not checked: the reconciliation shows it.
@@ -441,7 +470,9 @@ fn a_change_made_without_asking_shows_as_broken() {
     assert_sound(&db, "outside");
 }
 
-/// A finished reconciliation agrees with the books, and is broken once they no longer do, whatever happens.
+/// A finished reconciliation has the balance of its statement: the opening balance and the amounts of the
+/// transactions it took, counted here by the test itself. Whatever happens next, it is finished exactly while
+/// none of those was changed with the user's yes; transactions dated before and added later are not of it.
 #[test]
 fn a_finished_reconciliation_has_the_balance_of_the_statement() {
     for seed in 1..40_u64 {
@@ -454,23 +485,37 @@ fn a_finished_reconciliation_has_the_balance_of_the_statement() {
             let amount = rng.next(20_000) as Cents - 10_000;
             let id = match rng.next(4) {
                 0 => db.add_transfer(a, s, day(&date), amount.abs() + 1, "").unwrap().0,
-                _ => typed(&db, a, &date, amount, "x", rng.next(2) == 0),
+                _ => typed(&db, a, &date, amount, "x", false),
             };
-            if rng.next(3) == 0 {
-                db.set_cleared(id, true).unwrap();
-            }
-            ids.push(id);
+            ids.push((id, day(&date)));
         }
         let date = format!("2026-01-{:02}", rng.next(31) + 1);
-        let balance = db.cleared_balance(a, day(&date)).unwrap();
+        let end = day(&date);
+        // The transactions the user ticks, and the balance the statement has for them.
+        let mut taken: Vec<(i64, Cents)> = Vec::new();
+        for (id, d) in &ids {
+            if *d <= end && rng.next(2) == 0 {
+                taken.push((*id, db.transaction(*id).unwrap().amount));
+            }
+        }
+        let balance = 100_000 + taken.iter().map(|(_, c)| c).sum::<Cents>();
+        let all: Vec<i64> = taken.iter().map(|(id, _)| *id).collect();
         let r = start(&db, a, &date, balance + 1, &[]);
+        if !all.is_empty() {
+            db.clear_for_reconciliation(r, &all, true).unwrap();
+        }
         assert!(db.finish_reconciliation(r).is_err(), "{seed}");
         db.undo_reconciliation(r).unwrap();
         let r = start(&db, a, &date, balance, &[]);
+        if !all.is_empty() {
+            db.clear_for_reconciliation(r, &all, true).unwrap();
+        }
         let done = db.finish_reconciliation(r).unwrap();
-        assert_eq!((done.cleared_balance, done.difference, done.status), (balance, 0, Status::Finished), "{seed}");
+        let expected = (balance, 0, Status::Finished, all.len());
+        assert_eq!((done.books_balance, done.difference, done.status, done.reconciled), expected, "{seed}");
+        let mut released: HashSet<i64> = HashSet::new();
         for _ in 0..6 {
-            let id = ids[rng.next(ids.len())];
+            let (id, _) = ids[rng.next(ids.len())];
             let Ok(t) = db.transaction(id) else { continue };
             let attempt = match rng.next(5) {
                 0 => edit(&db, id, |e| e.amount += 1),
@@ -479,28 +524,23 @@ fn a_finished_reconciliation_has_the_balance_of_the_statement() {
                 3 => db.delete_transaction(id),
                 _ => Ok(()),
             };
-            match attempt {
-                Err(e) => {
-                    assert!(t.reconciled, "{seed}: {e:#}");
-                    assert!(reconciled_in(&e).is_some(), "{seed}");
-                }
-                Ok(()) => {
-                    let r = db.reconciliation(r).unwrap();
-                    assert_eq!(r.status == Status::Finished, r.difference == 0 && r.changed.is_empty(), "{seed}");
+            if let Err(e) = attempt {
+                assert!(all.contains(&id) && !released.contains(&id), "{seed}: {e:#}");
+                assert!(reconciled_in(&e).is_some(), "{seed}");
+                if rng.next(2) == 0 {
+                    // Asked and confirmed.
+                    db.unreconciling(|| edit(&db, id, |e| e.amount -= 2)).unwrap();
+                    released.insert(id);
                 }
             }
+            // Transactions dated before, typed, cleared or imported later, are not of it.
             if rng.next(3) == 0 {
-                // Asked and confirmed.
-                let _ = db.unreconciling(|| edit(&db, id, |e| e.amount -= 2));
-            }
-            // A cleared transaction of before, typed now: the books no longer agree.
-            if rng.next(4) == 0 {
                 typed(&db, a, "2026-01-01", 5, "late", true);
             }
             let now = db.reconciliation(r).unwrap();
-            let agrees = db.cleared_balance(a, day(&date)).unwrap() == balance;
-            assert_eq!(now.status == Status::Finished, agrees && now.changed.is_empty(), "{seed}");
-            assert_eq!(now.difference == 0, agrees, "{seed}");
+            let kept: Cents = taken.iter().filter(|(id, _)| !released.contains(id)).map(|(_, c)| c).sum();
+            assert_eq!(now.books_balance, 100_000 + kept, "{seed}");
+            assert_eq!(now.status == Status::Finished, released.is_empty(), "{seed}");
         }
         assert_sound(&db, "random");
     }
@@ -606,4 +646,172 @@ fn deleting_the_other_account_of_a_transfer_leaves_the_side_reconciled() {
     assert!(t.date == before && t.reconciled);
     assert_eq!(status(&db, r), Status::Finished);
     assert_sound(&db, "deleted");
+}
+
+/// An id that a posting had is never given to another: a reconciliation that remembers it finds that posting or none.
+#[test]
+fn the_id_of_a_posting_is_never_given_again() {
+    let (db, a) = bank();
+    let first = typed(&db, a, "2026-01-02", -120, "Bar", true);
+    db.delete_transaction(first).unwrap();
+    let second = typed(&db, a, "2026-01-02", -120, "Bar", true);
+    assert!(second > first, "{second} {first}");
+    let mut ids: Vec<i64> =
+        db.entry(db.transaction(second).unwrap().entry_id).unwrap().postings.iter().map(|p| p.id).collect();
+    ids.sort_unstable();
+    assert!(ids.iter().all(|id| *id > first + 1), "{ids:?}");
+}
+
+/// A line whose transaction goes is a line to match again: added again, or its match undone.
+#[test]
+fn a_line_whose_transaction_goes_is_unmatched_again() {
+    let (db, a) = bank();
+    let bar = typed(&db, a, "2026-01-02", -120, "Bar", false);
+    let lines = rows(STATEMENT);
+    let r = start(&db, a, "2026-01-31", 100_000 - 120 + 150_000 - 8030, &lines);
+    db.match_lines(r, &[(1, bar)]).unwrap();
+    let added = db.add_lines(r, &[2, 3]).unwrap();
+    db.delete_transaction(bar).unwrap();
+    db.delete_transaction(added[1]).unwrap();
+    let p = db.preview_reconciliation(r).unwrap();
+    assert!(p.lines.iter().map(|l| l.matched.is_some()).eq([false, true, false]));
+    assert!(!p.lines[2].added && p.unmatched_lines == 2);
+    assert!(db.finish_reconciliation(r).is_err());
+    db.unmatch_lines(r, &[1]).unwrap();
+    db.add_lines(r, &[1, 3]).unwrap();
+    assert_eq!(db.finish_reconciliation(r).unwrap().reconciled, 3);
+    assert_sound(&db, "gone");
+}
+
+/// Undoing a match leaves alone a transaction that is no longer the one matched.
+#[test]
+fn undoing_a_match_touches_only_the_transaction_it_matched() {
+    let (db, a) = bank();
+    let bar = typed(&db, a, "2026-01-02", -120, "Bar", false);
+    let r = start(&db, a, "2026-01-31", 0, &rows(STATEMENT));
+    db.match_lines(r, &[(1, bar)]).unwrap();
+    let keys = db.transaction(bar).unwrap().keys;
+    edit(&db, bar, |e| e.date = day("2026-01-03")).unwrap();
+    db.unmatch_lines(r, &[1]).unwrap();
+    let t = db.transaction(bar).unwrap();
+    assert!(t.cleared && t.keys == keys);
+}
+
+/// Finishing checks each match again: a transaction changed since has not the amount of its line any more.
+#[test]
+fn finishing_checks_each_match_again() {
+    let (db, a) = bank();
+    let lines = rows("Data;Descrizione;Importo\n02/01/2026;BAR;-1,20\n");
+    let bar = typed(&db, a, "2026-01-02", -120, "Bar", false);
+    let tip = typed(&db, a, "2026-01-02", 10, "Tip", false);
+    let r = start(&db, a, "2026-01-31", 100_000 - 120, &lines);
+    db.match_lines(r, &[(1, bar)]).unwrap();
+    edit(&db, bar, |e| e.amount = -130).unwrap();
+    db.clear_for_reconciliation(r, &[tip], true).unwrap();
+    assert_eq!(db.reconciliation(r).unwrap().difference, 0);
+    let e = db.finish_reconciliation(r).unwrap_err();
+    assert!(format!("{e:#}").contains("line 1"), "{e:#}");
+}
+
+/// An added side of a transfer ticked without a statement stays one: the bank's line imported later takes its
+/// place, and the date the reconciliation checked stays.
+#[test]
+fn an_added_side_reconciled_without_lines_is_taken_by_the_import() {
+    let (db, a) = bank();
+    let s = db.add_account("Savings", AccountKind::Savings, "EUR", 0, "").unwrap();
+    let (_, side) = db.add_transfer(a, s, day("2026-01-10"), 20_000, "").unwrap();
+    db.set_cleared(side, true).unwrap();
+    let r = start(&db, s, "2026-01-31", 20_000, &[]);
+    db.finish_reconciliation(r).unwrap();
+    assert!(db.transaction(side).unwrap().added);
+    let done =
+        importer::import_rows(&db, s, &rows("Data;Descrizione;Importo\n13/01/2026;GIRO DA BANK;200,00\n"), 0).unwrap();
+    assert_eq!((done.added, done.adopted.len()), (0, 1));
+    let t = db.transaction(side).unwrap();
+    assert!(t.reconciled && !t.added && t.date == day("2026-01-10"));
+    assert_eq!(status(&db, r), Status::Finished);
+    assert_sound(&db, "adopted");
+}
+
+/// A cheque written in October and cashed in November belongs to November; what is dated in October and comes
+/// later leaves October as it was.
+#[test]
+fn a_transaction_belongs_to_the_reconciliation_that_takes_it() {
+    let (db, a) = bank();
+    import(&db, a, "Data;Descrizione;Importo\n05/10/2025;BAR;-50,00\n");
+    let oct = rows("Data;Descrizione;Importo\n05/10/2025;BAR;-50,00\n");
+    let october = start(&db, a, "2025-10-31", 95_000, &oct);
+    let p = db.preview_reconciliation(october).unwrap();
+    db.match_lines(october, &exact_pairs(&p)).unwrap();
+    db.finish_reconciliation(october).unwrap();
+    let cheque = typed(&db, a, "2025-10-28", -3_000, "Cheque 123", false);
+    typed(&db, a, "2025-10-15", -700, "Fee typed late", true);
+    import(&db, a, "Data;Descrizione;Importo\n20/10/2025;LATE LINE;-1,00\n");
+    assert_eq!(status(&db, october), Status::Finished);
+    let nov = rows("Data;Descrizione;Importo\n02/11/2025;PAGAMENTO ASSEGNO N.123;-30,00\n");
+    let november = start(&db, a, "2025-11-30", 92_000, &nov);
+    let p = db.preview_reconciliation(november).unwrap();
+    assert_eq!(p.lines[0].proposed.as_ref().map(|t| t.id), Some(cheque));
+    db.match_lines(november, &[(1, cheque)]).unwrap();
+    assert_eq!(db.finish_reconciliation(november).unwrap().books_balance, 92_000);
+    assert_eq!((status(&db, october), status(&db, november)), (Status::Finished, Status::Finished));
+    assert_eq!(db.reconciliation(october).unwrap().books_balance, 95_000);
+}
+
+/// The opening balance and the currency of a reconciled account are asked about too.
+#[test]
+fn the_opening_balance_and_the_currency_of_a_reconciled_account_ask_too() {
+    let (db, a, r) = reconciled_bank();
+    let before = dump(&db.conn);
+    let e = db.update_account(a, "Bank", AccountKind::Bank, 90_000, "", false).unwrap_err();
+    assert!(reconciled_in(&e).is_some_and(|l| l.transactions.is_empty() && l.reconciliations == [r]));
+    assert!(reconciled_in(&db.set_account_currency(a, "USD").unwrap_err()).is_some());
+    assert!(ops::call(&db, "set_account_currency", &json!({"account": "Bank", "currency": "USD"}), None).is_err());
+    assert_eq!(dump(&db.conn), before);
+    // The rest of the account changes freely.
+    db.update_account(a, "Main", AccountKind::Bank, 100_000, "IT00", false).unwrap();
+    assert_eq!(status(&db, r), Status::Finished);
+    db.unreconciling(|| db.update_account(a, "Main", AccountKind::Bank, 90_000, "", false)).unwrap();
+    assert_eq!(status(&db, r), Status::Broken);
+    db.unreconciling(|| db.update_account(a, "Main", AccountKind::Bank, 100_000, "", false)).unwrap();
+    ops::call(&db, "set_account_currency", &json!({"account": "Main", "currency": "USD", "unreconcile": true}), None)
+        .unwrap();
+    assert_eq!(status(&db, r), Status::Broken);
+}
+
+/// Discarding a reconciliation puts back the cleared marks its ticks set.
+#[test]
+fn discarding_puts_back_the_ticks() {
+    let (db, a) = bank();
+    let bar = typed(&db, a, "2026-01-02", -120, "Bar", false);
+    let fee = typed(&db, a, "2026-01-03", -50, "Fee", true);
+    let before = dump(&db.conn);
+    let r = start(&db, a, "2026-01-31", 0, &[]);
+    db.clear_for_reconciliation(r, &[bar], true).unwrap();
+    assert!(db.transaction(bar).unwrap().cleared);
+    db.clear_for_reconciliation(r, &[fee], false).unwrap();
+    db.clear_for_reconciliation(r, &[fee], true).unwrap();
+    db.undo_reconciliation(r).unwrap();
+    assert_eq!(dump(&db.conn), before);
+}
+
+/// Every key a match gives, the marks of the file of an older import too, goes when it is undone.
+#[test]
+fn undoing_a_match_takes_back_every_key_it_gave() {
+    let (db, a) = bank();
+    let tx = NewTx {
+        account_id: a,
+        date: day("2026-01-02"),
+        amount: -120,
+        payee: "Bar old".into(),
+        import_hash: Some("old".into()),
+        ..Default::default()
+    };
+    let bar = db.add_transaction(&tx).unwrap().unwrap();
+    let before = dump(&db.conn);
+    let r = start(&db, a, "2026-01-31", 0, &rows(STATEMENT));
+    db.match_lines(r, &[(1, bar)]).unwrap();
+    assert!(db.transaction(bar).unwrap().keys.contains("src:"));
+    db.undo_reconciliation(r).unwrap();
+    assert_eq!(dump(&db.conn), before);
 }

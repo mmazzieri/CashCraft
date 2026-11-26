@@ -44,6 +44,20 @@ pub enum Unlock {
     Separate(i64, bool),
     DeleteEntry(i64),
     Turn(i64, i64, OtherSide),
+    /// A line imported and the other side of a transfer, in the account of that.
+    Join(i64, i64, i64),
+    Link(i64, i64, Option<i64>),
+    Unlink(i64),
+    /// The opening balance or the currency of an account.
+    Account(Box<crate::gui::AccountForm>),
+}
+
+/// A step of a reconciliation that the user confirms first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Finish(i64),
+    Discard(i64),
+    Undo(i64),
 }
 
 /// What a row of the screen does with Enter or Space.
@@ -206,6 +220,22 @@ impl App {
                     ))
                     .color(pal().muted),
                 );
+                if let Some(n) = &s.notice {
+                    ui.label(RichText::new(n).color(pal().amber));
+                }
+            }
+            if let Some(date) = parse_date(&st.date) {
+                let later = st.rows.iter().filter(|r| r.date > date).count();
+                if later > 0 {
+                    ui.label(
+                        RichText::new(trn(
+                            later,
+                            "{n} line after the statement date will be left out.",
+                            "{n} lines after the statement date will be left out.",
+                        ))
+                        .color(pal().amber),
+                    );
+                }
             }
             if st.rows.is_empty() {
                 ui.label(
@@ -243,12 +273,12 @@ impl App {
         })();
         let done = parsed.and_then(|s| self.db.start_reconciliation(&s));
         match done {
-            Ok(_) => {
+            Ok(started) => {
                 st.error.clear();
                 st.rows.clear();
                 st.stated = None;
                 st.source = None;
-                Some(Ok(tr("Reconciliation started").into()))
+                Some(Ok(started.message()))
             }
             Err(e) => {
                 st.error = format!("{e:#}");
@@ -270,7 +300,7 @@ impl App {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 for (label, value) in
-                    [(tr("Statement balance"), r.statement_balance), (tr("Cleared in the books"), r.cleared_balance)]
+                    [(tr("Statement balance"), r.statement_balance), (tr("Balance of the books"), r.books_balance)]
                 {
                     ui.vertical(|ui| {
                         small_caps(ui, label);
@@ -398,26 +428,25 @@ impl App {
             };
             section_title(ui, title);
             ui.label(
-                RichText::new(tr(
-                    "Tick those the statement shows: the cleared ones count in the balance of the books.",
-                ))
-                .color(pal().muted)
-                .size(12.5),
+                RichText::new(tr("Tick those the statement shows: the ticked ones count in the balance of the books."))
+                    .color(pal().muted)
+                    .size(12.5),
             );
             if p.books_only.is_empty() {
                 ui.label(RichText::new(tr("None.")).color(pal().muted));
                 return;
             }
             egui::Grid::new("reconcile_books").striped(true).num_columns(4).spacing([14.0, 6.0]).show(ui, |ui| {
-                for (i, t) in p.books_only.iter().enumerate() {
+                for (i, b) in p.books_only.iter().enumerate() {
+                    let t = &b.transaction;
                     let here = st.cursor == p.lines.len() + i;
-                    let mut on = t.cleared;
+                    let mut on = b.ticked;
                     let label = format!("{}{}", if here { "▶ " } else { "" }, fmt_date(t.date));
                     if ui.checkbox(&mut on, RichText::new(label)).changed() {
                         act = Some(Act::Clear(t.id, on));
                     }
                     if here && keys.0 {
-                        act = Some(Act::Clear(t.id, !t.cleared));
+                        act = Some(Act::Clear(t.id, !b.ticked));
                     }
                     ui.label(cut(&t.payee, 40));
                     ui.label(RichText::new(&t.category).color(pal().muted));
@@ -427,11 +456,11 @@ impl App {
             });
         });
         if discard {
-            Some(self.db.undo_reconciliation(id))
+            self.dialog = Some(Dialog::ConfirmReconcile(Step::Discard(id)));
+            None
         } else if finish && r.difference == 0 && p.unmatched_lines == 0 {
-            Some(self.db.finish_reconciliation(id).map(|f| {
-                trn(f.reconciled, "Reconciled: {n} transaction is locked", "Reconciled: {n} transactions are locked")
-            }))
+            self.dialog = Some(Dialog::ConfirmReconcile(Step::Finish(id)));
+            None
         } else if exact {
             let pairs: Vec<(i64, i64)> =
                 p.lines.iter().filter_map(|l| l.exact.as_ref().map(|t| (l.line, t.id))).collect();
@@ -489,11 +518,15 @@ impl App {
                 }
             });
         });
-        undo.map(|id| self.db.undo_reconciliation(id))
+        if let Some(id) = undo {
+            self.dialog = Some(Dialog::ConfirmReconcile(Step::Undo(id)));
+        }
+        None
     }
 
     /// Runs again, after the user's yes, a change that touches reconciled transactions.
     pub(crate) fn run_unlock(&self, u: &Unlock) -> Result<String> {
+        let account = |f: &crate::gui::AccountForm| self.save_account(f).map(|(m, _)| m);
         let db = &self.db;
         match u {
             Unlock::Save(f) => db.unreconciling(|| self.save_tx(f)),
@@ -505,6 +538,16 @@ impl App {
                 db.unreconciling(|| db.separate_transfer(*id, *keep)).map(|_| tr("Transfer separated").into())
             }
             Unlock::DeleteEntry(id) => db.unreconciling(|| db.delete_entry(*id)).map(|_| tr("Entry deleted").into()),
+            Unlock::Join(id, account, other) => db
+                .unreconciling(|| db.turn_into_transfer(*id, *account, OtherSide::Join(*other)))
+                .map(|_| tr("The two transactions are one transfer now").into()),
+            Unlock::Link(statement, t, join) => db
+                .unreconciling(|| db.link_card_payment(*statement, *t, *join))
+                .map(|_| tr("The bank's line now pays the card statement").into()),
+            Unlock::Unlink(statement) => {
+                db.unreconciling(|| db.unlink_card_payment(*statement)).map(|_| tr("Card payment unlinked").into())
+            }
+            Unlock::Account(f) => db.unreconciling(|| account(f)),
             Unlock::Turn(id, account, other) => db
                 .unreconciling(|| db.turn_into_transfer(*id, *account, *other))
                 .map(|_| tr("Transfer recorded").into()),
@@ -521,7 +564,7 @@ impl App {
         match r {
             Err(e) => match cashcraft_engine::reconcile::reconciled_in(&e) {
                 Some(locked) => {
-                    self.dialog = Some(Dialog::ConfirmUnreconcile(Box::new((locked.clone(), retry()))));
+                    self.dialog = Some(Dialog::ConfirmUnreconcile(Box::new((locked.clone(), retry(), None))));
                     None
                 }
                 None => Some(Err(e)),
@@ -534,18 +577,22 @@ impl App {
     pub(crate) fn unlock_dialog(
         &mut self,
         ui: &mut Ui,
-        asked: &(Reconciled, Unlock),
+        asked: &(Reconciled, Unlock, Option<Dialog>),
         message: &mut Option<Result<String>>,
     ) -> bool {
-        let (locked, retry) = asked;
+        let (locked, retry, _) = asked;
         ui.heading(tr("Change reconciled transactions?"));
-        let ids = locked.transactions.iter().map(i64::to_string).collect::<Vec<_>>().join(", ");
-        ui.label(trn(
-            locked.transactions.len(),
-            "This changes a transaction that was checked against a bank statement:",
-            "This changes transactions that were checked against a bank statement:",
-        ));
-        ui.label(RichText::new(ids).strong());
+        if locked.transactions.is_empty() {
+            ui.label(tr("This changes the opening balance or the currency of an account that was reconciled:"));
+        } else {
+            let ids = locked.transactions.iter().map(i64::to_string).collect::<Vec<_>>().join(", ");
+            ui.label(trn(
+                locked.transactions.len(),
+                "This changes a transaction that was checked against a bank statement:",
+                "This changes transactions that were checked against a bank statement:",
+            ));
+            ui.label(RichText::new(ids).strong());
+        }
         for id in &locked.reconciliations {
             if let Ok(r) = self.db.reconciliation(*id) {
                 ui.label(format!("· {} · {}", r.account, fmt_date(r.statement_date)));
@@ -566,6 +613,50 @@ impl App {
                 .fill(pal().red_fill);
             if ui.add(b).clicked() {
                 *message = Some(self.run_unlock(retry));
+                keep = false;
+            }
+            if ui.button(tr("Cancel")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                keep = false;
+            }
+        });
+        keep
+    }
+
+    /// The question before finishing, discarding or undoing a reconciliation; whether the dialog stays.
+    pub(crate) fn step_dialog(&mut self, ui: &mut Ui, step: Step, message: &mut Option<Result<String>>) -> bool {
+        let (title, text, button) = match step {
+            Step::Finish(_) => (
+                tr("Finish the reconciliation?"),
+                tr("Its transactions are locked: changing their amount, date or account will ask first."),
+                tr("✔ Finish"),
+            ),
+            Step::Discard(_) => (
+                tr("Discard the reconciliation?"),
+                tr("Its matches and ticks are undone; the transactions it added stay."),
+                tr("Discard"),
+            ),
+            Step::Undo(_) => (
+                tr("Undo the reconciliation?"),
+                tr("Its transactions are no longer reconciled; they stay cleared."),
+                tr("Undo it"),
+            ),
+        };
+        ui.heading(title);
+        ui.label(text);
+        ui.add_space(8.0);
+        let mut keep = true;
+        ui.horizontal(|ui| {
+            if primary_button(ui, button).clicked() {
+                *message = Some(match step {
+                    Step::Finish(id) => self.db.finish_reconciliation(id).map(|f| {
+                        trn(
+                            f.reconciled,
+                            "Reconciled: {n} transaction is locked",
+                            "Reconciled: {n} transactions are locked",
+                        )
+                    }),
+                    Step::Discard(id) | Step::Undo(id) => self.db.undo_reconciliation(id),
+                });
                 keep = false;
             }
             if ui.button(tr("Cancel")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {

@@ -65,8 +65,9 @@ it, `list_card_statements` shows them all. See [cards.md](cards.md).
 user confirms: show the balance a file states (`stated`) before relying on it, and the proposed matches before
 passing them; exact ones may go together if the user says so, proposed ones one by one, with the ids of the preview.
 Ask before finishing or undoing. `update_transaction`, `delete_transaction`, `turn_into_transfer`, `separate_transfer`,
-`delete_entry`, `link_card_payment` and `unlink_card_payment` are refused when they would change the amount, date or
-account of a reconciled transaction, unclear or delete it, and the error names it: ask the user, then pass
+`delete_entry`, `link_card_payment`, `unlink_card_payment` and `set_account_currency` are refused when they would
+change the amount, date or account of a reconciled transaction, unclear or delete it, or the currency of a
+reconciled account, and the error names it: ask the user, then pass
 `unreconcile: true`; its reconciliation shows as broken until it is done again.
 
 ## Rules and tags

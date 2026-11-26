@@ -490,7 +490,11 @@ impl Db {
                         id
                     }
                     wanted => {
-                        let wanted = wanted.map_or_else(|| self.new_id("journal_postings"), |id| Ok(Some(id)))?;
+                        // Never the id of a posting that was there before.
+                        let wanted = match wanted {
+                            Some(id) => id,
+                            None => self.next_posting_id()?,
+                        };
                         self.conn
                             .prepare_cached(
                                 "INSERT INTO journal_postings(id,entry_id,ledger_account_id,amount,currency,cleared,
@@ -743,6 +747,14 @@ impl Db {
             .conn
             .query_row("SELECT id FROM entries WHERE opening_account_id=?1", [account], |r| r.get(0))
             .optional()?;
+        let (mine, _) = self.money_ledger(account)?;
+        let before = match old {
+            Some(id) => self.load_draft(id)?.lines.iter().find(|l| l.account == mine).map_or(0, |l| l.amount),
+            None => 0,
+        };
+        if before != opening {
+            self.guard_account(account)?;
+        }
         if opening == 0 {
             if let Some(id) = old {
                 self.remove_entry(id)?;
@@ -1007,6 +1019,7 @@ impl Db {
             if old == currency {
                 return Ok(());
             }
+            self.guard_account(account)?;
             self.conn.execute("UPDATE accounts SET currency=?2 WHERE id=?1", params![account, currency])?;
             self.conn.execute("UPDATE ledger_accounts SET currency=?2 WHERE id=?1", params![ledger, currency])?;
             for entry in self.entries_on(ledger)? {

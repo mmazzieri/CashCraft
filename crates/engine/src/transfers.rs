@@ -259,10 +259,7 @@ impl Db {
             )?;
             let spare = self.system_ledger(UNCATEGORIZED)?;
             // Ids above every other: that of the side that leaves must not be taken.
-            let last = match self.new_id("journal_postings")? {
-                Some(id) => id,
-                None => self.conn.query_row("SELECT MAX(id) FROM journal_postings", [], |r| r.get(0))?,
-            };
+            let last = self.next_posting_id()?.checked_sub(1).ok_or_else(too_big)?;
             let next = |n: i64| last.checked_add(n).ok_or_else(too_big);
             let alone = |l: &Line, entry: Option<i64>, counter: i64| -> Draft {
                 Draft {

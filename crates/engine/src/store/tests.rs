@@ -761,9 +761,8 @@ fn every_new_row_of_a_shared_file_has_an_id_of_its_own() {
     call("import_csv", serde_json::json!({"path": csv, "account": "Bank"}));
     db.record_card_statement(db.find_account("Card").unwrap().id, crate::db::today(), crate::db::today(), 5, "k")
         .unwrap();
-    let bank = db.find_account("Bank").unwrap().id;
-    let end = crate::money::parse_date("2026-01-31").unwrap();
-    let balance = crate::money::fmt_machine(db.cleared_balance(bank, end).unwrap());
+    // The opening balance and the two lines of the file.
+    let balance = crate::money::fmt_machine(1_000 - 120 - 130);
     let r = call(
         "start_reconciliation",
         serde_json::json!({"account": "Bank", "path": csv, "date": "2026-01-31", "balance": balance}),

@@ -166,13 +166,18 @@ fn run(request: Request) -> Result<Value> {
 pub fn call(input: &str) -> String {
     let answer = catch_unwind(AssertUnwindSafe(|| {
         let request: Request =
-            serde_json::from_str(input).map_err(|e| format!("the request could not be read: {e}"))?;
-        run(request).map_err(|e| format!("{e:#}"))
+            serde_json::from_str(input).map_err(|e| (format!("the request could not be read: {e}"), None))?;
+        run(request).map_err(|e| {
+            // A change to reconciled transactions: the app asks the user, then calls again with `unreconcile`.
+            let reconciled = cashcraft_engine::reconcile::reconciled_in(&e).map(|r| r.transactions.clone());
+            (format!("{e:#}"), reconciled)
+        })
     }))
-    .unwrap_or_else(|_| Err("CashCraft's engine stopped on an internal error".to_owned()));
+    .unwrap_or_else(|_| Err(("CashCraft's engine stopped on an internal error".to_owned(), None)));
     let value = match answer {
         Ok(v) => json!({ "ok": v }),
-        Err(e) => json!({ "error": e }),
+        Err((e, None)) => json!({ "error": e }),
+        Err((e, Some(ids))) => json!({ "error": e, "reconciled": ids }),
     };
     serde_json::to_string(&value).unwrap_or_else(|_| "{\"error\":\"the answer could not be written\"}".to_owned())
 }

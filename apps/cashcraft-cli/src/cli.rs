@@ -217,7 +217,13 @@ pub enum AccountsCmd {
         currency: String,
     },
     /// Change the currency of an account, amounts unchanged
-    Currency { account: String, currency: String },
+    Currency {
+        account: String,
+        currency: String,
+        /// Even if it changes reconciled transactions: their reconciliation no longer counts them
+        #[arg(long)]
+        unreconcile: bool,
+    },
     /// Delete an account and its transactions
     Delete { account: String },
 }
@@ -309,6 +315,9 @@ pub enum TxCmd {
         /// Add the other side even if some transactions match
         #[arg(long)]
         no_match: bool,
+        /// Even if it changes reconciled transactions: their reconciliation no longer counts them
+        #[arg(long)]
+        unreconcile: bool,
     },
     /// List what may be the other side of a transaction in another account
     Matches { id: i64, account: String },
@@ -318,6 +327,9 @@ pub enum TxCmd {
         /// Remove the other side
         #[arg(long)]
         drop_other: bool,
+        /// Even if it changes reconciled transactions: their reconciliation no longer counts them
+        #[arg(long)]
+        unreconcile: bool,
     },
 }
 
@@ -356,11 +368,11 @@ pub enum ReconcileCmd {
     Unmatch { id: i64, lines: String },
     /// Add lines missing in the books
     Add { id: i64, lines: String },
-    /// Mark transactions as cleared, or not
+    /// Tick transactions the statement shows: they join the reconciliation, cleared; or untick them
     Clear {
         id: i64,
         transactions: String,
-        /// Not cleared
+        /// Untick them
         #[arg(long)]
         not: bool,
     },
@@ -388,9 +400,17 @@ pub enum CardsCmd {
         /// The card's own line of the payment, if it is there (default: its side is added)
         #[arg(long)]
         join: Option<i64>,
+        /// Even if it changes reconciled transactions: their reconciliation no longer counts them
+        #[arg(long)]
+        unreconcile: bool,
     },
     /// Undo `link`
-    Unlink { statement: i64 },
+    Unlink {
+        statement: i64,
+        /// Even if it changes reconciled transactions: their reconciliation no longer counts them
+        #[arg(long)]
+        unreconcile: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -673,7 +693,12 @@ pub enum LedgerCmd {
         offset: usize,
     },
     /// Delete an entry, every side of it
-    Delete { id: i64 },
+    Delete {
+        id: i64,
+        /// Even if it changes reconciled transactions: their reconciliation no longer counts them
+        #[arg(long)]
+        unreconcile: bool,
+    },
     /// Trial balance, up to a date
     #[command(visible_alias = "bilancio")]
     TrialBalance {
@@ -779,9 +804,14 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
                     ("currency", v(currency)),
                 ]),
             ),
-            AccountsCmd::Currency { account, currency } => {
-                ("set_account_currency", args(&[("account", v(account)), ("currency", v(currency))]))
-            }
+            AccountsCmd::Currency { account, currency, unreconcile } => (
+                "set_account_currency",
+                args(&[
+                    ("account", v(account)),
+                    ("currency", v(currency)),
+                    ("unreconcile", unreconcile.then_some(json!(true))),
+                ]),
+            ),
             AccountsCmd::Delete { account } => ("delete_account", args(&[("account", v(account))])),
         },
         Cmd::Tx(c) => match c {
@@ -830,18 +860,24 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
             TxCmd::Delete { id, unreconcile } => {
                 ("delete_transaction", args(&[("id", v(id)), ("unreconcile", unreconcile.then_some(json!(true)))]))
             }
-            TxCmd::ToTransfer { id, account, join, no_match } => (
+            TxCmd::ToTransfer { id, account, join, no_match, unreconcile } => (
                 "turn_into_transfer",
                 args(&[
                     ("id", v(id)),
                     ("account", v(account)),
                     ("match", if no_match { v("none") } else { join.map(|j| json!(j)) }),
+                    ("unreconcile", unreconcile.then_some(json!(true))),
                 ]),
             ),
             TxCmd::Matches { id, account } => ("transfer_candidates", args(&[("id", v(id)), ("account", v(account))])),
-            TxCmd::Separate { id, drop_other } => {
-                ("separate_transfer", args(&[("id", v(id)), ("keep_other", v(!drop_other))]))
-            }
+            TxCmd::Separate { id, drop_other, unreconcile } => (
+                "separate_transfer",
+                args(&[
+                    ("id", v(id)),
+                    ("keep_other", v(!drop_other)),
+                    ("unreconcile", unreconcile.then_some(json!(true))),
+                ]),
+            ),
         },
         Cmd::Transfer { from, to, amount, date, memo } => (
             "add_transfer",
@@ -875,15 +911,19 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
         Cmd::Cards(c) => match c {
             CardsCmd::Statements => ("list_card_statements", json!({})),
             CardsCmd::Payments => ("propose_card_payments", json!({})),
-            CardsCmd::Link { statement, transaction, join } => (
+            CardsCmd::Link { statement, transaction, join, unreconcile } => (
                 "link_card_payment",
                 args(&[
                     ("statement_id", v(statement)),
                     ("transaction_id", v(transaction)),
                     ("join", join.map(|j| json!(j))),
+                    ("unreconcile", unreconcile.then_some(json!(true))),
                 ]),
             ),
-            CardsCmd::Unlink { statement } => ("unlink_card_payment", args(&[("statement_id", v(statement))])),
+            CardsCmd::Unlink { statement, unreconcile } => (
+                "unlink_card_payment",
+                args(&[("statement_id", v(statement)), ("unreconcile", unreconcile.then_some(json!(true)))]),
+            ),
         },
         Cmd::Reconcile(c) => match c {
             ReconcileCmd::Start(start) => {
@@ -1030,7 +1070,9 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
             LedgerCmd::Categorize { posting_id, category } => {
                 ("set_posting_category", args(&[("posting_id", v(posting_id)), ("category", o(&category))]))
             }
-            LedgerCmd::Delete { id } => ("delete_entry", args(&[("id", v(id))])),
+            LedgerCmd::Delete { id, unreconcile } => {
+                ("delete_entry", args(&[("id", v(id)), ("unreconcile", unreconcile.then_some(json!(true)))]))
+            }
             LedgerCmd::TrialBalance { date } => ("trial_balance", args(&[("date", o(&date))])),
             LedgerCmd::Verify => ("verify_ledger", json!({})),
         },
@@ -1354,10 +1396,13 @@ fn print_reconciliation(r: &Value) {
                 &[("amount", &exact(field(s, "balance"), currency)), ("label", &label)]
             )
         );
+        if let Some(n) = s.get("notice").filter(|n| n.is_string()) {
+            println!("  ! {}", st(n));
+        }
     }
     for (label, k) in [
         (tr("Statement balance"), "statement_balance"),
-        (tr("Cleared balance in the books"), "cleared_balance"),
+        (tr("Balance of the books"), "books_balance"),
         (tr("Difference"), "difference"),
     ] {
         println!("  {:<32} {:>18}", label, exact(field(rec, k), currency));
@@ -1399,7 +1444,7 @@ fn print_reconciliation(r: &Value) {
         println!("{}", tr("In the books, on no line"));
     }
     for t in &books {
-        let cleared = if field(t, "cleared").as_bool().unwrap_or(false) { tr("cleared") } else { "" };
+        let cleared = if field(t, "ticked").as_bool().unwrap_or(false) { tr("ticked") } else { "" };
         println!(
             "  {:>5}  {}  {:<32} {:>13}  {}",
             id(t),

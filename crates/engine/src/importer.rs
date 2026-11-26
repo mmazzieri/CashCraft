@@ -126,6 +126,8 @@ pub struct Read {
     pub problems: Vec<Problem>,
     /// How many there are in all.
     pub problem_count: usize,
+    /// The records of the table that are movements, read or pending: no balance is read from them.
+    pub movements: Vec<usize>,
 }
 
 impl Read {
@@ -764,6 +766,7 @@ pub fn read_rows(t: &Table, settings: &Settings) -> Read {
     let mut skipped = 0;
     let mut problems = Vec::new();
     let mut problem_count = 0;
+    let mut movements = Vec::new();
     let dc = Some(settings.comma(t));
     let get = |r: &Vec<String>, c: Option<usize>| -> String { c.and_then(|i| r.get(i)).cloned().unwrap_or_default() };
     let day = |r: &Vec<String>, c| parse_date_as(&get(r, c), settings.dates);
@@ -781,6 +784,7 @@ pub fn read_rows(t: &Table, settings: &Settings) -> Read {
         }
         if is_pending(&get(r, m.status)) {
             skipped += 1;
+            movements.push(i);
             continue;
         }
         let Some(date) = day(r, m.date).or_else(|| day(r, m.value_date)) else {
@@ -851,10 +855,11 @@ pub fn read_rows(t: &Table, settings: &Settings) -> Read {
             let memo = if full == p { String::new() } else { full };
             (p, memo)
         };
+        movements.push(i);
         out.push(ParsedRow { date, amount, payee, memo, key: None, format: t.format(), ofx: None });
     }
     out.sort_by_key(|r| r.date);
-    Read { rows: out, skipped, problems, problem_count }
+    Read { rows: out, skipped, problems, problem_count, movements }
 }
 
 pub(crate) fn fnv(s: &str) -> u64 {
@@ -1051,7 +1056,9 @@ pub(crate) fn import_deciding(
             let (Some(row), Some(p)) = (rows.get(*i), plan.rows.get(*i)) else { continue };
             let mine = sides.of(row);
             if let Some(side) = sides.taken(row) {
-                db.adopt(side, row.date, &row.payee, &row.memo, &p.hash, &p.marks)?;
+                // A side that a reconciliation checked keeps its date: the line only confirms it.
+                let date = if side.reconciled { side.date } else { row.date };
+                db.adopt(side, date, &row.payee, &row.memo, &p.hash, &p.marks)?;
                 let payee = row.payee.clone();
                 res.adopted.push(Adopted { id: side.id, date: row.date, payee, amount: row.amount });
                 place.insert(*i, side.id);

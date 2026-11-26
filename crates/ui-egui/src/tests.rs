@@ -816,7 +816,12 @@ fn a_statement_is_reconciled_with_the_keyboard() {
                 time += 0.5;
                 let screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0)));
                 let input = egui::RawInput { events, screen_rect, time: Some(time), ..Default::default() };
-                ctx.run_ui(input, |ui| app.reconcile_view(ui, a)).textures_delta.clear();
+                ctx.run_ui(input, |ui| {
+                    app.reconcile_view(ui, a);
+                    app.dialogs(&ui.ctx().clone());
+                })
+                .textures_delta
+                .clear();
             }
         };
         let press = |key, modifiers| {
@@ -830,7 +835,13 @@ fn a_statement_is_reconciled_with_the_keyboard() {
         send(&mut app, press(Key::ArrowDown, Modifiers::NONE));
         send(&mut app, press(Key::Space, Modifiers::NONE));
         assert_eq!(app.db.reconciliation(id).unwrap().difference, 0);
+        // Finishing asks first: Tab reaches its button, Enter presses it.
         send(&mut app, press(Key::Enter, Modifiers::COMMAND));
+        assert!(matches!(app.dialog, Some(Dialog::ConfirmReconcile(_))));
+        assert_eq!(app.db.reconciliation(id).unwrap().status, Status::Open);
+        send(&mut app, press(Key::Tab, Modifiers::NONE));
+        send(&mut app, press(Key::Enter, Modifiers::NONE));
+        assert!(app.dialog.is_none());
         assert_eq!(app.db.reconciliation(id).unwrap().status, Status::Finished);
         assert!(app.db.transaction(bar).unwrap().reconciled);
         send(&mut app, vec![]);
@@ -839,11 +850,12 @@ fn a_statement_is_reconciled_with_the_keyboard() {
         let r = app.db.delete_transaction(bar).map(|_| String::new());
         assert!(app.unless_reconciled(r, || Unlock::Delete(bar)).is_none());
         assert!(matches!(app.dialog, Some(Dialog::ConfirmUnreconcile(_))));
-        for _ in 0..2 {
-            ctx.run_ui(Default::default(), |ui| app.dialogs(&ui.ctx().clone())).textures_delta.clear();
-        }
+        send(&mut app, vec![]);
         assert!(app.db.transaction(bar).is_ok());
-        app.run_unlock(&Unlock::Delete(bar)).unwrap();
+        // Its first button is the yes.
+        send(&mut app, press(Key::Tab, Modifiers::NONE));
+        send(&mut app, press(Key::Enter, Modifiers::NONE));
+        assert!(app.dialog.is_none());
         assert!(app.db.transaction(bar).is_err());
         assert_eq!(app.db.reconciliation(id).unwrap().status, Status::Broken);
         // The form of a new one, and the history, draw.

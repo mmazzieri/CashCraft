@@ -7,7 +7,7 @@ use crate::i18n::{Lang, lang, tr, trf, trn, with_lang};
 use crate::layouts::LAYOUT_SCHEMA;
 use crate::ledger::{self, COUNTED, Draft, LEDGER_SCHEMA, Line, PROFIT_AND_LOSS, UNCATEGORIZED};
 use crate::money::checked_total;
-use crate::reconcile::RECONCILE_SCHEMA;
+use crate::reconcile::{POSTING_IDS, RECONCILE_SCHEMA};
 use crate::rules::{Marks, RULE_SCHEMA, RuleUse, Ruleset, Subject, has_tag, stored_tags};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{Datelike, Days, Local, Months, NaiveDate};
@@ -484,6 +484,7 @@ impl Db {
                 self.conn.execute_batch(LAYOUT_SCHEMA)?;
                 self.conn.execute_batch(RULE_SCHEMA)?;
                 self.conn.execute_batch(RECONCILE_SCHEMA)?;
+                self.conn.execute_batch(POSTING_IDS)?;
             }
             self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             Ok(())
