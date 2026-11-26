@@ -688,6 +688,12 @@ impl Db {
         })
     }
 
+    /// Gives an account an IBAN, and changes nothing else of it.
+    pub fn set_account_iban(&self, id: i64, iban: &str) -> Result<()> {
+        self.conn.execute("UPDATE accounts SET iban=?2 WHERE id=?1", params![id, iban.trim()])?;
+        Ok(())
+    }
+
     /// Deletes an account and its transactions. The other side of its transfers stays in the other
     /// account, against the opening balances.
     pub fn delete_account(&self, id: i64) -> Result<()> {

@@ -649,7 +649,7 @@ impl ImportState {
             if let Some(a) =
                 accounts.iter().find(|a| a.id == id && a.iban.trim().is_empty()).filter(|_| !iban.is_empty())
             {
-                db.update_account(a.id, &a.name, a.kind, a.opening_balance, iban, a.archived)?;
+                db.set_account_iban(a.id, iban)?;
             }
             return Ok(id);
         }

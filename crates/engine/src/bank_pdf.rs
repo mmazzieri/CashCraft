@@ -65,8 +65,10 @@ pub fn iban(s: &str) -> Option<String> {
 impl Movements {
     /// The account with the IBAN of the list, if there is one that is not archived.
     pub fn account<'a>(&self, accounts: &'a [crate::db::Account]) -> Option<&'a crate::db::Account> {
-        let mine = Some(self.iban.as_str()).filter(|i| !i.is_empty());
-        accounts.iter().find(|a| !a.archived && iban(&a.iban).as_deref() == mine)
+        if self.iban.is_empty() {
+            return None;
+        }
+        accounts.iter().find(|a| !a.archived && iban(&a.iban).as_deref() == Some(self.iban.as_str()))
     }
     /// The name proposed for a new account: the bank, or the last digits of the IBAN.
     pub fn account_name(&self) -> Option<String> {

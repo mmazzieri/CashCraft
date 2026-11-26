@@ -212,6 +212,10 @@ fn a_list_finds_its_account_by_the_iban() {
     let l = t.list.as_ref().unwrap();
     assert_eq!(t.stated_balance(), Some((99_600, l.closing_on)));
     assert!(l.account(&db.accounts(true).unwrap()).is_none());
+    // A list whose IBAN could not be read goes to no account, not to one without an IBAN.
+    let blank = db.add_account("Blank", AccountKind::Bank, "EUR", 0, "").unwrap();
+    let unread = crate::bank_pdf::Movements { iban: String::new(), ..l.clone() };
+    assert!(unread.account(&db.accounts(true).unwrap()).is_none(), "{blank}");
     let mine = db.add_account("Mine", AccountKind::Bank, "EUR", 0, "IT60 X054 2811 1010 0000 0123 456").unwrap();
     assert_eq!(l.account(&db.accounts(true).unwrap()).map(|a| a.id), Some(mine));
     // An archived account is not proposed.
