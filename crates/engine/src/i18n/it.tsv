@@ -985,3 +985,6 @@ undone	annullata
 ✔ Finish	✔ Concludi
 🔒 Reconcile	🔒 Riconcilia
 🔒 Reconcile with this statement	🔒 Riconcilia con questo estratto
+Every line of the statement is matched or added first.	Prima ogni riga dell'estratto va abbinata o aggiunta.
+{n} line of the statement is not matched: match it, or add it to the books	{n} riga dell'estratto non è abbinata: abbinala o aggiungila ai registri
+{n} lines of the statement are not matched: match them, or add them to the books	{n} righe dell'estratto non sono abbinate: abbinale o aggiungile ai registri

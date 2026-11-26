@@ -48,7 +48,8 @@ balance of the books. For a statement without lines this is all there is: the us
 
 ## Finishing and the lock
 
-Finishing is refused while the difference is not zero. Every cleared transaction of the account dated up to the
+Finishing is refused while the difference is not zero, and while a line of the statement is neither matched nor
+added (one ticked on the side of the books instead would be imported again later). Every cleared transaction of the account dated up to the
 statement and not reconciled already is recorded with its date, amount and account (`reconciled_postings`); an
 added side of a transfer among them is no longer one.
 

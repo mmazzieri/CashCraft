@@ -827,9 +827,8 @@ impl App {
                 {
                     let stated = cashcraft_engine::reconcile::stated_balance(t, st.invert, &st.rows);
                     let source = cashcraft_engine::reconcile::Source::of(t.format());
-                    self.reconcile_with(a, st.rows.clone(), source, stated);
                     keep = false;
-                    msg = Some(Ok(String::new()));
+                    msg = Some(self.reconcile_with(a, st.rows.clone(), source, stated).map(|()| String::new()));
                 }
                 if ui.button(tr("Close")).clicked() {
                     keep = false;

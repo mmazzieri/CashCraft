@@ -566,3 +566,44 @@ fn hostile_parameters_change_nothing() {
     assert_eq!(v["reconciliations"].as_array().unwrap().len(), 1);
     let _ = a;
 }
+
+/// A line ticked on the side of the books instead of matched would be imported again: finishing waits for it.
+#[test]
+fn every_line_is_matched_before_finishing() {
+    let (db, a) = bank();
+    let bar = typed(&db, a, "2026-01-02", -120, "Bar", false);
+    let salary = typed(&db, a, "2026-01-10", 150_000, "Salary", false);
+    let shop = typed(&db, a, "2026-01-20", -8_030, "Shop", false);
+    let lines = rows(STATEMENT);
+    let r = start(&db, a, "2026-01-31", 100_000 - 120 + 150_000 - 8030, &lines);
+    db.clear_for_reconciliation(r, &[bar, salary, shop], true).unwrap();
+    assert_eq!(db.reconciliation(r).unwrap().difference, 0);
+    let e = db.finish_reconciliation(r).unwrap_err();
+    assert!(format!("{e:#}").contains('3'), "{e:#}");
+    db.match_lines(r, &[(1, bar), (2, salary), (3, shop)]).unwrap();
+    db.finish_reconciliation(r).unwrap();
+    let again = importer::import_rows(&db, a, &lines, 0).unwrap();
+    assert_eq!((again.added, again.duplicates), (0, 3));
+    assert_eq!(status(&db, r), Status::Finished);
+}
+
+/// Deleting the other account of a transfer whose sides have their own dates leaves the reconciled side as it was.
+#[test]
+fn deleting_the_other_account_of_a_transfer_leaves_the_side_reconciled() {
+    let (db, a) = bank();
+    let s = db.add_account("Savings", AccountKind::Savings, "EUR", 0, "").unwrap();
+    import(&db, a, "Data;Descrizione;Importo\n10/01/2026;GIRO;-200,00\n");
+    import(&db, s, "Data;Descrizione;Importo\n12/01/2026;GIRO;200,00\n");
+    let out = db.transactions(&TxFilter { account_id: Some(a), ..Default::default() }).unwrap()[0].id;
+    let into = db.transactions(&TxFilter { account_id: Some(s), ..Default::default() }).unwrap()[0].id;
+    db.turn_into_transfer(into, a, crate::transfers::OtherSide::Join(out)).unwrap();
+    let r = start(&db, a, "2026-01-31", 80_000, &[]);
+    db.finish_reconciliation(r).unwrap();
+    let before = db.transaction(out).unwrap().date;
+    // The side that stays takes the entry's date, which is its own: it stays reconciled.
+    db.delete_account(s).unwrap();
+    let t = db.transaction(out).unwrap();
+    assert!(t.date == before && t.reconciled);
+    assert_eq!(status(&db, r), Status::Finished);
+    assert_sound(&db, "deleted");
+}

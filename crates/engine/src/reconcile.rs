@@ -718,10 +718,13 @@ impl Db {
                 added: l.added_here,
             });
         }
+        // What is proposed for a line is shown there.
+        let proposed: HashSet<i64> = proposals.values().filter_map(|p| p.proposed).collect();
         let books_only = if open {
             let mut b: Vec<Transaction> = all
                 .iter()
                 .filter(|t| !t.reconciled && t.date <= row.date && !matched.contains(&t.id) && !claimed.contains(&t.id))
+                .filter(|t| !proposed.contains(&t.id))
                 .cloned()
                 .collect();
             b.sort_by_key(|t| (t.date, t.id));
@@ -928,6 +931,16 @@ impl Db {
                 bail!(trf(
                     "the statement and the books differ by {amount}: the reconciliation cannot be finished",
                     &[("amount", &crate::money::fmt_plain(r.difference))]
+                ));
+            }
+            // A line ticked on the side of the books has not the keys of its line: the statement imported later
+            // would add it again.
+            let left = self.preview_reconciliation(id)?.unmatched_lines;
+            if left > 0 {
+                bail!(trn(
+                    left,
+                    "{n} line of the statement is not matched: match it, or add it to the books",
+                    "{n} lines of the statement are not matched: match them, or add them to the books"
                 ));
             }
             let (ledger, _) = self.money_ledger(row.account)?;

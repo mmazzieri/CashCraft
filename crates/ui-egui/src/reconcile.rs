@@ -98,7 +98,22 @@ impl App {
     }
 
     /// Opens the screen of an account with the lines of a statement just imported.
-    pub fn reconcile_with(&mut self, account: i64, rows: Vec<ParsedRow>, source: Source, stated: Option<Stated>) {
+    pub fn reconcile_with(
+        &mut self,
+        account: i64,
+        rows: Vec<ParsedRow>,
+        source: Source,
+        stated: Option<Stated>,
+    ) -> Result<()> {
+        self.view = View::Reconcile(account);
+        self.selected = None;
+        if let Some(open) = self.db.open_reconciliation(account)? {
+            // Its lines are those of another statement: this one waits until that is finished or undone.
+            return Err(anyhow!(trf(
+                "the account is being reconciled already (reconciliation {id}): finish or undo it first",
+                &[("id", &open)]
+            )));
+        }
         let liability = self.is_liability(account);
         let mut r = ReconcileState::new(account);
         let date = stated.as_ref().and_then(|s| s.date).or_else(|| rows.iter().map(|r| r.date).max());
@@ -107,8 +122,7 @@ impl App {
             stated.as_ref().map(|s| fmt_plain(if liability { -s.balance } else { s.balance })).unwrap_or_default();
         (r.rows, r.source, r.stated) = (rows, Some(source), stated);
         self.reconcile = Some(r);
-        self.view = View::Reconcile(account);
-        self.selected = None;
+        Ok(())
     }
 
     fn is_liability(&self, account: i64) -> bool {
@@ -281,13 +295,19 @@ impl App {
             );
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let can = r.difference == 0;
+                let can = r.difference == 0 && p.unmatched_lines == 0;
                 let b = egui::Button::new(RichText::new(tr("✔ Finish")).color(Color32::WHITE).strong()).fill(if can {
                     pal().green_fill
                 } else {
                     pal().track
                 });
-                if ui.add_enabled(can, b).clicked() {
+                let b = ui.add_enabled(can, b);
+                let b = if p.unmatched_lines > 0 {
+                    b.on_disabled_hover_text(tr("Every line of the statement is matched or added first."))
+                } else {
+                    b
+                };
+                if b.clicked() {
                     finish = true;
                 }
                 if p.exact_pending > 0
@@ -408,7 +428,7 @@ impl App {
         });
         if discard {
             Some(self.db.undo_reconciliation(id))
-        } else if finish && r.difference == 0 {
+        } else if finish && r.difference == 0 && p.unmatched_lines == 0 {
             Some(self.db.finish_reconciliation(id).map(|f| {
                 trn(f.reconciled, "Reconciled: {n} transaction is locked", "Reconciled: {n} transactions are locked")
             }))
@@ -430,7 +450,12 @@ impl App {
         if st.history.iter().all(|r| r.status == Status::Open) {
             return None;
         }
-        let last = st.history.iter().find(|r| matches!(r.status, Status::Finished | Status::Broken | Status::Redone));
+        // While one is open, the last one stays.
+        let last = st
+            .history
+            .iter()
+            .find(|r| matches!(r.status, Status::Finished | Status::Broken | Status::Redone))
+            .filter(|_| st.preview.is_none());
         let mut undo = None;
         card(ui, |ui| {
             ui.set_width(ui.available_width());

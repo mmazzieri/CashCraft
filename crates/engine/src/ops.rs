@@ -436,7 +436,7 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "finish_reconciliation",
-            description: "Finishes a reconciliation whose difference is 0.00: the cleared transactions up to its day are reconciled, and changing their amount, date or account, unclearing or deleting them is refused until the user confirms. Ask the user first.",
+            description: "Finishes a reconciliation whose difference is 0.00 and whose lines are all matched or added: the cleared transactions up to its day are reconciled, and changing their amount, date or account, unclearing or deleting them is refused until the user confirms. Ask the user first.",
             schema: obj(json!({"id": n(RECONCILIATION)}), &["id"]),
         },
         ToolDef {
