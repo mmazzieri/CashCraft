@@ -111,8 +111,15 @@ pub fn parse(pages: &[Page]) -> Result<Movements, Failure> {
         for (i, l) in body.iter().enumerate() {
             let here = cells(&l.words, &c);
             if here.booking.is_empty() {
-                // The foot of the page, or anything else that is not in the columns of a description.
                 if !here.value.is_empty() || !here.amount.is_empty() {
+                    // A movement whose booking date was lost, or the foot of the page.
+                    let date = parse_date(&here.value.join(" ")).is_some();
+                    if date || parse_amount_with(&here.amount.join(""), Some(true)).is_ok() {
+                        unread += 1;
+                        waiting.clear();
+                        current = None;
+                        continue;
+                    }
                     break;
                 }
                 let next = body.get(i + 1);
@@ -135,6 +142,10 @@ pub fn parse(pages: &[Page]) -> Result<Movements, Failure> {
             };
             let mut text = std::mem::take(&mut waiting);
             text.extend(here.text);
+            // A description longer than any bank writes is not cut: the list is refused.
+            if text.iter().map(|t| t.chars().count() + 1).sum::<usize>() > MAX_TEXT {
+                return Err(Failure::TooLarge);
+            }
             let head = compact(&text.join(""));
             if value.is_empty() && head.starts_with("SALDOINIZIALE") {
                 opening = Some(amount);
@@ -166,11 +177,10 @@ pub fn parse(pages: &[Page]) -> Result<Movements, Failure> {
     if unread > 0 || !adds_up {
         return Err(Failure::Mismatch);
     }
-    let short = |t: &str| t.chars().take(MAX_TEXT).collect::<String>();
     let mut out = Movements { rows: Vec::new(), opening, closing };
     // The newest comes first in the list.
     for r in rows.into_iter().rev() {
-        out.rows.push([r.booking, r.value, r.figure, short(&r.text.join(" "))]);
+        out.rows.push([r.booking, r.value, r.figure, r.text.join(" ")]);
     }
     Ok(out)
 }

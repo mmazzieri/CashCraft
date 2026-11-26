@@ -107,6 +107,13 @@ fn the_rows_are_imported_as_those_of_a_csv_once() {
 
 #[test]
 fn rows_that_do_not_add_up_or_cannot_be_read_are_refused() {
+    // A row whose booking date is lost, in a list without balances.
+    let mut lost_date = movements();
+    lost_date.retain(|i| !matches!((i.page, i.y), (0, 278.5) | (1, 296.5)));
+    lost_date.retain(|i| !(i.page == 0 && i.y == 311.4 && i.x == 54.0));
+    assert_eq!(read(&lost_date, Font::NotEmbedded), Err(Failure::Mismatch));
+    let long = "x".repeat(MAX_TEXT + 1);
+    assert_eq!(read(&with(&[("EMITTENTE", &long)]), Font::Type3), Err(Failure::TooLarge));
     for change in [("-9,35", "-9,36"), ("-9,35", "-9,3x"), ("18/11/2026", "18/1x/2026"), ("996,00", "995,00")] {
         assert_eq!(read(&with(&[change]), Font::NotEmbedded), Err(Failure::Mismatch), "{change:?}");
     }

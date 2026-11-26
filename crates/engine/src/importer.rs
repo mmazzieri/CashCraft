@@ -677,6 +677,16 @@ fn detect_decimal_comma(t: &Table, m: &Mapping) -> bool {
 
 /// Estrae il nome dell'esercente dalle descrizioni tipiche ("PAGAMENTO POS ... PRESSO NEGOZIO").
 pub fn smart_payee(desc: &str) -> String {
+    payee_of(desc, false)
+}
+
+/// [`smart_payee`], knowing also the texts of the lists of movements in PDF. Only for them: a change
+/// to what is read from other files would change the keys of the rows already imported from them.
+pub fn pdf_payee(desc: &str) -> String {
+    payee_of(desc, true)
+}
+
+fn payee_of(desc: &str, pdf: bool) -> String {
     // Solo ASCII: le posizioni restano quelle del testo originale.
     let lower = desc.to_ascii_lowercase();
     // Layouts that name the other party between two fixed words, the first one at the start.
@@ -690,7 +700,8 @@ pub fn smart_payee(desc: &str) -> String {
         }
     }
     // A payment by debit card: "Operazione POS ... Carta *1234 NEGOZIO CITTA IT".
-    if lower.starts_with("operazione pos")
+    if pdf
+        && lower.starts_with("operazione pos")
         && let Some(i) = lower.find(" carta *")
         && let Some(rest) = desc.get(i + " carta *".len()..)
         && let Some((_, shop)) = rest.split_once(' ')
@@ -698,37 +709,16 @@ pub fn smart_payee(desc: &str) -> String {
     {
         return collapse(shop);
     }
-    let markers = [
-        "presso ",
-        "c/o ",
-        "a favore di ",
-        "beneficiario: ",
-        "beneficiario ",
-        "ragione sociale ordinante: ",
-        "ordinante: ",
-        "ordinante ",
-    ];
-    for marker in markers {
+    let markers = ["presso ", "c/o ", "a favore di ", "beneficiario: ", "beneficiario ", "ordinante: ", "ordinante "];
+    let first = if pdf { &["ragione sociale ordinante: "][..] } else { &[][..] };
+    for marker in first.iter().chain(markers.iter()) {
         if let Some(i) = lower.find(marker) {
             let Some(rest) = desc.get(i + marker.len()..) else { continue };
             let rest_l = rest.to_ascii_lowercase();
             let mut end = rest.len();
-            let stops = [
-                " carta",
-                " del ",
-                " data ",
-                " ore ",
-                " cro",
-                " trn",
-                " iban",
-                " causale",
-                " - ",
-                " rif",
-                " indirizzo ",
-                " localita ",
-                " id_bonifico",
-            ];
-            for stop in stops {
+            let stops = [" carta", " del ", " data ", " ore ", " cro", " trn", " iban", " causale", " - ", " rif"];
+            let more = if pdf { &[" indirizzo ", " localita ", " id_bonifico"][..] } else { &[][..] };
+            for stop in stops.iter().chain(more) {
                 if let Some(j) = rest_l.find(stop) {
                     end = end.min(j);
                 }
@@ -891,7 +881,8 @@ pub fn read_rows(t: &Table, settings: &Settings) -> Read {
             } else {
                 format!("{desc} — {extra}")
             };
-            let p = smart_payee(if extra.len() > desc.len() { &extra } else { &desc });
+            let longer = if extra.len() > desc.len() { &extra } else { &desc };
+            let p = if t.format() == Format::Pdf { pdf_payee(longer) } else { smart_payee(longer) };
             let p = if p.is_empty() { desc.clone() } else { p };
             let memo = if full == p { String::new() } else { full };
             (p, memo)
@@ -1569,6 +1560,12 @@ pub(crate) mod tests {
                 "DITTA ESEMPIO SRL",
             ),
             ("addebito sdd ", "addebito sdd"),
+        ] {
+            assert_eq!(smart_payee(desc), payee);
+            assert_eq!(pdf_payee(desc), payee);
+        }
+        // Only the lists of movements in PDF: the rows already imported from other files keep their keys.
+        for (desc, payee) in [
             (
                 "Operazione POS Eurozona Del 01.02.26 10:00 Carta *0000 NEGOZIO ESEMPIO ROMA IT",
                 "NEGOZIO ESEMPIO ROMA IT",
@@ -1579,7 +1576,8 @@ pub(crate) mod tests {
                 "DITTA ESEMPIO SRL",
             ),
         ] {
-            assert_eq!(smart_payee(desc), payee);
+            assert_eq!(pdf_payee(desc), payee);
+            assert_ne!(smart_payee(desc), payee);
         }
     }
 
