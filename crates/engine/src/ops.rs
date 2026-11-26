@@ -323,7 +323,7 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "preview_csv",
-            description: "Analyzes a statement (CSV, Excel 97 .xls, OFX or the PDF of a credit card) without importing it: separator, recognized columns, first rows and the lines that could not be read; for a card statement its dates and whether the rows add up to its totals; for OFX its statements and the balance they state, a check only. With an account, also likely_duplicates: rows that may be there already, each with the transactions it may be and the one proposed (certain: same date, amount and payee, and only one).",
+            description: "Analyzes a statement (CSV, Excel 97 .xls, OFX, the PDF of a credit card, or a list of an account's movements printed to PDF by a bank, which is read as a CSV and refused when its rows do not add up to its balances) without importing it: separator, recognized columns, first rows and the lines that could not be read; for a card statement its dates and whether the rows add up to its totals; for OFX its statements and the balance they state, a check only. With an account, also likely_duplicates: rows that may be there already, each with the transactions it may be and the one proposed (certain: same date, amount and payee, and only one).",
             schema: obj(
                 json!({"path": s("Path of the file."), "account": k("Account to look for likely duplicates and remembered columns in: numeric id or name (optional)."),
                 "statement": k(STATEMENT), "invert": b("Invert the sign of the amounts."), "limit": n("Preview rows (default 10)."),
@@ -335,7 +335,7 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "import_csv",
-            description: "Imports a CSV or Excel 97 .xls file exported by a bank, an OFX statement in the currency of the account, or the PDF statement of a credit card (into a credit_card account), into an account. Columns, separator, encoding and amount format are detected, or are those of the last import into this account of a file with the same headings; transactions already imported are skipped; rules assign the categories. When rows may be there already from another statement the call is refused and lists them: ask the user, then pass skip_rows and add_rows.",
+            description: "Imports a CSV or Excel 97 .xls file exported by a bank, an OFX statement in the currency of the account, a list of an account's movements printed to PDF by a bank, or the PDF statement of a credit card (into a credit_card account), into an account. Columns, separator, encoding and amount format are detected, or are those of the last import into this account of a file with the same headings; transactions already imported are skipped; rules assign the categories. When rows may be there already from another statement the call is refused and lists them: ask the user, then pass skip_rows and add_rows.",
             schema: obj(
                 json!({"path": s("Path of the file."), "account": k(ACCOUNT), "statement": k(STATEMENT), "invert": b("Invert the sign (e.g. credit card statements with positive expenses), or not. When it is not given the sign is that of the last import into this account. It also confirms the sign of an OFX statement that contradicts its types."),
                 "dry_run": b("Trial run: the same checks, saves nothing; refused says why the import would be refused."), "date_column": k("Date column (name, or number from 1)."), "amount_column": k("Amount column."),
