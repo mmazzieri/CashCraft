@@ -719,8 +719,9 @@ impl App {
         ui.heading(tr("Import a statement"));
         ui.label(
             RichText::new(tr(
-                "It works with CSV, Excel 97 and OFX files exported from online banking and with the PDF statement of a \
-                 credit card. Transactions already imported are skipped.",
+                "It works with CSV, Excel 97 and OFX files exported from online banking, with the list of an account's \
+                 movements printed to PDF and with the PDF statement of a credit card. Transactions already imported \
+                 are skipped.",
             ))
             .color(MUTED),
         );

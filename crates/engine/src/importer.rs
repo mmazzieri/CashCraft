@@ -9,7 +9,8 @@
 //!   "Importo", "Entrate"/"Uscite", "Accrediti"/"Addebiti", "Dare"/"Avere"...),
 //! - importi all'italiana (1.234,56) e date gg/mm/aaaa.
 //!
-//! I file OFX sono letti da `ofx.rs`, le carte in PDF da `card_pdf.rs`.
+//! I file OFX sono letti da `ofx.rs`, le carte in PDF da `card_pdf.rs`, le liste movimenti di un conto in PDF
+//! da `bank_pdf.rs` e poi come un CSV.
 //!
 //! Le righe che non sono movimenti (saldi, totali, righe vuote) vengono saltate.
 //! Reimportare lo stesso file non crea doppioni.
@@ -40,6 +41,7 @@ const MAX_PROBLEMS: usize = 100;
 /// How many sides of transfers a row is compared with.
 const MAX_SIDES: usize = 20;
 const EXCEL: &str = "Excel 97-2003";
+const PDF: &str = "PDF";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Mapping {
@@ -192,6 +194,7 @@ impl Table {
             (Some(_), _) => Format::Pdf,
             (_, Some(_)) => Format::Ofx,
             _ if self.encoding == EXCEL => Format::Xls,
+            _ if self.encoding == PDF => Format::Pdf,
             _ => Format::Csv,
         }
     }
@@ -263,7 +266,10 @@ pub fn load(path: &Path) -> Result<Table> {
         return Ok(table(xls::rows(&bytes)?, b'\t', EXCEL));
     }
     if pdf::is_pdf(&bytes) {
-        return Ok(card_table(pdf::statement(&bytes)?));
+        return Ok(match pdf::document(&bytes)? {
+            pdf::Document::Card(s) => card_table(s),
+            pdf::Document::Movements(m) => movements_table(&m),
+        });
     }
     if ofx::is_ofx(&bytes) {
         let (file, encoding) = ofx::read(&bytes)?;
@@ -276,7 +282,7 @@ pub fn load(path: &Path) -> Result<Table> {
 pub(crate) fn card_table(statement: Statement) -> Table {
     Table {
         delimiter: b'\t',
-        encoding: "PDF",
+        encoding: PDF,
         records: Vec::new(),
         header_row: None,
         headers: Vec::new(),
@@ -286,6 +292,11 @@ pub(crate) fn card_table(statement: Statement) -> Table {
         lines: Vec::new(),
         ofx: None,
     }
+}
+
+/// The rows of an account's list of movements in a PDF, read as those of a CSV file.
+pub(crate) fn movements_table(m: &crate::bank_pdf::Movements) -> Table {
+    table(m.records(), b'\t', PDF)
 }
 
 pub(crate) fn ofx_table(file: Ofx, encoding: &'static str) -> Table {
@@ -678,12 +689,46 @@ pub fn smart_payee(desc: &str) -> String {
             return collapse(p);
         }
     }
-    for marker in ["presso ", "c/o ", "a favore di ", "beneficiario: ", "beneficiario ", "ordinante: ", "ordinante "] {
+    // A payment by debit card: "Operazione POS ... Carta *1234 NEGOZIO CITTA IT".
+    if lower.starts_with("operazione pos")
+        && let Some(i) = lower.find(" carta *")
+        && let Some(rest) = desc.get(i + " carta *".len()..)
+        && let Some((_, shop)) = rest.split_once(' ')
+        && shop.trim().len() >= 2
+    {
+        return collapse(shop);
+    }
+    let markers = [
+        "presso ",
+        "c/o ",
+        "a favore di ",
+        "beneficiario: ",
+        "beneficiario ",
+        "ragione sociale ordinante: ",
+        "ordinante: ",
+        "ordinante ",
+    ];
+    for marker in markers {
         if let Some(i) = lower.find(marker) {
             let Some(rest) = desc.get(i + marker.len()..) else { continue };
             let rest_l = rest.to_ascii_lowercase();
             let mut end = rest.len();
-            for stop in [" carta", " del ", " data ", " ore ", " cro", " trn", " iban", " causale", " - ", " rif"] {
+            let stops = [
+                " carta",
+                " del ",
+                " data ",
+                " ore ",
+                " cro",
+                " trn",
+                " iban",
+                " causale",
+                " - ",
+                " rif",
+                " indirizzo ",
+                " localita ",
+                " id_bonifico",
+            ];
+            for stop in stops {
                 if let Some(j) = rest_l.find(stop) {
                     end = end.min(j);
                 }
@@ -1524,6 +1569,15 @@ pub(crate) mod tests {
                 "DITTA ESEMPIO SRL",
             ),
             ("addebito sdd ", "addebito sdd"),
+            (
+                "Operazione POS Eurozona Del 01.02.26 10:00 Carta *0000 NEGOZIO ESEMPIO ROMA IT",
+                "NEGOZIO ESEMPIO ROMA IT",
+            ),
+            (
+                "Bonifico a vs favore *INST Info aggiuntive: Localita ordinante: Roma Ragione sociale ordinante: \
+                 DITTA ESEMPIO SRL Indirizzo ordinante: VIA ESEMPIO 1",
+                "DITTA ESEMPIO SRL",
+            ),
         ] {
             assert_eq!(smart_payee(desc), payee);
         }

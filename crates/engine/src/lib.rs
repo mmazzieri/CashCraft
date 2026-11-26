@@ -2,6 +2,7 @@
 //! shared by the desktop app, the command line and the MCP server.
 #![forbid(unsafe_code)]
 
+pub mod bank_pdf;
 mod card_pdf;
 pub mod cards;
 pub mod db;
