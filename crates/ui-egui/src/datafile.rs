@@ -1,7 +1,7 @@
 //! The data file in the window: its status, other files, synced folders, conflicts. A shared file is read and written
 //! by a thread, so that a folder that does not answer never stops the window.
 
-use crate::gui::{AMBER, App, GREEN, MUTED, RED, error_text, primary_button};
+use crate::gui::{App, error_text, pal, primary_button};
 use anyhow::Result;
 use cashcraft_engine::i18n::{self, Lang, lang, tr, trf};
 use cashcraft_engine::money::fmt_date;
@@ -145,12 +145,12 @@ impl Syncer {
     fn status(&self) -> (String, Color32) {
         let s = locked(&self.seen);
         match &s.report {
-            _ if s.busy => (tr("saving…").into(), MUTED),
-            Some(Ok(r)) if r.status == Status::Saved && r.pending => (tr("to be saved").into(), MUTED),
-            Some(Ok(r)) if r.status == Status::Saved => (tr("saved").into(), GREEN),
-            Some(Ok(r)) => (r.status.text(), AMBER),
-            Some(Err(e)) => (trf("Error: {error}", &[("error", e)]), RED),
-            None => (tr("to be saved").into(), MUTED),
+            _ if s.busy => (tr("saving…").into(), pal().muted),
+            Some(Ok(r)) if r.status == Status::Saved && r.pending => (tr("to be saved").into(), pal().muted),
+            Some(Ok(r)) if r.status == Status::Saved => (tr("saved").into(), pal().green),
+            Some(Ok(r)) => (r.status.text(), pal().amber),
+            Some(Err(e)) => (trf("Error: {error}", &[("error", e)]), pal().red),
+            None => (tr("to be saved").into(), pal().muted),
         }
     }
 }
@@ -236,6 +236,7 @@ impl App {
     pub fn of(opened: Opened, home: Home, path: PathBuf, asked: Use, ctx: &egui::Context) -> App {
         i18n::set_lang(Lang::at_start(opened.db.meta(i18n::META_KEY).as_deref()));
         let mut app = App::new(opened.db, None);
+        ctx.set_theme(app.theme.preference());
         app.file.home = Some(home);
         app.file.path = path;
         app.file.asked = asked;
@@ -407,7 +408,7 @@ impl App {
             (None, Some(p)) => p.display().to_string(),
             (None, None) => tr("trial data in memory").into(),
         };
-        let text = RichText::new(trf("Data file: {path}", &[("path", &tail(&path, 90))])).size(11.5).color(MUTED);
+        let text = RichText::new(trf("Data file: {path}", &[("path", &tail(&path, 90))])).size(11.5).color(pal().muted);
         if self.file.home.is_none() {
             ui.label(text);
             return;
@@ -421,16 +422,16 @@ impl App {
         };
         if let Some(s) = &self.file.syncer {
             if locked(&s.seen).conflicts {
-                small(ui, tr("conflict").into(), RED);
+                small(ui, tr("conflict").into(), pal().red);
             }
             let (text, color) = match self.file.changed_at {
-                Some(_) => (tr("to be saved").to_string(), MUTED),
+                Some(_) => (tr("to be saved").to_string(), pal().muted),
                 None => s.status(),
             };
             small(ui, text, color);
             let others = locked(&s.seen).others.join(", ");
             if !others.is_empty() {
-                small(ui, trf("Also open on {computer}", &[("computer", &others)]), AMBER);
+                small(ui, trf("Also open on {computer}", &[("computer", &others)]), pal().amber);
             }
         }
     }
@@ -467,14 +468,15 @@ impl App {
                 (true, None) => tr("Used through a private copy").to_string(),
                 (true, Some(k)) => trf("Used through a private copy, in {service}", &[("service", &k.label())]),
             };
-            ui.label(RichText::new(how).color(MUTED));
+            ui.label(RichText::new(how).color(pal().muted));
             if let Some(s) = &self.file.syncer {
                 let (text, color) = s.status();
                 ui.label(RichText::new(text).color(color));
             }
             if w.info.as_ref().is_some_and(|i| i.shared_next != self.file.shared.is_some()) {
                 ui.label(
-                    RichText::new(tr("It will be used in the other way when CashCraft is started again.")).color(AMBER),
+                    RichText::new(tr("It will be used in the other way when CashCraft is started again."))
+                        .color(pal().amber),
                 );
             }
             ui.add_enabled_ui(w.info.is_some() && w.asking.is_none(), |ui| {
@@ -542,7 +544,7 @@ impl App {
                 ui.label(tr("Opening…"));
             }
             if !w.error.is_empty() {
-                ui.label(RichText::new(&w.error).color(RED));
+                ui.label(RichText::new(&w.error).color(pal().red));
             }
             ui.add_space(8.0);
             if primary_button(ui, tr("Close")).clicked() {
@@ -608,7 +610,7 @@ impl Syncer {
             None => return,
             Some(Ok(d)) => d,
             Some(Err(e)) => {
-                ui.label(RichText::new(e).color(RED));
+                ui.label(RichText::new(e).color(pal().red));
                 return;
             }
         };
@@ -713,7 +715,7 @@ impl Start {
         }
         ui.heading(tr("The data file cannot be opened"));
         ui.label(self.path.display().to_string());
-        ui.label(RichText::new(&self.error).color(RED));
+        ui.label(RichText::new(&self.error).color(pal().red));
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if primary_button(ui, tr("Try again")).clicked() {
@@ -746,6 +748,7 @@ impl Start {
 impl eframe::App for Start {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.poll(ui.ctx());
+        crate::gui::set_dark(ui.visuals().dark_mode);
         match &mut self.app {
             Some(app) => app.ui(ui, frame),
             None => {

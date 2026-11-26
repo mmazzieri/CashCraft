@@ -28,20 +28,112 @@ pub const PREVIEWED: usize = 50;
 
 // ------------------------------------------------------------------ colori
 
-pub const ACCENT: Color32 = Color32::from_rgb(0x1F, 0x7A, 0x6A);
-pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0xDD, 0xEF, 0xEA);
-pub const SIDEBAR: Color32 = Color32::from_rgb(0xF2, 0xF4, 0xF3);
-pub const BG: Color32 = Color32::from_rgb(0xFA, 0xFB, 0xFB);
-pub const CARD: Color32 = Color32::WHITE;
-pub const BORDER: Color32 = Color32::from_rgb(0xE1, 0xE5, 0xE4);
-pub const TEXT: Color32 = Color32::from_rgb(0x22, 0x2B, 0x2A);
-pub const MUTED: Color32 = Color32::from_rgb(0x6B, 0x76, 0x74);
-pub const GREEN: Color32 = Color32::from_rgb(0x1E, 0x8E, 0x4E);
-pub const RED: Color32 = Color32::from_rgb(0xC6, 0x3B, 0x34);
-pub const AMBER: Color32 = Color32::from_rgb(0xD9, 0x8E, 0x1C);
-pub const BLUE: Color32 = Color32::from_rgb(0x3B, 0x6E, 0xC4);
-pub const ZEBRA: Color32 = Color32::from_rgb(0xF6, 0xF8, 0xF8);
-pub const TRACK: Color32 = Color32::from_rgb(0xEC, 0xEF, 0xEE);
+/// The colours of one theme. The window reads them through [`pal`], which follows the theme
+/// egui draws with (the system's, or the one chosen in the sidebar).
+pub struct Palette {
+    pub accent: Color32,
+    /// Behind white text: buttons, the selected segment.
+    pub accent_fill: Color32,
+    pub accent_soft: Color32,
+    pub sidebar: Color32,
+    pub bg: Color32,
+    pub card: Color32,
+    /// Text fields and other sunken areas.
+    pub field: Color32,
+    pub border: Color32,
+    pub text: Color32,
+    pub muted: Color32,
+    pub green: Color32,
+    /// Behind white text: the income segment, the reconciled mark.
+    pub green_fill: Color32,
+    pub red: Color32,
+    /// Behind white text: the delete buttons.
+    pub red_fill: Color32,
+    pub amber: Color32,
+    pub blue: Color32,
+    pub zebra: Color32,
+    pub track: Color32,
+    pub hover: Color32,
+    /// The grid lines of the charts.
+    pub grid: Color32,
+    /// The header of a card with a table.
+    pub header: Color32,
+    pub row_selected: Color32,
+    pub check_border: Color32,
+    pub warn_bg: Color32,
+    pub warn_text: Color32,
+    pub logo_ring: Color32,
+}
+
+pub static LIGHT: Palette = Palette {
+    accent: Color32::from_rgb(0x1F, 0x7A, 0x6A),
+    accent_fill: Color32::from_rgb(0x1F, 0x7A, 0x6A),
+    accent_soft: Color32::from_rgb(0xDD, 0xEF, 0xEA),
+    sidebar: Color32::from_rgb(0xF2, 0xF4, 0xF3),
+    bg: Color32::from_rgb(0xFA, 0xFB, 0xFB),
+    card: Color32::WHITE,
+    field: Color32::WHITE,
+    border: Color32::from_rgb(0xE1, 0xE5, 0xE4),
+    text: Color32::from_rgb(0x22, 0x2B, 0x2A),
+    muted: Color32::from_rgb(0x60, 0x6B, 0x69),
+    green: Color32::from_rgb(0x1B, 0x80, 0x47),
+    green_fill: Color32::from_rgb(0x1B, 0x80, 0x47),
+    red: Color32::from_rgb(0xC6, 0x3B, 0x34),
+    red_fill: Color32::from_rgb(0xC6, 0x3B, 0x34),
+    amber: Color32::from_rgb(0xD9, 0x8E, 0x1C),
+    blue: Color32::from_rgb(0x3B, 0x6E, 0xC4),
+    zebra: Color32::from_rgb(0xF6, 0xF8, 0xF8),
+    track: Color32::from_rgb(0xEC, 0xEF, 0xEE),
+    hover: Color32::from_rgb(0xE0, 0xE8, 0xE6),
+    grid: Color32::from_rgb(0xEE, 0xF1, 0xF0),
+    header: Color32::from_rgb(0xF4, 0xF6, 0xF5),
+    row_selected: Color32::from_rgb(0xEF, 0xF4, 0xF3),
+    check_border: Color32::from_rgb(0xB8, 0xC0, 0xBE),
+    warn_bg: Color32::from_rgb(0xFF, 0xF4, 0xDC),
+    warn_text: Color32::from_rgb(0x7A, 0x55, 0x10),
+    logo_ring: Color32::from_rgb(0xBF, 0xE3, 0xDA),
+};
+
+pub static DARK: Palette = Palette {
+    accent: Color32::from_rgb(0x4F, 0xC2, 0xAA),
+    accent_fill: Color32::from_rgb(0x1F, 0x7A, 0x6A),
+    accent_soft: Color32::from_rgb(0x1E, 0x3D, 0x37),
+    sidebar: Color32::from_rgb(0x1A, 0x20, 0x1F),
+    bg: Color32::from_rgb(0x14, 0x19, 0x18),
+    card: Color32::from_rgb(0x1E, 0x25, 0x24),
+    field: Color32::from_rgb(0x11, 0x15, 0x14),
+    border: Color32::from_rgb(0x34, 0x3E, 0x3C),
+    text: Color32::from_rgb(0xE3, 0xE8, 0xE7),
+    muted: Color32::from_rgb(0x9C, 0xA8, 0xA6),
+    green: Color32::from_rgb(0x55, 0xC7, 0x84),
+    green_fill: Color32::from_rgb(0x1B, 0x76, 0x41),
+    red: Color32::from_rgb(0xF2, 0x7A, 0x71),
+    red_fill: Color32::from_rgb(0xB0, 0x34, 0x2E),
+    amber: Color32::from_rgb(0xE8, 0xAA, 0x45),
+    blue: Color32::from_rgb(0x74, 0xA1, 0xEA),
+    zebra: Color32::from_rgb(0x22, 0x29, 0x28),
+    track: Color32::from_rgb(0x2B, 0x33, 0x32),
+    hover: Color32::from_rgb(0x33, 0x3E, 0x3C),
+    grid: Color32::from_rgb(0x2A, 0x32, 0x31),
+    header: Color32::from_rgb(0x25, 0x2D, 0x2C),
+    row_selected: Color32::from_rgb(0x24, 0x33, 0x30),
+    check_border: Color32::from_rgb(0x5A, 0x66, 0x64),
+    warn_bg: Color32::from_rgb(0x3A, 0x2F, 0x14),
+    warn_text: Color32::from_rgb(0xF0, 0xC8, 0x70),
+    logo_ring: Color32::from_rgb(0x2D, 0x5E, 0x55),
+};
+
+/// Whether the window is drawn dark: set at the start of each frame.
+static DARK_MODE: AtomicBool = AtomicBool::new(false);
+
+/// The colours of the theme the window is drawn with now.
+pub fn pal() -> &'static Palette {
+    if DARK_MODE.load(Ordering::Relaxed) { &DARK } else { &LIGHT }
+}
+
+pub fn set_dark(dark: bool) {
+    DARK_MODE.store(dark, Ordering::Relaxed);
+}
 
 pub const PALETTE: [Color32; 10] = [
     Color32::from_rgb(0x1F, 0x7A, 0x6A),
@@ -67,6 +159,52 @@ pub fn language_name(l: Option<Lang>) -> &'static str {
     }
 }
 
+/// The colours of the window: the system's (the default), or always light or dark.
+/// Kept in the data file next to the language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Theme {
+    System,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 3] = [Theme::System, Theme::Light, Theme::Dark];
+    pub const META_KEY: &str = "theme";
+
+    pub fn from_setting(s: Option<&str>) -> Self {
+        match s {
+            Some("light") => Theme::Light,
+            Some("dark") => Theme::Dark,
+            _ => Theme::System,
+        }
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Theme::System => "system",
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Theme::System => tr("System"),
+            Theme::Light => tr("Light"),
+            Theme::Dark => tr("Dark"),
+        }
+    }
+
+    pub fn preference(self) -> egui::ThemePreference {
+        match self {
+            Theme::System => egui::ThemePreference::System,
+            Theme::Light => egui::ThemePreference::Light,
+            Theme::Dark => egui::ThemePreference::Dark,
+        }
+    }
+}
+
 pub fn error_text(e: &anyhow::Error) -> String {
     trf("Error: {error}", &[("error", &format_args!("{e:#}"))])
 }
@@ -86,16 +224,16 @@ pub fn has_category(t: &Transaction) -> bool {
 
 /// The colour of the `i`-th series of a chart.
 pub fn palette(i: usize) -> Color32 {
-    PALETTE.get(i % PALETTE.len()).copied().unwrap_or(ACCENT)
+    PALETTE.get(i % PALETTE.len()).copied().unwrap_or(pal().accent)
 }
 
 pub fn amount_color(c: Cents) -> Color32 {
     if c < 0 {
-        RED
+        pal().red
     } else if c > 0 {
-        GREEN
+        pal().green
     } else {
-        MUTED
+        pal().muted
     }
 }
 
@@ -587,6 +725,7 @@ pub struct App {
     pub journal: Option<(i64, usize)>,
     /// The language chosen in the window, `None` for the system's.
     pub language: Option<Lang>,
+    pub theme: Theme,
     /// Where the data is.
     pub file: DataFile,
     pub(crate) data_version: i64,
@@ -657,37 +796,44 @@ pub fn run(home: Home, (path, must_exist): (PathBuf, bool), asked: Use, screensh
 }
 
 fn setup_style(ctx: &egui::Context) {
-    let mut style = (*ctx.global_style()).clone();
-    let mut v = egui::Visuals::light();
-    v.panel_fill = BG;
-    v.window_fill = CARD;
-    v.extreme_bg_color = Color32::WHITE;
-    v.faint_bg_color = ZEBRA;
-    v.selection.bg_fill = ACCENT_SOFT;
-    v.selection.stroke = Stroke::new(1.0, ACCENT);
-    v.hyperlink_color = ACCENT;
-    v.window_stroke = Stroke::new(1.0, BORDER);
+    for (theme, p) in [(egui::Theme::Light, &LIGHT), (egui::Theme::Dark, &DARK)] {
+        ctx.set_visuals_of(theme, visuals(theme, p));
+    }
+    ctx.all_styles_mut(|style| {
+        style.spacing.item_spacing = Vec2::new(8.0, 6.0);
+        style.spacing.button_padding = Vec2::new(10.0, 4.0);
+        style.spacing.interact_size.y = 26.0;
+        use egui::TextStyle::*;
+        style.text_styles.insert(Body, FontId::proportional(14.0));
+        style.text_styles.insert(Button, FontId::proportional(14.0));
+        style.text_styles.insert(Heading, FontId::proportional(22.0));
+        style.text_styles.insert(Small, FontId::proportional(11.5));
+    });
+}
+
+/// egui's look for one theme, from its palette.
+pub fn visuals(theme: egui::Theme, p: &Palette) -> egui::Visuals {
+    let mut v = if theme == egui::Theme::Dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    v.panel_fill = p.bg;
+    v.window_fill = p.card;
+    v.extreme_bg_color = p.field;
+    v.faint_bg_color = p.zebra;
+    v.selection.bg_fill = p.accent_soft;
+    v.selection.stroke = Stroke::new(1.0, p.accent);
+    v.hyperlink_color = p.accent;
+    v.window_stroke = Stroke::new(1.0, p.border);
     v.window_corner_radius = CornerRadius::same(10);
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, p.text);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.border);
     for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
         w.corner_radius = CornerRadius::same(6);
     }
-    v.widgets.inactive.bg_fill = TRACK;
-    v.widgets.inactive.weak_bg_fill = TRACK;
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
-    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0xE0, 0xE8, 0xE6);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
-    style.visuals = v;
-    style.spacing.item_spacing = Vec2::new(8.0, 6.0);
-    style.spacing.button_padding = Vec2::new(10.0, 4.0);
-    style.spacing.interact_size.y = 26.0;
-    use egui::TextStyle::*;
-    style.text_styles.insert(Body, FontId::proportional(14.0));
-    style.text_styles.insert(Button, FontId::proportional(14.0));
-    style.text_styles.insert(Heading, FontId::proportional(22.0));
-    style.text_styles.insert(Small, FontId::proportional(11.5));
-    ctx.set_global_style(style);
+    v.widgets.inactive.bg_fill = p.track;
+    v.widgets.inactive.weak_bg_fill = p.track;
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0, p.text);
+    v.widgets.hovered.weak_bg_fill = p.hover;
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, p.accent);
+    v
 }
 
 fn save_png(path: &std::path::Path, img: &egui::ColorImage) -> Result<()> {
@@ -713,6 +859,10 @@ impl App {
     pub fn new(db: Db, screenshot: Option<PathBuf>) -> Self {
         let demo = db.meta("demo").as_deref() == Some("1");
         let language = Lang::from_setting(db.meta(i18n::META_KEY).as_deref());
+        // For screenshots, CASHCRAFT_THEME=light|dark overrides the file's choice.
+        let theme = Theme::from_setting(
+            std::env::var("CASHCRAFT_THEME").ok().as_deref().or(db.meta(Theme::META_KEY).as_deref()),
+        );
         let mut app = App {
             db,
             view: View::Dashboard,
@@ -741,6 +891,7 @@ impl App {
             ledger_date: String::new(),
             journal: None,
             language,
+            theme,
             file: DataFile::default(),
             data_version: 0,
             last_check: 0.0,
@@ -802,6 +953,16 @@ impl App {
             // An amount being typed could mean something else in the new language.
             self.budget_edit = None;
             self.new_budget.1.clear();
+        }
+        self.act(ui, r.map(|_| String::new()));
+    }
+
+    /// Changes the colours of the window.
+    pub fn choose_theme(&mut self, ui: &Ui, t: Theme) {
+        let r = self.db.set_meta(Theme::META_KEY, t.code());
+        if r.is_ok() {
+            self.theme = t;
+            ui.ctx().set_theme(t.preference());
         }
         self.act(ui, r.map(|_| String::new()));
     }
@@ -1027,6 +1188,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        set_dark(ui.visuals().dark_mode);
 
         let steady = self.file_before(ui);
         if !steady {
@@ -1097,7 +1259,7 @@ impl eframe::App for App {
         self.sidebar(ui);
         self.toolbar(ui);
         self.status_bar(ui);
-        egui::CentralPanel::default().frame(Frame::new().fill(BG).inner_margin(Margin::symmetric(22, 16))).show(
+        egui::CentralPanel::default().frame(Frame::new().fill(pal().bg).inner_margin(Margin::symmetric(22, 16))).show(
             ui,
             |ui| match self.view {
                 View::Dashboard => self.dashboard(ui),
@@ -1125,8 +1287,8 @@ impl eframe::App for App {
 
 pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     Frame::new()
-        .fill(CARD)
-        .stroke(Stroke::new(1.0, BORDER))
+        .fill(pal().card)
+        .stroke(Stroke::new(1.0, pal().border))
         .corner_radius(CornerRadius::same(10))
         .inner_margin(Margin::same(14))
         .show(ui, |ui| ui.vertical(add).inner)
@@ -1134,11 +1296,11 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 }
 
 pub fn section_title(ui: &mut Ui, s: &str) {
-    ui.label(RichText::new(s).size(15.0).strong().color(TEXT));
+    ui.label(RichText::new(s).size(15.0).strong().color(pal().text));
 }
 
 pub fn small_caps(ui: &mut Ui, s: &str) {
-    ui.label(RichText::new(s.to_uppercase()).size(11.0).color(MUTED).strong());
+    ui.label(RichText::new(s.to_uppercase()).size(11.0).color(pal().muted).strong());
 }
 
 pub fn money(c: Cents) -> RichText {
@@ -1148,7 +1310,7 @@ pub fn money(c: Cents) -> RichText {
 pub fn primary_button(ui: &mut Ui, text: &str) -> egui::Response {
     ui.add(
         egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
-            .fill(ACCENT)
+            .fill(pal().accent_fill)
             .corner_radius(CornerRadius::same(6)),
     )
 }
@@ -1165,16 +1327,16 @@ pub fn nav_item(
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
     let p = ui.painter();
     if selected {
-        p.rect_filled(rect, CornerRadius::same(6), ACCENT_SOFT);
+        p.rect_filled(rect, CornerRadius::same(6), pal().accent_soft);
         p.rect_filled(
             Rect::from_min_size(rect.min + Vec2::new(0.0, 5.0), Vec2::new(3.0, rect.height() - 10.0)),
             CornerRadius::same(2),
-            ACCENT,
+            pal().accent,
         );
     } else if resp.hovered() {
-        p.rect_filled(rect, CornerRadius::same(6), Color32::from_rgb(0xE6, 0xEA, 0xE9));
+        p.rect_filled(rect, CornerRadius::same(6), pal().hover);
     }
-    let color = if selected { ACCENT } else { TEXT };
+    let color = if selected { pal().accent } else { pal().text };
     p.text(rect.left_center() + Vec2::new(10.0, 0.0), Align2::LEFT_CENTER, icon, FontId::proportional(14.0), color);
     let right_w = if let Some((t, c)) = &right {
         let g = p.layout_no_wrap(t.clone(), FontId::proportional(12.5), *c);
@@ -1211,7 +1373,9 @@ pub fn category_combo(ui: &mut Ui, id: &str, cats: &[Category], value: &mut Opti
         for c in cats {
             if last_income != Some(c.is_income) {
                 last_income = Some(c.is_income);
-                ui.label(RichText::new(if c.is_income { tr("Income") } else { tr("Expenses") }).small().color(MUTED));
+                ui.label(
+                    RichText::new(if c.is_income { tr("Income") } else { tr("Expenses") }).small().color(pal().muted),
+                );
             }
             let depth = c.path.matches(':').count();
             let label = format!("{}{}", "    ".repeat(depth), c.name);
@@ -1269,15 +1433,15 @@ pub fn expense_toggle(ui: &mut Ui, expense: &mut bool) {
         ui.spacing_mut().item_spacing.x = 0.0;
         let seg = |ui: &mut Ui, on: bool, text: &str, color: Color32| {
             ui.add(
-                egui::Button::new(RichText::new(text).color(if on { Color32::WHITE } else { TEXT }))
-                    .fill(if on { color } else { TRACK })
+                egui::Button::new(RichText::new(text).color(if on { Color32::WHITE } else { pal().text }))
+                    .fill(if on { color } else { pal().track })
                     .min_size(Vec2::new(96.0, 28.0)),
             )
         };
-        if seg(ui, *expense, tr("− Expense"), RED).clicked() {
+        if seg(ui, *expense, tr("− Expense"), pal().red_fill).clicked() {
             *expense = true;
         }
-        if seg(ui, !*expense, tr("+ Income"), GREEN).clicked() {
+        if seg(ui, !*expense, tr("+ Income"), pal().green_fill).clicked() {
             *expense = false;
         }
     });
@@ -1285,7 +1449,7 @@ pub fn expense_toggle(ui: &mut Ui, expense: &mut bool) {
 
 pub fn form_row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
-        ui.add_sized([120.0, 24.0], egui::Label::new(RichText::new(label).color(MUTED)));
+        ui.add_sized([120.0, 24.0], egui::Label::new(RichText::new(label).color(pal().muted)));
         add(ui);
     });
 }
@@ -1324,9 +1488,15 @@ pub fn bars_chart(ui: &mut Ui, data: &[db::MonthTotal], height: f32) {
     let plot = Rect::from_min_max(rect.min + Vec2::new(54.0, 6.0), rect.max - Vec2::new(4.0, 22.0));
     for i in 0..=4 {
         let y = plot.bottom() - plot.height() * i as f32 / 4.0;
-        p.hline(plot.x_range(), y, Stroke::new(1.0, if i == 0 { BORDER } else { Color32::from_rgb(0xEE, 0xF1, 0xF0) }));
+        p.hline(plot.x_range(), y, Stroke::new(1.0, if i == 0 { pal().border } else { pal().grid }));
         let v = (max * i as f32 / 4.0) as i64;
-        p.text(Pos2::new(plot.left() - 6.0, y), Align2::RIGHT_CENTER, short_eur(v), FontId::proportional(10.5), MUTED);
+        p.text(
+            Pos2::new(plot.left() - 6.0, y),
+            Align2::RIGHT_CENTER,
+            short_eur(v),
+            FontId::proportional(10.5),
+            pal().muted,
+        );
     }
     let n = data.len().max(1) as f32;
     let slot = plot.width() / n;
@@ -1339,19 +1509,19 @@ pub fn bars_chart(ui: &mut Ui, data: &[db::MonthTotal], height: f32) {
         p.rect_filled(
             Rect::from_min_max(Pos2::new(cx - bw - 1.0, plot.bottom() - hi), Pos2::new(cx - 1.0, plot.bottom())),
             top,
-            GREEN,
+            pal().green,
         );
         p.rect_filled(
             Rect::from_min_max(Pos2::new(cx + 1.0, plot.bottom() - he), Pos2::new(cx + bw + 1.0, plot.bottom())),
             top,
-            RED,
+            pal().red,
         );
         p.text(
             Pos2::new(cx, plot.bottom() + 11.0),
             Align2::CENTER_CENTER,
             month_label(&m.month),
             FontId::proportional(11.0),
-            MUTED,
+            pal().muted,
         );
     }
 }
@@ -1361,7 +1531,7 @@ pub fn legend(ui: &mut Ui, items: &[(&str, Color32)]) {
         for (t, c) in items {
             let (r, _) = ui.allocate_exact_size(Vec2::new(10.0, 10.0), Sense::hover());
             ui.painter().rect_filled(r, CornerRadius::same(2), *c);
-            ui.label(RichText::new(*t).size(12.0).color(MUTED));
+            ui.label(RichText::new(*t).size(12.0).color(pal().muted));
             ui.add_space(6.0);
         }
     });
@@ -1375,16 +1545,16 @@ pub fn hbars(ui: &mut Ui, items: &[(String, Cents)]) {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 32.0), Sense::hover());
         let p = ui.painter_at(rect);
         let color = palette(i);
-        p.text(rect.left_top() + Vec2::new(0.0, 1.0), Align2::LEFT_TOP, name, FontId::proportional(12.5), TEXT);
+        p.text(rect.left_top() + Vec2::new(0.0, 1.0), Align2::LEFT_TOP, name, FontId::proportional(12.5), pal().text);
         p.text(
             rect.right_top() + Vec2::new(0.0, 1.0),
             Align2::RIGHT_TOP,
             fmt_eur(*v),
             FontId::proportional(12.5),
-            TEXT,
+            pal().text,
         );
         let track = Rect::from_min_size(rect.left_top() + Vec2::new(0.0, 20.0), Vec2::new(w, 7.0));
-        p.rect_filled(track, CornerRadius::same(4), TRACK);
+        p.rect_filled(track, CornerRadius::same(4), pal().track);
         p.rect_filled(
             Rect::from_min_size(track.min, Vec2::new(w * (*v as f32 / max), 7.0)),
             CornerRadius::same(4),
@@ -1402,7 +1572,7 @@ pub fn donut(ui: &mut Ui, items: &[(String, Cents)], size: f32) {
     let r_out = size / 2.0 - 4.0;
     let r_in = r_out * 0.62;
     if total <= 0 {
-        p.circle_stroke(c, (r_out + r_in) / 2.0, Stroke::new(r_out - r_in, TRACK));
+        p.circle_stroke(c, (r_out + r_in) / 2.0, Stroke::new(r_out - r_in, pal().track));
     } else {
         let mut a0 = -std::f32::consts::FRAC_PI_2;
         for (i, (_, v)) in items.iter().enumerate() {
@@ -1424,8 +1594,8 @@ pub fn donut(ui: &mut Ui, items: &[(String, Cents)], size: f32) {
             a0 += sweep;
         }
     }
-    p.text(c - Vec2::new(0.0, 10.0), Align2::CENTER_CENTER, tr("Total"), FontId::proportional(12.0), MUTED);
-    p.text(c + Vec2::new(0.0, 9.0), Align2::CENTER_CENTER, fmt_eur(total), FontId::proportional(15.0), TEXT);
+    p.text(c - Vec2::new(0.0, 10.0), Align2::CENTER_CENTER, tr("Total"), FontId::proportional(12.0), pal().muted);
+    p.text(c + Vec2::new(0.0, 9.0), Align2::CENTER_CENTER, fmt_eur(total), FontId::proportional(15.0), pal().text);
 }
 
 /// Linea dell'andamento del patrimonio.
@@ -1441,14 +1611,14 @@ pub fn line_chart(ui: &mut Ui, data: &[(String, Cents)], height: f32) {
     let plot = Rect::from_min_max(rect.min + Vec2::new(60.0, 8.0), rect.max - Vec2::new(10.0, 22.0));
     for i in 0..=3 {
         let y = plot.bottom() - plot.height() * i as f32 / 3.0;
-        p.hline(plot.x_range(), y, Stroke::new(1.0, Color32::from_rgb(0xEE, 0xF1, 0xF0)));
+        p.hline(plot.x_range(), y, Stroke::new(1.0, pal().grid));
         let v = min + (max - min) * i as f32 / 3.0;
         p.text(
             Pos2::new(plot.left() - 6.0, y),
             Align2::RIGHT_CENTER,
             short_eur(v as i64),
             FontId::proportional(10.5),
-            MUTED,
+            pal().muted,
         );
     }
     let n = data.len();
@@ -1464,23 +1634,23 @@ pub fn line_chart(ui: &mut Ui, data: &[(String, Cents)], height: f32) {
         let quad = vec![*a, *b, Pos2::new(b.x, plot.bottom()), Pos2::new(a.x, plot.bottom())];
         p.add(egui::Shape::convex_polygon(quad, Color32::from_rgba_unmultiplied(0x1F, 0x7A, 0x6A, 28), Stroke::NONE));
     }
-    p.line(pts.clone(), Stroke::new(2.5, ACCENT));
+    p.line(pts.clone(), Stroke::new(2.5, pal().accent));
     for (pt, (m, _)) in pts.iter().zip(data) {
-        p.circle_filled(*pt, 3.0, ACCENT);
+        p.circle_filled(*pt, 3.0, pal().accent);
         p.text(
             Pos2::new(pt.x, plot.bottom() + 11.0),
             Align2::CENTER_CENTER,
             month_label(m),
             FontId::proportional(11.0),
-            MUTED,
+            pal().muted,
         );
     }
     if let Some(h) = resp.hover_pos()
         && let Some((pt, (_, v))) =
             pts.iter().zip(data).min_by(|(a, _), (b, _)| (a.x - h.x).abs().total_cmp(&(b.x - h.x).abs()))
     {
-        p.circle_stroke(*pt, 6.0, Stroke::new(2.0, ACCENT));
-        p.text(*pt - Vec2::new(0.0, 12.0), Align2::CENTER_BOTTOM, fmt_eur(*v), FontId::proportional(12.0), TEXT);
+        p.circle_stroke(*pt, 6.0, Stroke::new(2.0, pal().accent));
+        p.text(*pt - Vec2::new(0.0, 12.0), Align2::CENTER_BOTTOM, fmt_eur(*v), FontId::proportional(12.0), pal().text);
     }
 }
 
@@ -1488,7 +1658,7 @@ pub fn progress(ui: &mut Ui, frac: f32, color: Color32) {
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 8.0), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(4), TRACK);
+    p.rect_filled(rect, CornerRadius::same(4), pal().track);
     p.rect_filled(
         Rect::from_min_size(rect.min, Vec2::new(w * frac.clamp(0.0, 1.0), 8.0)),
         CornerRadius::same(4),
@@ -1499,11 +1669,11 @@ pub fn progress(ui: &mut Ui, frac: f32, color: Color32) {
 pub fn budget_color(spent: Cents, budget: Cents) -> Color32 {
     let f = if budget > 0 { spent as f32 / budget as f32 } else { 0.0 };
     if f > 1.0 {
-        RED
+        pal().red
     } else if f > 0.85 {
-        AMBER
+        pal().amber
     } else {
-        GREEN
+        pal().green
     }
 }
 
@@ -1522,7 +1692,7 @@ impl App {
             ctx,
             |ui| {
                 Frame::new()
-                    .fill(TEXT)
+                    .fill(LIGHT.text)
                     .corner_radius(CornerRadius::same(8))
                     .inner_margin(Margin::symmetric(16, 10))
                     .show(ui, |ui| {
