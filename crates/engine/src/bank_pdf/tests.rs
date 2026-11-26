@@ -41,6 +41,9 @@ fn the_rows_are_read_with_their_descriptions_and_balances() {
     for font in [Font::NotEmbedded, Font::Type3, Font::TrueType] {
         let m = read(&movements(), font).unwrap();
         assert_eq!((m.opening, m.closing), (Some(10_000), Some(99_600)), "{font:?}");
+        // The heading names the account.
+        let account = (m.bank.as_str(), m.iban.as_str(), m.closing_on.map(|d| d.to_string()));
+        assert_eq!(account, ("Banca di Esempio", "IT60X0542811101000000123456", Some("2026-11-26".into())), "{font:?}");
         let got: Vec<[&str; 4]> = m.rows.iter().map(|r| [&*r[0], &*r[1], &*r[2], &*r[3]]).collect();
         let expected = [
             [
@@ -187,4 +190,32 @@ fn hostile_pages_never_panic() {
         }
         let _ = parse(&[page.clone(), page]);
     }
+}
+
+#[test]
+fn an_iban_is_taken_only_with_its_check_digits() {
+    assert_eq!(iban("it60 x054 2811 1010 0000 0123 456").as_deref(), Some("IT60X0542811101000000123456"));
+    for wrong in ["IT61X0542811101000000123456", "IT60X054281110100000012345", "IT", "", "1T60X0542811101000000123456"]
+    {
+        assert_eq!(iban(wrong), None, "{wrong}");
+    }
+    // A wrong IBAN in the heading is not taken: the list is read all the same.
+    let m = read(&with(&[("0123 456", "0123 457")]), Font::NotEmbedded).unwrap();
+    assert!(m.iban.is_empty() && m.rows.len() == 6);
+}
+
+#[test]
+fn a_list_finds_its_account_by_the_iban() {
+    let db = Db::open_in_memory().unwrap();
+    db.add_account("Other", AccountKind::Bank, "EUR", 0, "IT02L1234512345123456789012").unwrap();
+    let t = table(&movements());
+    let l = t.list.as_ref().unwrap();
+    assert_eq!(t.stated_balance(), Some((99_600, l.closing_on)));
+    assert!(l.account(&db.accounts(true).unwrap()).is_none());
+    let mine = db.add_account("Mine", AccountKind::Bank, "EUR", 0, "IT60 X054 2811 1010 0000 0123 456").unwrap();
+    assert_eq!(l.account(&db.accounts(true).unwrap()).map(|a| a.id), Some(mine));
+    // An archived account is not proposed.
+    let a = db.accounts(true).unwrap().into_iter().find(|a| a.id == mine).unwrap();
+    db.update_account(mine, &a.name, a.kind, 0, &a.iban, true).unwrap();
+    assert!(l.account(&db.accounts(true).unwrap()).is_none());
 }
