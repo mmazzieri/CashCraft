@@ -156,28 +156,30 @@ impl App {
                     small_caps(ui, tr("Net worth"));
                     ui.separator();
                     let mut chosen = self.language;
-                    egui::ComboBox::from_id_salt("language")
-                        .selected_text(format!("🌐 {}", language_name(chosen)))
-                        .show_ui(ui, |ui| {
-                            for l in LANGUAGES {
-                                ui.selectable_value(&mut chosen, l, language_name(l));
-                            }
-                        })
-                        .response
-                        .on_hover_text(tr("Language"));
-                    if chosen != self.language {
-                        self.choose_language(ui, chosen);
-                    }
                     let mut theme = self.theme;
-                    egui::ComboBox::from_id_salt("theme")
-                        .selected_text(format!("☀ {}", theme.name()))
-                        .show_ui(ui, |ui| {
+                    // Bottom-up: the language row is drawn first, below the theme row.
+                    ui.horizontal(|ui| {
+                        setting_label(ui, tr("Language"));
+                        egui::ComboBox::from_id_salt("language").selected_text(language_name(chosen)).show_ui(
+                            ui,
+                            |ui| {
+                                for l in LANGUAGES {
+                                    ui.selectable_value(&mut chosen, l, language_name(l));
+                                }
+                            },
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        setting_label(ui, tr("Theme"));
+                        egui::ComboBox::from_id_salt("theme").selected_text(theme.name()).show_ui(ui, |ui| {
                             for t in Theme::ALL {
                                 ui.selectable_value(&mut theme, t, t.name());
                             }
-                        })
-                        .response
-                        .on_hover_text(tr("Theme"));
+                        });
+                    });
+                    if chosen != self.language {
+                        self.choose_language(ui, chosen);
+                    }
                     if theme != self.theme {
                         self.choose_theme(ui, theme);
                     }
@@ -1309,4 +1311,10 @@ pub fn turn_button(ui: &mut Ui, t: &Transaction) -> bool {
     ui.button(text)
         .on_hover_text(tr("Money moved between two of your accounts is neither income nor an expense (⌘T)."))
         .clicked()
+}
+
+/// A setting's name in the sidebar, padded so the menus beside it line up.
+fn setting_label(ui: &mut Ui, text: &str) {
+    let width = ui.label(RichText::new(text).color(pal().muted)).rect.width();
+    ui.add_space((72.0 - width).max(4.0));
 }
