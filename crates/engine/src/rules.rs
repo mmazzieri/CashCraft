@@ -1574,7 +1574,7 @@ pub fn count_matches(rule: &Rule, among: &[Transaction], limit: Duration, stop: 
     let start = Instant::now();
     let mut n = 0;
     for t in among.iter().filter(|t| is_for_rules(t)) {
-        if stop.load(Ordering::Relaxed) || start.elapsed() > limit {
+        if stop.load(Ordering::Relaxed) || start.elapsed() >= limit {
             return Ok((n, false));
         }
         n += usize::from(compiled.met(&Subject::of(t)).is_some());
