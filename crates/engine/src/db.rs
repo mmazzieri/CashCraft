@@ -411,7 +411,7 @@ impl Db {
     }
 
     /// The working copy of a file that several computers change.
-    pub(crate) fn open_copy(path: &Path, seed: Lang) -> Result<(Db, bool)> {
+    pub fn open_copy(path: &Path, seed: Lang) -> Result<(Db, bool)> {
         Self::open_with(path, seed, true)
     }
 

@@ -15,7 +15,7 @@ pub mod c;
 
 use anyhow::{Result, bail};
 use cashcraft_engine::db::Db;
-use cashcraft_engine::i18n::{Lang, set_lang, tr, trf};
+use cashcraft_engine::i18n::{Lang, lang, set_lang, tr, trf};
 use cashcraft_engine::ops;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -55,14 +55,15 @@ pub enum Request {
     Call { path: PathBuf, tool: String, args: Value },
 }
 
-/// Opens, uses and closes the private copy. The last connection that closes leaves no log beside
+/// Opens, uses and closes the private copy, as the working copy of a file that several computers
+/// change: new rows get ids that no other phone or computer gives. The last connection that closes leaves no log beside
 /// it: the file alone holds everything. A close that fails is not an error of `body`, whose changes
 /// are in: the log stays, and [`Request::Settle`] says so before the file is carried.
 fn with_db<T>(path: &Path, body: impl FnOnce(&Db) -> Result<T>) -> Result<T> {
     if !path.is_file() {
         bail!(tr("there is no data file on the phone"));
     }
-    let (db, _) = Db::open(path)?;
+    let (db, _) = Db::open_copy(path, lang())?;
     let out = body(&db)?;
     let Db { conn, .. } = db;
     drop(conn);
