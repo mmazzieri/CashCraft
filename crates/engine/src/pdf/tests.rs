@@ -89,7 +89,9 @@ fn spaced_letters_are_one_word_and_text_drawn_twice_is_read_once() {
 fn files_that_cannot_be_read_say_why() {
     let text = [item(0, 34.0, 100.0, "Text")];
     let why = |bytes: &[u8]| read_pages(bytes).unwrap_err();
-    assert_eq!(why(&document(Font::NotEmbedded, &text)), Failure::NoText);
+    // A font that is named and not carried is read all the same.
+    let named = read_pages(&document(Font::NotEmbedded, &text)).unwrap();
+    assert_eq!(texts(&named[0][0]), ["Text"]);
     let good = document(Font::Type3, &text);
     let many: Vec<Item> = (0..=MAX_PAGES).map(|p| item(p, 10.0, 10.0, "x")).collect();
     assert_eq!(why(&document(Font::Type3, &many)), Failure::TooLarge);
@@ -110,6 +112,7 @@ fn files_that_cannot_be_read_say_why() {
             Failure::TimeOut,
             Failure::NoProcess,
             Failure::Unknown,
+            Failure::Mismatch,
         ] {
             assert!(!f.message().starts_with("the "), "{f:?}");
         }

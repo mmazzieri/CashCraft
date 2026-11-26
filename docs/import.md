@@ -1,7 +1,7 @@
 # Importing statements
 
-CSV, Excel 97 (`.xls`), OFX, and the PDF statements of credit cards ([cards.md](cards.md)). Files have at most
-32 MB.
+CSV, Excel 97 (`.xls`), OFX, the PDF statements of credit cards ([cards.md](cards.md)) and the lists of an
+account's movements that the web sites of banks print to PDF. Files have at most 32 MB.
 
 ## CSV and Excel
 
@@ -48,13 +48,24 @@ Investment statements, and the matching of an OFX account with one of CashCraft,
 
 ## What is there already
 
+## Lists of movements in PDF
+
+The web sites of many banks print the movements of a current account as a PDF list: a heading of columns
+(*Data contabile*, *Data valuta*, *Importo*, *Descrizione*), a row for each movement, newest first, whose
+description goes on over several lines and may start a little above its date, and the balances at the start and
+at the end (*Saldo iniziale al…*, *Saldo finale al…*). The PDF is read in the process that reads card statements
+([cards.md](cards.md)); its rows then become those of a table and are imported as a CSV file is, with columns that
+can be changed and that are remembered for the account. The balances are not imported: when the list has both,
+the movements must add up from one to the other, and a list with a row that could not be read or that does not
+add up is refused whole. Lists of different periods may overlap: rows already imported are skipped.
+
 Each row has a key, unique in its account:
 
 | Row | Key |
 |---|---|
 | OFX with a FITID that is believed | FITID, date, amount, order |
 | Other OFX | date, amount, payee, order |
-| CSV, Excel | date, amount, payee, notes, order |
+| CSV, Excel, list of movements in PDF | date, amount, payee, notes, order |
 | Card statement in PDF | see [cards.md](cards.md) |
 
 Rules change no key, and payees are compared with what the bank wrote ([rules.md](rules.md)).
@@ -91,5 +102,6 @@ After that, sides of transfers are taken as for every import ([ledger.md](ledger
 ## Tests against damaged files
 
 Each reader has a test that damages good files in thousands of ways from a fixed seed, for a limited time: CSV,
-OFX and Excel in `importer.rs`, PDF in `apps/cashcraft-cli/tests/pdf.rs` through the process that reads it.
+OFX and Excel in `importer.rs`, PDF in `apps/cashcraft-cli/tests/pdf.rs` through the process that reads it; the
+words of a list of movements, in any place and order, in `bank_pdf/tests.rs`.
 `cargo-fuzz` would need a nightly compiler, a linked fuzzer and a package outside the workspace.

@@ -6,8 +6,11 @@ The text and its positions come from `hayro-interpret`. All of it, up to the sta
 process: the program started again with `--read-pdf-from-stdin`. A crafted file can overflow the stack of the
 library, which ends a process whatever the thread, or keep it busy for ever, and a thread cannot be stopped.
 The process gets 10 seconds; on Linux it also stops at 1 GB of memory. Files have at most 32 MB, 100 pages,
-200,000 characters and 5,000 rows. PDF files with a password or without text (scans, or fonts that are not in
-the file) are refused. The window goes on while a file is read. When the program on disk was replaced by an
+200,000 characters and 5,000 rows. PDF files with a password or without text (scans) are refused. A font that
+the file names and does not carry, as the standard ones often are, is read all the same: what its characters are
+comes from the encoding of the file and their widths from the metrics of the standard fonts or from the file; no
+font is bundled, for nothing is drawn. A PDF that is not a card statement may be the list of an account's
+movements ([import.md](import.md)). The window goes on while a file is read. When the program on disk was replaced by an
 update while it was open, it may have to be started again.
 
 Words are separated by the gaps between characters as well as by spaces. Columns come from the headings of

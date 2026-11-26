@@ -1,7 +1,7 @@
 //! The program reads PDF files in another process of its own: a file that ends that process is an error.
 
-use cashcraft_engine::pdf::{Failure, Limits, statement_with};
-use cashcraft_engine::testing::{hostile, statement_file};
+use cashcraft_engine::pdf::{Document, Failure, Limits, read_with};
+use cashcraft_engine::testing::{hostile, movements_file, statement_file};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -9,9 +9,16 @@ const PROGRAM: &str = env!("CARGO_BIN_EXE_cashcraft");
 
 #[test]
 fn a_statement_is_read_by_the_other_process() {
-    let s = statement_with(Path::new(PROGRAM), &statement_file(), Limits::default()).unwrap();
+    let Ok(Document::Card(s)) = read_with(Path::new(PROGRAM), &statement_file(), Limits::default()) else { panic!() };
     assert!(s.is_sound());
     assert_eq!(s.rows.len(), 9);
+}
+
+#[test]
+fn a_list_of_movements_is_read_by_the_other_process() {
+    let got = read_with(Path::new(PROGRAM), &movements_file(), Limits::default());
+    let Ok(Document::Movements(m)) = got else { panic!("{got:?}") };
+    assert!(m.rows.len() > 1 && m.opening.is_some());
 }
 
 #[test]
@@ -19,7 +26,7 @@ fn hostile_files_end_the_other_process_only() {
     for (name, bytes) in hostile() {
         let limits = Limits { time: Duration::from_secs(4), ..Default::default() };
         let start = Instant::now();
-        let got = statement_with(Path::new(PROGRAM), &bytes, limits);
+        let got = read_with(Path::new(PROGRAM), &bytes, limits);
         let expected: &[Failure] = match name {
             // The stack of the process that reads.
             "nested arrays"
@@ -52,16 +59,16 @@ fn the_other_process_stops_at_its_memory() {
         stream(b"q Q", ""),
     ];
     let bytes = cashcraft_engine::testing::file(&objects);
-    let read = |memory| statement_with(Path::new(PROGRAM), &bytes, Limits { memory, ..Default::default() });
+    let read = |memory| read_with(Path::new(PROGRAM), &bytes, Limits { memory, ..Default::default() });
     assert_eq!(read(1 << 30), Err(Failure::NoText));
     // Less than the program itself takes: it is stopped before it answers.
     let big: Vec<u8> = [bytes.clone(), vec![b' '; 24 << 20]].concat();
-    let stopped = statement_with(Path::new(PROGRAM), &big, Limits { memory: 1 << 20, ..Default::default() });
+    let stopped = read_with(Path::new(PROGRAM), &big, Limits { memory: 1 << 20, ..Default::default() });
     assert_eq!(stopped, Err(Failure::Damaged));
 }
 
 #[test]
 fn a_program_that_is_not_there_is_an_error() {
-    let got = statement_with(Path::new("/nowhere/cashcraft"), &statement_file(), Limits::default());
+    let got = read_with(Path::new("/nowhere/cashcraft"), &statement_file(), Limits::default());
     assert_eq!(got, Err(Failure::NoProcess));
 }

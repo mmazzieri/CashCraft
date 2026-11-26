@@ -613,7 +613,8 @@ Purchases	Acquisti
 Instalments	Rate
 Amount debited	Addebito
 Amount debited, on the first page	Addebito, in prima pagina
-the PDF is not a card statement of a kind that can be read	il PDF non è un estratto conto di carta di un tipo leggibile
+the PDF is not a statement of a kind that can be read	il PDF non è un estratto conto di un tipo leggibile
+some movements of the PDF could not be read, or they do not add up to its balances: nothing was imported	alcuni movimenti del PDF non si sono potuti leggere, oppure non tornano con i saldi: non è stato importato nulla
 card statement {id} not found	estratto conto {id} della carta non trovato
 the card statement has a payment already: unlink it first	l'estratto conto della carta ha già un pagamento: prima va scollegato
 transaction {id} cannot be the payment of this statement: it must be of a bank account, for the amount debited, near the debit date, and not a transfer or split	il movimento {id} non può essere il pagamento di questo estratto conto: deve essere di un conto corrente, dell'importo addebitato, vicino alla data di addebito, e non un giroconto o un movimento suddiviso
@@ -678,7 +679,7 @@ Dates	Date
 Decimals	Decimali
 Forget them	Dimenticale
 It may be there already (--skip-rows or --add-rows): {line}	Potrebbe esserci già (--skip-rows o --add-rows): {line}
-It works with CSV, Excel 97 and OFX files exported from online banking and with the PDF statement of a credit card. Transactions already imported are skipped.	Funziona con i file CSV, Excel 97 e OFX esportati dalla banca online e con l'estratto conto in PDF di una carta di credito. I movimenti già importati vengono saltati.
+It works with CSV, Excel 97 and OFX files exported from online banking, with the list of an account's movements printed to PDF and with the PDF statement of a credit card. Transactions already imported are skipped.	Funziona con i file CSV, Excel 97 e OFX esportati dalla banca online, con la lista movimenti di un conto stampata in PDF e con l'estratto conto in PDF di una carta di credito. I movimenti già importati vengono saltati.
 The file has several statements: choose one	Il file contiene più estratti conto: scegline uno
 The file has several statements: choose one with --statement	Il file contiene più estratti conto: scegline uno con --statement
 a statement is inside another one	un estratto conto è dentro un altro

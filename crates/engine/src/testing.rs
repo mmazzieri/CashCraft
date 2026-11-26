@@ -212,6 +212,83 @@ pub fn statement() -> Vec<Item> {
     v
 }
 
+/// Helvetica, named and not carried, as the web sites of banks print it.
+pub fn helvetica() -> Vec<Vec<u8>> {
+    vec![b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding/WinAnsiEncoding>>".to_vec()]
+}
+
+/// [`movements`] as a file.
+pub fn movements_file() -> Vec<u8> {
+    document(&movements(), helvetica(), 7, 278)
+}
+
+/// How wide a text of Helvetica is at the size of [`movements`].
+fn helvetica_width(text: &str) -> f64 {
+    let units: u32 =
+        text.bytes().map(|b| HELVETICA.get(usize::from(b.saturating_sub(32))).copied().unwrap_or(556)).sum();
+    f64::from(units) * 7.0 / 1000.0
+}
+
+/// A list of an account's movements laid out as the real one of a bank, with invented contents: the
+/// newest first, descriptions over several lines that may start above their date, the balances.
+pub fn movements() -> Vec<Item> {
+    let mut v: Vec<Item> = Vec::new();
+    let mut add = |page: usize, y: f64, words: &[(f64, &str)]| {
+        for (x, text) in words {
+            v.push(Item { page, x: *x, y, text: text.to_string() });
+        }
+    };
+    // Amounts are aligned on the right.
+    let right = |text: &str| 295.0 - helvetica_width(text);
+    for page in 0..2 {
+        add(page, 33.7, &[(333.7, "Banca di Esempio")]);
+        add(page, 80.0, &[(346.8, "Movimenti")]);
+        add(page, 121.0, &[(31.0, "Conto"), (134.0, "00000 00000 000000000000 conti correnti ROSSI MARIA")]);
+        add(page, 133.0, &[(31.0, "IBAN"), (134.0, "IT00X0000000000000000000000")]);
+        add(page, 145.0, &[(31.0, "Saldo contabile"), (134.0, "996,00")]);
+        add(page, 181.0, &[(31.0, "Periodo"), (134.0, "Ultimi tre mesi")]);
+        add(page, 246.3, &[(29.0, "Movimenti")]);
+        add(
+            page,
+            263.5,
+            &[(46.7, "Data contabile"), (142.7, "Data valuta"), (265.2, "Importo"), (303.0, "Descrizione")],
+        );
+        let foot = format!(
+            "Stampa da Home Banking per il contratto: ROSSI MARIA in data 26/11/2026 07.21.06 Pagina {} di 2",
+            page + 1
+        );
+        add(page, 818.8, &[(196.2, &foot)]);
+    }
+    add(0, 278.5, &[(54.0, "26/11/2026"), (right("996,00"), "996,00"), (303.0, "Saldo finale al 26/11/2026")]);
+    add(0, 290.3, &[(303.0, "Operazione POS Eurozona Del 21.11.26 18:19 Carta *0000 NEGOZIO")]);
+    add(0, 293.5, &[(54.0, "25/11/2026"), (144.0, "21/11/2026"), (right("-9,35"), "-9,35")]);
+    add(0, 299.6, &[(303.0, "ESEMPIO ROMA IT")]);
+    for y in [311.4, 323.4] {
+        let row = [(54.0, "23/11/2026"), (144.0, "23/11/2026"), (right("-2,00"), "-2,00")];
+        add(0, y, &[row[0], row[1], row[2], (303.0, "Comm. richiesta incasso SEPA B2C")]);
+    }
+    add(0, 335.2, &[(303.0, "Bonifico a vs favore *INST 14:14 DITTA ESEMPIO Giroconto Info")]);
+    add(0, 338.4, &[(54.0, "20/11/2026"), (144.0, "20/11/2026"), (right("2.000,00"), "2.000,00")]);
+    add(0, 344.4, &[(303.0, "aggiuntive:")]);
+    add(0, 353.7, &[(303.0, "Ragione sociale ordinante: DITTA ESEMPIO SRL")]);
+    add(0, 363.0, &[(303.0, "ID_BONIFICO: 0000")]);
+    add(
+        0,
+        374.8,
+        &[
+            (54.0, "18/11/2026"),
+            (144.0, "18/11/2026"),
+            (right("-1.011,65"), "-1.011,65"),
+            (303.0, "Utilizzo carta di credito ****000 EMITTENTE"),
+        ],
+    );
+    add(1, 275.3, &[(303.0, "Operazione POS Eurozona Del 25.08.26 10:44 Carta *0000")]);
+    add(1, 278.5, &[(54.0, "28/08/2026"), (144.0, "25/08/2026"), (right("-79,00"), "-79,00")]);
+    add(1, 284.6, &[(303.0, "OFFICINA ESEMPIO ROMA IT")]);
+    add(1, 296.5, &[(54.0, "28/08/2026"), (right("100,00"), "100,00"), (303.0, "Saldo iniziale al 28/08/2026")]);
+    v
+}
+
 /// Files that a damaged or hostile PDF may be. The first ones would end a process whatever the thread.
 pub fn hostile() -> Vec<(&'static str, Vec<u8>)> {
     let cat = b"<</Type/Catalog/Pages 2 0 R>>".to_vec();

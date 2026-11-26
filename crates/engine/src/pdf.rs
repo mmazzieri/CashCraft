@@ -1,11 +1,12 @@
-//! A card statement from a PDF: the text with its positions, then its meaning. All of it runs in another process, this program started
+//! A card statement or a list of an account's movements from a PDF: the text with its positions, then its meaning. All of it runs in another process, this program started
 //! again with [`CHILD`]: on hostile files it can overflow the stack, which would end the program whatever
 //! the thread, or go on for ever, and a thread cannot be stopped. Only the statement comes back.
 
+use crate::bank_pdf::{self, Movements};
 use crate::card_pdf::{self, Statement};
 use crate::i18n::tr;
 use anyhow::{Result, anyhow};
-use hayro_interpret::font::Glyph;
+use hayro_interpret::font::{FontData, Glyph};
 use hayro_interpret::hayro_cmap::BfString;
 use hayro_interpret::{
     BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint,
@@ -19,7 +20,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 /// The first argument of the process that reads; the second is how much memory it may use.
@@ -34,6 +35,10 @@ const MAX_GLYPHS: usize = 200_000;
 /// Most bytes the process that reads may answer, and (where the system tells) use.
 const MAX_ANSWER: u64 = 16 << 20;
 const MAX_MEMORY: u64 = 1 << 30;
+/// A font with no tables. A font the PDF names but does not carry (the standard ones above all, which
+/// banks print with) is read through it: what its characters are comes from the encoding of the PDF and
+/// their widths from the metrics of the standard fonts or from the PDF. Nothing is drawn, so no outlines are needed.
+const NO_FONT: [u8; 12] = [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 /// What the process that reads may take.
 #[derive(Clone, Copy, Debug)]
@@ -80,6 +85,8 @@ pub enum Failure {
     NoProcess,
     /// Not a statement of a known kind.
     Unknown,
+    /// A list of movements whose rows do not add up to its balances, or that has rows that could not be read.
+    Mismatch,
 }
 
 impl Failure {
@@ -93,12 +100,22 @@ impl Failure {
             Failure::NoProcess => {
                 tr("the program that reads PDF files could not start: close CashCraft, open it again and retry")
             }
-            Failure::Unknown => tr("the PDF is not a card statement of a kind that can be read"),
+            Failure::Unknown => tr("the PDF is not a statement of a kind that can be read"),
+            Failure::Mismatch => tr(
+                "some movements of the PDF could not be read, or they do not add up to its balances: nothing was imported",
+            ),
         }
     }
 }
 
-pub type Outcome = std::result::Result<Statement, Failure>;
+/// What a PDF turned out to be.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Document {
+    Card(Statement),
+    Movements(Movements),
+}
+
+pub type Outcome = std::result::Result<Document, Failure>;
 
 pub fn is_pdf(bytes: &[u8]) -> bool {
     let start = bytes.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(0);
@@ -137,11 +154,11 @@ fn memory() -> Option<u64> {
     line.split_whitespace().next()?.parse::<u64>().ok()?.checked_mul(1024)
 }
 
-/// The card statement in a PDF.
-pub fn statement(bytes: &[u8]) -> Result<Statement> {
+/// The card statement or the list of movements in a PDF.
+pub fn document(bytes: &[u8]) -> Result<Document> {
     let outcome = if CHILD_READY.load(Ordering::Relaxed) {
         match std::env::current_exe() {
-            Ok(exe) => statement_with(&exe, bytes, Limits::default()),
+            Ok(exe) => read_with(&exe, bytes, Limits::default()),
             Err(_) => Err(Failure::NoProcess),
         }
     } else {
@@ -151,8 +168,8 @@ pub fn statement(bytes: &[u8]) -> Result<Statement> {
     outcome.map_err(|f| anyhow!(f.message()))
 }
 
-/// [`statement`], read by a program that answers to [`CHILD`].
-pub fn statement_with(program: &Path, bytes: &[u8], limits: Limits) -> Outcome {
+/// [`document`], read by a program that answers to [`CHILD`].
+pub fn read_with(program: &Path, bytes: &[u8], limits: Limits) -> Outcome {
     let deadline = Instant::now() + limits.time;
     let mut child = Command::new(program)
         .args([CHILD, &limits.memory.to_string()])
@@ -186,8 +203,16 @@ pub fn statement_with(program: &Path, bytes: &[u8], limits: Limits) -> Outcome {
 
 /// With enough stack for any sound file; a panic is a damaged file.
 fn in_thread(bytes: Vec<u8>) -> Outcome {
-    let thread = std::thread::Builder::new().stack_size(STACK).spawn(move || card_pdf::parse(&pages(bytes)?));
+    let thread = std::thread::Builder::new().stack_size(STACK).spawn(move || parse(&pages(bytes)?));
     thread.map_err(|_| Failure::NoProcess)?.join().unwrap_or(Err(Failure::Damaged))
+}
+
+/// A card statement, else a list of movements.
+pub(crate) fn parse(pages: &[Page]) -> Outcome {
+    match card_pdf::parse(pages) {
+        Err(Failure::Unknown) => bank_pdf::parse(pages).map(Document::Movements),
+        other => other.map(Document::Card),
+    }
 }
 
 /// The lines of each page.
@@ -204,7 +229,11 @@ pub(crate) fn pages(bytes: Vec<u8>) -> std::result::Result<Vec<Page>, Failure> {
     for page in pdf.pages().iter() {
         let (w, h) = page.render_dimensions();
         let cache = InterpreterCache::new();
-        let settings = InterpreterSettings { render_annotations: false, ..Default::default() };
+        let settings = InterpreterSettings {
+            render_annotations: false,
+            font_resolver: Arc::new(|_| Some((Arc::new(NO_FONT) as FontData, 0))),
+            ..Default::default()
+        };
         let area = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
         let mut context =
             Context::new(convert(page.initial_transform(true).as_coeffs()), area, &cache, page.xref(), settings);
