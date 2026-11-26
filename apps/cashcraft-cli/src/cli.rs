@@ -2,7 +2,7 @@
 //! and prints a readable table, or JSON with `--json`. The help is in English; what is printed is
 //! in the language in use.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use cashcraft_engine::db::Db;
 use cashcraft_engine::duplicates::Reason;
 use cashcraft_engine::i18n::{Lang, tr, trf, trn, with_lang};
@@ -90,6 +90,9 @@ pub enum Cmd {
     /// Credit card statements and the bank's lines that pay them
     #[command(subcommand, visible_alias = "carte")]
     Cards(CardsCmd),
+    /// Reconcile an account with a bank statement
+    #[command(subcommand, visible_alias = "riconcilia")]
+    Reconcile(ReconcileCmd),
     /// Categories
     #[command(subcommand, visible_alias = "categorie")]
     Categories(CatCmd),
@@ -280,13 +283,21 @@ pub enum TxCmd {
         tags: Option<String>,
         #[arg(long)]
         cleared: Option<bool>,
+        /// Change it even if it is reconciled: its reconciliation no longer counts it
+        #[arg(long)]
+        unreconcile: bool,
     },
     /// One transaction: what the bank wrote, and the rules that set something of it
     Show { id: i64 },
     /// List the tags
     Tags,
     /// Delete a transaction
-    Delete { id: i64 },
+    Delete {
+        id: i64,
+        /// Delete it even if it is reconciled: its reconciliation no longer counts it
+        #[arg(long)]
+        unreconcile: bool,
+    },
     /// Turn a transaction into a transfer with another account
     ToTransfer {
         id: i64,
@@ -307,6 +318,60 @@ pub enum TxCmd {
         /// Remove the other side
         #[arg(long)]
         drop_other: bool,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct StartArgs {
+    account: String,
+    /// The statement (CSV, Excel, OFX, card PDF): its lines are matched with the transactions
+    #[arg(long)]
+    file: Option<PathBuf>,
+    /// Day of the statement (default: the one the file states)
+    #[arg(long)]
+    date: Option<String>,
+    /// Balance on the statement as the books have it, a card's debt negative (default: the one the file states)
+    #[arg(long, allow_hyphen_values = true)]
+    balance: Option<String>,
+    #[command(flatten)]
+    cols: ColumnArgs,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReconcileCmd {
+    /// Start reconciling an account: the day and balance of the statement, typed or read from its file
+    Start(Box<StartArgs>),
+    /// The balances, the lines of the statement and what they may be
+    Show { id: i64 },
+    /// Match lines with transactions: pairs such as 3=41,5=42
+    Match {
+        id: i64,
+        #[arg(required_unless_present = "exact")]
+        pairs: Option<String>,
+        /// Every line whose own transaction is there (exact)
+        #[arg(long)]
+        exact: bool,
+    },
+    /// Undo matches of lines
+    Unmatch { id: i64, lines: String },
+    /// Add lines missing in the books
+    Add { id: i64, lines: String },
+    /// Mark transactions as cleared, or not
+    Clear {
+        id: i64,
+        transactions: String,
+        /// Not cleared
+        #[arg(long)]
+        not: bool,
+    },
+    /// Finish a reconciliation whose difference is zero: its transactions are locked
+    Finish { id: i64 },
+    /// Discard an open reconciliation, or undo the last finished one of its account
+    Undo { id: i64 },
+    /// List the reconciliations
+    List {
+        #[arg(long, short)]
+        account: Option<String>,
     },
 }
 
@@ -746,7 +811,7 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
                     ("cleared", v(cleared)),
                 ]),
             ),
-            TxCmd::Edit { id, amount, payee, date, category, memo, tags, cleared } => (
+            TxCmd::Edit { id, amount, payee, date, category, memo, tags, cleared, unreconcile } => (
                 "update_transaction",
                 args(&[
                     ("id", v(id)),
@@ -757,11 +822,14 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
                     ("memo", o(&memo)),
                     ("tags", o(&tags)),
                     ("cleared", cleared.map(|c| json!(c))),
+                    ("unreconcile", unreconcile.then_some(json!(true))),
                 ]),
             ),
             TxCmd::Show { id } => ("get_transaction", args(&[("id", v(id))])),
             TxCmd::Tags => ("list_tags", json!({})),
-            TxCmd::Delete { id } => ("delete_transaction", args(&[("id", v(id))])),
+            TxCmd::Delete { id, unreconcile } => {
+                ("delete_transaction", args(&[("id", v(id)), ("unreconcile", unreconcile.then_some(json!(true)))]))
+            }
             TxCmd::ToTransfer { id, account, join, no_match } => (
                 "turn_into_transfer",
                 args(&[
@@ -816,6 +884,51 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
                 ]),
             ),
             CardsCmd::Unlink { statement } => ("unlink_card_payment", args(&[("statement_id", v(statement))])),
+        },
+        Cmd::Reconcile(c) => match c {
+            ReconcileCmd::Start(start) => {
+                let StartArgs { account, file, date, balance, cols } = *start;
+                let mut m = Map::new();
+                m.insert("account".into(), json!(account));
+                m.extend(file.map(|f| ("path".to_string(), json!(f))));
+                m.extend(date.map(|d| ("date".to_string(), json!(d))));
+                m.extend(balance.map(|b| ("balance".to_string(), json!(b))));
+                cols.put(&mut m);
+                ("start_reconciliation", Value::Object(m))
+            }
+            ReconcileCmd::Show { id } => ("preview_reconciliation", args(&[("id", v(id)), ("limit", v(100_000))])),
+            ReconcileCmd::Match { id, pairs, exact } => {
+                let pairs = match (pairs, exact) {
+                    (Some(p), false) => p,
+                    _ => {
+                        let seen = guard.call(db, "preview_reconciliation", &json!({"id": id, "limit": 100_000}))?;
+                        let lines = field(&seen, "lines").as_array().cloned().unwrap_or_default();
+                        let exact: Vec<String> = lines
+                            .iter()
+                            .filter(|l| field(l, "exact").is_object())
+                            .map(|l| format!("{}={}", st(field(l, "line")), st(field(field(l, "exact"), "id"))))
+                            .collect();
+                        if exact.is_empty() {
+                            bail!(tr("no line has its own transaction to match"));
+                        }
+                        exact.join(",")
+                    }
+                };
+                ("match_reconciliation", args(&[("id", v(id)), ("pairs", v(pairs))]))
+            }
+            ReconcileCmd::Unmatch { id, lines } => {
+                ("unmatch_reconciliation", args(&[("id", v(id)), ("lines", v(lines))]))
+            }
+            ReconcileCmd::Add { id, lines } => {
+                ("add_reconciliation_lines", args(&[("id", v(id)), ("lines", v(lines))]))
+            }
+            ReconcileCmd::Clear { id, transactions, not } => (
+                "clear_reconciliation_transactions",
+                args(&[("id", v(id)), ("transactions", v(transactions)), ("cleared", v(!not))]),
+            ),
+            ReconcileCmd::Finish { id } => ("finish_reconciliation", args(&[("id", v(id))])),
+            ReconcileCmd::Undo { id } => ("undo_reconciliation", args(&[("id", v(id))])),
+            ReconcileCmd::List { account } => ("list_reconciliations", args(&[("account", o(&account))])),
         },
         Cmd::Categories(c) => match c {
             CatCmd::List => ("list_categories", json!({})),
@@ -1216,9 +1329,113 @@ fn id_width(rows: &[Value], key: &str, least: usize) -> usize {
     rows.iter().map(|r| st(field(r, key)).len()).max().unwrap_or(0).max(least)
 }
 
+/// A reconciliation: its balances, the lines of the statement and the transactions that no line is.
+fn print_reconciliation(r: &Value) {
+    let rec = field(r, "reconciliation");
+    let currency = field(rec, "currency");
+    println!(
+        "{}",
+        trf(
+            "Reconciliation {id} of {account} on {date}: {status}",
+            &[
+                ("id", &st(field(rec, "id"))),
+                ("account", &st(field(rec, "account"))),
+                ("date", &date(field(rec, "statement_date"))),
+                ("status", &st(field(rec, "status_text")))
+            ]
+        )
+    );
+    if let Some(s) = r.get("stated").filter(|s| s.is_object()) {
+        let label = st(field(s, "label"));
+        println!(
+            "  {}",
+            trf(
+                "the file states {amount} ({label})",
+                &[("amount", &exact(field(s, "balance"), currency)), ("label", &label)]
+            )
+        );
+    }
+    for (label, k) in [
+        (tr("Statement balance"), "statement_balance"),
+        (tr("Cleared balance in the books"), "cleared_balance"),
+        (tr("Difference"), "difference"),
+    ] {
+        println!("  {:<32} {:>18}", label, exact(field(rec, k), currency));
+    }
+    let lines = field(r, "lines").as_array().cloned().unwrap_or_default();
+    if !lines.is_empty() {
+        println!("{}", tr("Lines of the statement"));
+    }
+    let id = |t: &Value| st(field(t, "id"));
+    for l in &lines {
+        let state = if let Some(t) = l.get("matched").filter(|t| t.is_object()) {
+            trf("matched with {id}", &[("id", &id(t))])
+        } else if let Some(t) = l.get("exact").filter(|t| t.is_object()) {
+            trf("its own transaction {id}: to match (--exact)", &[("id", &id(t))])
+        } else if let Some(t) = l.get("reconciled_before").filter(|t| !t.is_null()) {
+            trf("reconciled before as {id}", &[("id", &st(t))])
+        } else if let Some(t) = l.get("proposed").filter(|t| t.is_object()) {
+            let others: Vec<String> =
+                field(l, "candidates").as_array().into_iter().flatten().map(id).filter(|o| *o != id(t)).collect();
+            let mut text = trf("perhaps {id}", &[("id", &id(t))]);
+            if !others.is_empty() {
+                text = format!("{text} ({})", trf("or {ids}", &[("ids", &others.join(", "))]));
+            }
+            text
+        } else {
+            tr("missing in the books").to_string()
+        };
+        println!(
+            "  {:>5}  {}  {:<32} {:>13}  {}",
+            st(field(l, "line")),
+            date(field(l, "date")),
+            cut(&st(field(l, "payee")), 32),
+            eur(field(l, "amount")),
+            state
+        );
+    }
+    let books = field(r, "books_only").as_array().cloned().unwrap_or_default();
+    if !books.is_empty() {
+        println!("{}", tr("In the books, on no line"));
+    }
+    for t in &books {
+        let cleared = if field(t, "cleared").as_bool().unwrap_or(false) { tr("cleared") } else { "" };
+        println!(
+            "  {:>5}  {}  {:<32} {:>13}  {}",
+            id(t),
+            date(field(t, "date")),
+            cut(&st(field(t, "payee")), 32),
+            eur(field(t, "amount")),
+            cleared
+        );
+    }
+    if let Some(m) = r.get("message").filter(|m| m.is_string()) {
+        println!("{}", st(m));
+    }
+}
+
 fn print_human(tool: &str, r: &Value) {
     let arr = |k: &str| r.get(k).and_then(|x| x.as_array()).cloned().unwrap_or_default();
     match tool {
+        "start_reconciliation"
+        | "preview_reconciliation"
+        | "match_reconciliation"
+        | "unmatch_reconciliation"
+        | "add_reconciliation_lines"
+        | "clear_reconciliation_transactions" => print_reconciliation(r),
+        "list_reconciliations" => {
+            for x in arr("reconciliations") {
+                println!(
+                    "{:>5}  {}  {:<24} {:>18} {:>18}  {}",
+                    st(field(&x, "id")),
+                    date(field(&x, "statement_date")),
+                    cut(&st(field(&x, "account")), 24),
+                    exact(field(&x, "statement_balance"), field(&x, "currency")),
+                    exact(field(&x, "difference"), field(&x, "currency")),
+                    st(field(&x, "status_text"))
+                );
+            }
+        }
         "list_accounts" => {
             let w = id_width(&arr("accounts"), "id", 4);
             println!("{:>w$}  {:<28} {:<18} {:>16}", "ID", head(tr("Account")), head(tr("Type")), head(tr("Balance")));

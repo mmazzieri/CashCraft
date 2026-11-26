@@ -6,6 +6,7 @@ use crate::db::{Cents, Db, RENAMED, SCHEMA, SCHEMA_VERSION};
 use crate::i18n::{tr, trf};
 use crate::layouts::LAYOUT_SCHEMA;
 use crate::ledger::{ADDED, CARD_ROW, Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
+use crate::reconcile::RECONCILE_SCHEMA;
 use crate::rules::RULE_SCHEMA;
 use anyhow::{Context, Result, bail};
 use rusqlite::backup::Backup;
@@ -124,16 +125,18 @@ impl Db {
     /// Turns the tables of an older format into the present one. Runs inside the transaction of `init`, which
     /// holds the write lock: nobody changes the file between the backup and the end.
     pub(crate) fn migrate(&self, version: i64) -> Result<()> {
-        // Formats 7 and 8 gave the table of the postings another name.
-        let renamed = self.has_table("book_postings")?;
+        // Formats 7, 8 and 9 gave the table of the postings another name.
+        let renamed = self.has_table("journal_postings")?;
+        let eighth_table = self.has_table("book_postings")?;
         let seventh = self.has_table("ledger_postings")?;
-        let again = renamed || seventh || self.has_table("postings")?;
+        let again = renamed || eighth_table || seventh || self.has_table("postings")?;
         let dated = again && self.has_posting_column("date")?;
         let marked = dated && self.has_posting_column("origin")?;
         let cards = again && self.has_table("card_statements")?;
         // Format 4 had the statements, without the marks.
         let sound_cards = marked && cards && !self.has_column("card_statements", "payment_joined")?;
-        let current = sound_cards && renamed && self.has_table("transaction_rules")?;
+        let ruled = sound_cards && self.has_table("transaction_rules")?;
+        let current = ruled && renamed && self.has_table("reconciliations")?;
         if current && !self.has_leftovers()? {
             return self.drop_leftovers();
         }
@@ -141,6 +144,7 @@ impl Db {
         let from = match (again, dated, current) {
             (false, _, _) => 1,
             (_, false, _) => 2,
+            (_, _, false) if ruled && eighth_table => 8,
             (_, _, false) if seventh => 7,
             (_, _, false) if sound_cards => 6,
             (_, _, false) if marked => 5,
@@ -155,24 +159,30 @@ impl Db {
             None => None,
         };
         let done = (|| -> Result<()> {
+            // Before any posting is written: each change looks there for what is reconciled.
+            self.conn.execute_batch(RECONCILE_SCHEMA)?;
             if !again {
                 self.convert()?;
             }
             if again && !renamed {
                 // A window of an older program that has the file open can read and write no posting from now on.
-                let old = if seventh { "ledger_postings" } else { "postings" };
-                self.conn.execute_batch(&format!("ALTER TABLE {old} RENAME TO book_postings"))?;
+                let old = match (eighth_table, seventh) {
+                    (true, _) => "book_postings",
+                    (_, true) => "ledger_postings",
+                    _ => "postings",
+                };
+                self.conn.execute_batch(&format!("ALTER TABLE {old} RENAME TO journal_postings"))?;
             }
             for name in ["other_hashes", "original_payee", "original_memo", "tags", "rules"] {
                 if again && !self.has_posting_column(name)? {
-                    self.conn.execute_batch(&format!("ALTER TABLE book_postings ADD COLUMN {name} TEXT"))?;
+                    self.conn.execute_batch(&format!("ALTER TABLE journal_postings ADD COLUMN {name} TEXT"))?;
                 }
             }
             if again && !dated {
-                self.conn.execute_batch("ALTER TABLE book_postings ADD COLUMN date TEXT")?;
+                self.conn.execute_batch("ALTER TABLE journal_postings ADD COLUMN date TEXT")?;
             }
             if again && !marked {
-                self.conn.execute_batch("ALTER TABLE book_postings ADD COLUMN origin TEXT")?;
+                self.conn.execute_batch("ALTER TABLE journal_postings ADD COLUMN origin TEXT")?;
                 self.repair_dates()?;
             }
             self.move_rules()?;
@@ -201,7 +211,7 @@ impl Db {
     }
 
     fn has_posting_column(&self, name: &str) -> Result<bool> {
-        for table in ["postings", "ledger_postings", "book_postings"] {
+        for table in ["postings", "ledger_postings", "book_postings", "journal_postings"] {
             if self.has_column(table, name)? {
                 return Ok(true);
             }
@@ -245,7 +255,7 @@ impl Db {
         }
         // Their rows cannot be told from others imported on those cards: none is proposed as a payment.
         let mut st = self.conn.prepare(
-            "SELECT DISTINCT p.entry_id FROM book_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+            "SELECT DISTINCT p.entry_id FROM journal_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
              WHERE p.import_hash IS NOT NULL AND p.origin IS NULL
                AND l.money_account_id IN (SELECT account_id FROM card_statements)",
         )?;
@@ -270,7 +280,7 @@ impl Db {
 
     /// Format 3 left the date of a side that had lost the other one apart from the entry's.
     fn repair_dates(&self) -> Result<()> {
-        let mut st = self.conn.prepare("SELECT DISTINCT entry_id FROM book_postings WHERE date IS NOT NULL")?;
+        let mut st = self.conn.prepare("SELECT DISTINCT entry_id FROM journal_postings WHERE date IS NOT NULL")?;
         let entries: Vec<i64> = st.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
         for id in entries {
             self.save_entry(&self.load_draft(id)?)?;
@@ -281,7 +291,7 @@ impl Db {
     /// Sides of transfers that were never imported.
     fn mark_added_sides(&self) -> Result<()> {
         let mut st = self.conn.prepare(
-            "SELECT entry_id FROM book_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+            "SELECT entry_id FROM journal_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
              GROUP BY entry_id HAVING COUNT(*)=2 AND SUM(l.money_account_id IS NOT NULL)=2
                 AND COUNT(p.import_hash)<2 AND COUNT(p.payee)>0",
         )?;
@@ -318,14 +328,14 @@ impl Db {
     fn merge_leftovers(&self) -> Result<()> {
         let mut rows = self.old_rows()?;
         // Their ids are taken by now.
-        let used: i64 = self.conn.query_row("SELECT COALESCE(MAX(id),0) FROM book_postings", [], |r| r.get(0))?;
+        let used: i64 = self.conn.query_row("SELECT COALESCE(MAX(id),0) FROM journal_postings", [], |r| r.get(0))?;
         for r in &mut rows {
             r.id = r.id.checked_add(used).ok_or_else(too_big)?;
             r.peer = r.peer.map(|p| p.checked_add(used).ok_or_else(too_big)).transpose()?;
         }
         // A statement imported by both is in the ledger already.
         let mut known = self.conn.prepare(
-            "SELECT 1 FROM book_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+            "SELECT 1 FROM journal_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
              WHERE l.money_account_id=?1 AND p.import_hash=?2",
         )?;
         let mut kept = Vec::new();

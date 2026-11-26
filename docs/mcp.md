@@ -56,6 +56,19 @@ may pay each statement, with the `card_lines` that may be the same; `link_card_p
 to the card (`join`: the card line, only if the user says it is the same), `unlink_card_payment` undoes
 it, `list_card_statements` shows them all. See [cards.md](cards.md).
 
+## Reconciliation
+
+`start_reconciliation` (an `account`, and a `path` of a statement, or `balance` and `date`), `preview_reconciliation`,
+`match_reconciliation` (`pairs`: `"3=41,5=42"`, line number and transaction id), `unmatch_reconciliation`,
+`add_reconciliation_lines`, `clear_reconciliation_transactions`, `finish_reconciliation`, `undo_reconciliation` and
+`list_reconciliations` ([reconcile.md](reconcile.md)). Their amounts are exact decimal text. The agent proposes and the
+user confirms: show the balance a file states (`stated`) before relying on it, and the proposed matches before
+passing them; exact ones may go together if the user says so, proposed ones one by one, with the ids of the preview.
+Ask before finishing or undoing. `update_transaction`, `delete_transaction`, `turn_into_transfer`, `separate_transfer`,
+`delete_entry`, `link_card_payment` and `unlink_card_payment` are refused when they would change the amount, date or
+account of a reconciled transaction, unclear or delete it, and the error names it: ask the user, then pass
+`unreconcile: true`; its reconciliation shows as broken until it is done again.
+
 ## Rules and tags
 
 `list_rules`, `add_rule`, `update_rule`, `move_rule`, `delete_rule` and `test_rule` (how many transactions a rule would match)

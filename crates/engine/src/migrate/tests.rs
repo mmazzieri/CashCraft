@@ -94,7 +94,7 @@ fn imported() -> Vec<(String, i64, String, String)> {
     let mut st = db
         .conn
         .prepare(
-            "SELECT e.date, p.amount, e.payee, p.import_hash FROM book_postings p JOIN entries e ON e.id=p.entry_id
+            "SELECT e.date, p.amount, e.payee, p.import_hash FROM journal_postings p JOIN entries e ON e.id=p.entry_id
              WHERE p.import_hash IS NOT NULL ORDER BY p.id",
         )
         .unwrap();
@@ -394,7 +394,7 @@ fn v2_figures(db: &Db) -> Figures {
         register,
         hashes: rows(
             &db.conn,
-            "SELECT p.id, l.money_account_id, p.import_hash FROM book_postings p
+            "SELECT p.id, l.money_account_id, p.import_hash FROM journal_postings p
              JOIN ledger_accounts l ON l.id=p.ledger_account_id WHERE p.import_hash IS NOT NULL ORDER BY p.id",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -534,20 +534,25 @@ fn a_file_without_transactions_and_an_empty_file_open() {
 }
 
 #[test]
-fn files_of_formats_2_to_7_open() {
+fn files_of_formats_2_to_8_open() {
     ledger_file_opens(2, include_str!("v2.sql"));
     ledger_file_opens(3, include_str!("v3.sql"));
     ledger_file_opens(4, include_str!("v4.sql"));
     ledger_file_opens(5, include_str!("v5.sql"));
     ledger_file_opens(6, include_str!("v6.sql"));
     ledger_file_opens(7, include_str!("v7.sql"));
+    ledger_file_opens(8, include_str!("v8.sql"));
 }
 
 /// What is new is added, after a copy; everything else stays as it was.
 fn ledger_file_opens(version: i64, schema: &str) {
     let dir = Dir::new(&format!("format-{version}"));
     let old = Connection::open(dir.file()).unwrap();
-    let table = if version >= 7 { "ledger_postings" } else { "postings" };
+    let table = match version {
+        7 => "ledger_postings",
+        8 => "book_postings",
+        _ => "postings",
+    };
     let run = |sql: &str| old.execute_batch(&sql.replace("postings", table)).unwrap();
     old.execute_batch(schema).unwrap();
     run("INSERT INTO accounts(id,name,kind) VALUES (1,'Bank','bank'), (2,'Card','credit_card');
@@ -638,7 +643,7 @@ fn a_window_of_format_6_with_the_file_open_is_kept_out() {
     let mut ready = old.prepare("SELECT id FROM postings WHERE entry_id=?1").unwrap();
     assert!(ready.exists([1]).unwrap());
     let (db, _) = Db::open(&dir.file()).unwrap();
-    db.conn.execute("UPDATE book_postings SET other_hashes='src:csv' WHERE id=1", []).unwrap();
+    db.conn.execute("UPDATE journal_postings SET other_hashes='src:csv' WHERE id=1", []).unwrap();
     let before = dump(&db.conn);
     // Every change of 0.3.0 starts by reading the postings of what it changes, or adds some.
     assert!(ready.exists([1]).is_err());
@@ -680,11 +685,7 @@ fn without_a_backup_nothing_is_migrated() {
     let old = seed_v1(&dir.file(), 1, 8);
     let before = dump(&old);
     // The copy would go to a folder that is not there.
-    let db = Db {
-        conn: Connection::open(dir.file()).unwrap(),
-        path: Some(dir.0.join("gone").join("books.db")),
-        spread_ids: false,
-    };
+    let db = Db::new(Connection::open(dir.file()).unwrap(), Some(dir.0.join("gone").join("books.db")), false);
     assert!(db.init().is_err());
     drop(db);
     assert_eq!(dump(&old), before);
@@ -1016,6 +1017,7 @@ fn a_migrated_file_is_like_a_new_one() {
         (5, include_str!("v5.sql")),
         (6, include_str!("v6.sql")),
         (7, include_str!("v7.sql")),
+        (8, include_str!("v8.sql")),
     ] {
         let dir = Dir::new(&format!("like-new-{version}"));
         let old = Connection::open(dir.file()).unwrap();
@@ -1024,4 +1026,57 @@ fn a_migrated_file_is_like_a_new_one() {
         drop(old);
         assert_eq!(columns(&Db::open(&dir.file()).unwrap().0), new, "{version}");
     }
+}
+
+/// A window of format 8 that has the file open can write no posting any more: it could change a reconciled
+/// transaction without asking. A change it made before, or an entry it deletes, shows the reconciliation as broken.
+#[test]
+fn a_window_of_format_8_with_the_file_open_is_kept_out() {
+    let dir = Dir::new("format-8-open");
+    let old = Connection::open(dir.file()).unwrap();
+    old.execute_batch(include_str!("v8.sql")).unwrap();
+    old.execute_batch(
+        "PRAGMA foreign_keys=ON;
+         INSERT INTO accounts(id,name,kind) VALUES (1,'Bank','bank');
+         INSERT INTO entries(id,date,payee) VALUES (1,'2026-01-05','Shop'), (2,'2026-01-06','Bar');
+         INSERT INTO book_postings(id,entry_id,ledger_account_id,amount,currency,cleared,import_hash)
+         SELECT 1,1,id,-500,'EUR',1,'h' FROM ledger_accounts WHERE money_account_id=1 UNION ALL
+         SELECT 2,1,id,500,'EUR',0,NULL FROM ledger_accounts WHERE system='uncategorized' UNION ALL
+         SELECT 3,2,id,-100,'EUR',1,NULL FROM ledger_accounts WHERE money_account_id=1 UNION ALL
+         SELECT 4,2,id,100,'EUR',0,NULL FROM ledger_accounts WHERE system='uncategorized';",
+    )
+    .unwrap();
+    old.pragma_update(None, "user_version", 8).unwrap();
+    let file = dump(&old);
+    let mut ready = old.prepare("SELECT id FROM book_postings WHERE entry_id=?1").unwrap();
+    assert!(ready.exists([1]).unwrap());
+    let (db, _) = Db::open(&dir.file()).unwrap();
+    assert_eq!(dump(&Connection::open(dir.0.join("books.v8-backup.db")).unwrap()), file);
+    let start = crate::reconcile::Start {
+        account: 1,
+        date: crate::money::parse_date("2026-01-31").unwrap(),
+        balance: -600,
+        source: crate::reconcile::Source::Typed,
+        rows: &[],
+    };
+    let r = db.start_reconciliation(&start).unwrap().id;
+    assert_eq!(db.finish_reconciliation(r).unwrap().reconciled, 2);
+    let before = dump(&db.conn);
+    assert!(ready.exists([1]).is_err());
+    for sql in [
+        "UPDATE book_postings SET amount=-501 WHERE id=1",
+        "DELETE FROM book_postings WHERE id=1",
+        "INSERT INTO book_postings(entry_id,ledger_account_id,amount,currency) VALUES(1,1,5,'EUR')",
+        "SELECT id FROM book_postings p JOIN entries e ON e.id=p.entry_id",
+    ] {
+        assert!(old.execute_batch(sql).is_err(), "{sql}");
+        assert_eq!(dump(&db.conn), before, "{sql}");
+    }
+    drop(ready);
+    // What it can still do is seen.
+    old.execute("DELETE FROM entries WHERE id=2", []).unwrap();
+    let broken = db.reconciliation(r).unwrap();
+    assert_eq!((broken.status, broken.changed.as_slice()), (crate::reconcile::Status::Broken, [3].as_slice()));
+    assert!(db.transaction(1).unwrap().reconciled);
+    assert_sound(&db, "kept out");
 }

@@ -260,6 +260,8 @@ pub enum View {
     Rules,
     Scheduled,
     Ledger,
+    /// The reconciliation of an account with its bank statement.
+    Reconcile(i64),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -673,6 +675,8 @@ pub enum Dialog {
     ConfirmUndoRules(LastRun),
     /// A category with rules, its name and how many go.
     ConfirmDeleteCategory(i64, String, usize),
+    /// A change to reconciled transactions, and how to make it once the user says yes.
+    ConfirmUnreconcile(Box<(cashcraft_engine::reconcile::Reconciled, crate::reconcile::Unlock)>),
 }
 
 pub struct Dash {
@@ -714,6 +718,8 @@ pub struct App {
     pub new_budget: (Option<i64>, String),
     /// The rules, and the run that can be undone.
     pub rules: Option<(Vec<Rule>, Option<LastRun>)>,
+    /// The screen of the reconciliation of an account.
+    pub reconcile: Option<crate::reconcile::ReconcileState>,
     pub new_cat: (String, bool, Option<i64>),
     pub rename_cat: Option<(i64, String)>,
     pub dash: Option<Dash>,
@@ -883,6 +889,7 @@ impl App {
             budget_edit: None,
             new_budget: (None, String::new()),
             rules: None,
+            reconcile: None,
             new_cat: (String::new(), false, None),
             rename_cat: None,
             dash: None,
@@ -915,6 +922,7 @@ impl App {
                 "rules" | "regole" => View::Rules,
                 "scheduled" | "pianificati" => View::Scheduled,
                 "ledger" | "entry" | "journal" => View::Ledger,
+                "reconcile" | "riconcilia" => first.map_or(View::Dashboard, View::Reconcile),
                 _ => View::Dashboard,
             };
             app.reload_txs();
@@ -977,6 +985,9 @@ impl App {
         self.report = None;
         self.ledger = None;
         self.rules = None;
+        if let Some(r) = self.reconcile.as_mut() {
+            r.stale = true;
+        }
     }
 
     pub fn reload_txs(&mut self) {
@@ -1248,6 +1259,11 @@ impl eframe::App for App {
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::I)) {
                 self.open_import(None);
             }
+            if let View::Register(Some(a)) = self.view
+                && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::R))
+            {
+                self.go(View::Reconcile(a));
+            }
             if matches!(self.view, View::Register(_))
                 && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::T))
                 && let Some(t) = self.txs.iter().find(|t| Some(t.id) == self.selected).cloned()
@@ -1270,6 +1286,7 @@ impl eframe::App for App {
                 View::Rules => self.rules_view(ui),
                 View::Scheduled => self.scheduled_view(ui),
                 View::Ledger => self.ledger_view(ui),
+                View::Reconcile(a) => self.reconcile_view(ui, a),
             },
         );
         self.dialogs(&ctx);

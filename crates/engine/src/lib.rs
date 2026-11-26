@@ -17,6 +17,7 @@ pub mod ofx;
 pub mod ops;
 mod paths;
 pub mod pdf;
+pub mod reconcile;
 pub mod rules;
 pub mod store;
 #[cfg(any(test, feature = "test-support"))]

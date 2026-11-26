@@ -40,7 +40,7 @@ different currencies is refused.
 A transaction is a posting on an account of the user that is not an opening balance, and its id is the
 id of the posting. Its category is the other posting of the entry; `transfer_peer` is the other posting
 when that is on an account of the user too. Each side of a transfer keeps its own payee. Import hashes
-are unique in each account; `book_postings.other_hashes` has those of other files ([import.md](import.md)).
+are unique in each account; `journal_postings.other_hashes` has those of other files ([import.md](import.md)).
 `original_payee` and `original_memo` keep what the bank wrote, `tags` the tags and `rules` what the rules did
 ([rules.md](rules.md)); they follow the posting, also through a transfer.
 
@@ -54,7 +54,7 @@ category, on *Uncategorized* or on *Opening balances* (half a transfer of an old
 splits, transfers and those on accounts added by hand cannot.
 
 The two banks may date the same transfer differently. The entry has the date of the transaction that was
-turned; a side that was joined keeps its own in `book_postings.date`. Registers, their running balances, filters and
+turned; a side that was joined keeps its own in `journal_postings.date`. Registers, their running balances, filters and
 exports use the date of the side, so they go on agreeing with each bank's statement. The trial balance, the
 net worth over time and the journal use the date of the entry, so that debits equal credits on every date:
 for them both sides happen on that day. Editing the date of a side that has its own changes that
@@ -62,7 +62,7 @@ one alone, and so does editing its texts: only a note that both sides take from 
 When a side is left alone, because the other account was deleted or the transfer separated, its date becomes
 that of the entry.
 
-A side that was added, and not joined, is marked (`book_postings.origin = 'added'`), as are both sides of a
+A side that was added, and not joined, is marked (`journal_postings.origin = 'added'`), as are both sides of a
 transfer made by hand. A line imported later on its account, of the same amount and at most 10 days apart,
 takes its place: the date, text and import hash of the line move onto it and no row is added. That is done
 only when the line fits one added side and the side fits one new line, and the result of the import says
@@ -116,14 +116,15 @@ was opened. It is read and changed as `opening_balance` of the account.
 `trial_balance` (up to a date) lists every balance with equal totals of debits and credits.
 `verify_ledger` checks each entry, posting and account and reports what is wrong; it changes nothing.
 
-## Migration from formats 2 to 7
+## Migration from formats 2 to 8
 
-The table `postings` (`ledger_postings` in format 7) becomes `book_postings`, and `category_rules` becomes `transaction_rules`, with the same ids and
+The table `postings` (`ledger_postings` in format 7, `book_postings` in 8) becomes `journal_postings`, and `category_rules` becomes `transaction_rules`, with the same ids and
 order ([rules.md](rules.md)): a window of an older program that has the file open can neither
 read nor write a posting any more. The columns `date`, `origin`, `other_hashes`, `original_payee`, `original_memo`, `tags` and `rules` and the tables `card_statements`
 ([cards.md](cards.md)) and `csv_layouts` ([import.md](import.md)) are
 added where they are missing, and the dates of sides left alone put right, after a copy as
-`cashcraft.v2-backup.db` (or `v3` to `v7`) with the rules below. Lines with an import hash on a card with
+`cashcraft.v2-backup.db` (or `v3` to `v8`) with the rules below. Format 9 adds the tables of the reconciliations
+([reconcile.md](reconcile.md)). Lines with an import hash on a card with
 statements of format 4 are taken as rows of those statements.
 
 ## Migration from formats 0 and 1

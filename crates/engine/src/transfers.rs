@@ -254,14 +254,14 @@ impl Db {
             // It pays no statement any more.
             self.conn.execute(
                 "UPDATE card_statements SET payment_id=NULL
-                 WHERE payment_id IN (SELECT id FROM book_postings WHERE entry_id=?1)",
+                 WHERE payment_id IN (SELECT id FROM journal_postings WHERE entry_id=?1)",
                 [t.entry_id],
             )?;
             let spare = self.system_ledger(UNCATEGORIZED)?;
             // Ids above every other: that of the side that leaves must not be taken.
-            let last = match self.new_id("book_postings")? {
+            let last = match self.new_id("journal_postings")? {
                 Some(id) => id,
-                None => self.conn.query_row("SELECT MAX(id) FROM book_postings", [], |r| r.get(0))?,
+                None => self.conn.query_row("SELECT MAX(id) FROM journal_postings", [], |r| r.get(0))?,
             };
             let next = |n: i64| last.checked_add(n).ok_or_else(too_big);
             let alone = |l: &Line, entry: Option<i64>, counter: i64| -> Draft {

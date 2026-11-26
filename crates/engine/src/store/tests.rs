@@ -723,7 +723,7 @@ const WITH_IDS: [&str; 9] = [
     "categories",
     "ledger_accounts",
     "entries",
-    "book_postings",
+    "journal_postings",
     "scheduled_items",
     "transaction_rules",
     "rule_runs",
@@ -761,8 +761,23 @@ fn every_new_row_of_a_shared_file_has_an_id_of_its_own() {
     call("import_csv", serde_json::json!({"path": csv, "account": "Bank"}));
     db.record_card_statement(db.find_account("Card").unwrap().id, crate::db::today(), crate::db::today(), 5, "k")
         .unwrap();
+    let bank = db.find_account("Bank").unwrap().id;
+    let end = crate::money::parse_date("2026-01-31").unwrap();
+    let balance = crate::money::fmt_machine(db.cleared_balance(bank, end).unwrap());
+    let r = call(
+        "start_reconciliation",
+        serde_json::json!({"account": "Bank", "path": csv, "date": "2026-01-31", "balance": balance}),
+    );
+    let id = r["reconciliation"]["id"].clone();
+    let pairs: Vec<String> =
+        r["lines"].as_array().unwrap().iter().map(|l| format!("{}={}", l["line"], l["exact"]["id"])).collect();
+    call("match_reconciliation", serde_json::json!({"id": id, "pairs": pairs.join(",")}));
+    call("finish_reconciliation", serde_json::json!({"id": id}));
     assert!(!moved.is_null());
-    for (table, before) in seeded.iter().map(|(t, b)| (*t, b.clone())).chain([("card_statements", vec![])]) {
+    let reconciled = ["reconciliations", "reconciliation_lines", "reconciled_postings"].map(|t| (t, vec![]));
+    for (table, before) in
+        seeded.iter().map(|(t, b)| (*t, b.clone())).chain([("card_statements", vec![])]).chain(reconciled)
+    {
         let all = ids(&db, table);
         let new: Vec<i64> = all.iter().copied().filter(|i| !before.contains(i)).collect();
         assert!(!new.is_empty(), "{table}");
@@ -786,9 +801,12 @@ fn every_new_row_of_a_shared_file_has_an_id_of_its_own() {
         include_str!("../transfers.rs"),
         include_str!("../importer.rs"),
         include_str!("../duplicates.rs"),
+        include_str!("../reconcile.rs"),
     ];
     let mut found = 0;
-    for table in WITH_IDS.iter().chain(&["card_statements"]) {
+    for table in
+        WITH_IDS.iter().chain(&["card_statements", "reconciliations", "reconciliation_lines", "reconciled_postings"])
+    {
         for s in sources {
             // Not the triggers.
             for (at, _) in s.match_indices(&format!("\"INSERT INTO {table}(")) {
@@ -798,7 +816,7 @@ fn every_new_row_of_a_shared_file_has_an_id_of_its_own() {
             }
         }
     }
-    assert!(found >= 9, "{found}");
+    assert!(found >= 12, "{found}");
 }
 
 #[test]
@@ -847,7 +865,7 @@ fn ids_grow_and_stay_exact_whatever_the_clock_and_the_file() {
     let mut last = 0;
     for i in 0..200 {
         add(&db, &format!("{i}"));
-        let id = *ids(&db, "book_postings").last().unwrap();
+        let id = *ids(&db, "journal_postings").last().unwrap();
         assert!(id > last);
         last = id;
     }
@@ -870,7 +888,7 @@ fn ids_grow_and_stay_exact_whatever_the_clock_and_the_file() {
     // A file used directly has the numbers it always had.
     let (direct, _) = Db::open(&p.0.join("direct.db")).unwrap();
     add(&direct, "x");
-    assert!(ids(&direct, "book_postings") == [1, 2] && direct.new_id("entries").unwrap().is_none());
+    assert!(ids(&direct, "journal_postings") == [1, 2] && direct.new_id("entries").unwrap().is_none());
 }
 
 #[test]

@@ -46,7 +46,7 @@ fn re(payee: &str, rename: &str) -> Rule {
 
 fn postings(db: &Db) -> String {
     let all = dump(&db.conn);
-    let keep = |l: &&str| l.starts_with("book_postings") || l.starts_with("entries");
+    let keep = |l: &&str| l.starts_with("journal_postings") || l.starts_with("entries");
     all.lines().filter(keep).collect::<Vec<_>>().join("\n")
 }
 
@@ -304,7 +304,7 @@ fn a_damaged_rule_is_reported_and_the_others_work() {
     let t = db.transactions(&TxFilter::default()).unwrap().remove(0);
     assert_eq!(t.category_id, Some(c));
     // Marks that cannot be read mark nothing.
-    db.conn.execute("UPDATE book_postings SET rules='{', tags=',,a,' WHERE id=?1", [t.id]).unwrap();
+    db.conn.execute("UPDATE journal_postings SET rules='{', tags=',,a,' WHERE id=?1", [t.id]).unwrap();
     let t = db.transaction(t.id).unwrap();
     assert!(t.rules.is_empty() && t.tags == ["a"]);
     let id = rules.last().unwrap().id;
@@ -396,7 +396,7 @@ fn importing_again_after_a_clean_up_adds_nothing() {
         (bare, importer::ofx_table(ofx::read(no_ids.as_bytes()).unwrap().0, "UTF-8")),
     ];
     let keys = |db: &Db| -> Vec<(i64, Option<String>, Option<String>)> {
-        let mut st = db.conn.prepare("SELECT id, import_hash, other_hashes FROM book_postings ORDER BY id").unwrap();
+        let mut st = db.conn.prepare("SELECT id, import_hash, other_hashes FROM journal_postings ORDER BY id").unwrap();
         st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().map(Result::unwrap).collect()
     };
     let again = |db: &Db, what: &str| {
@@ -670,7 +670,7 @@ fn a_run_that_fails_halfway_changes_nothing() {
     }
     db.insert_rule(&words("shop", Some(x)), false).unwrap();
     let stop =
-        "CREATE TRIGGER stop BEFORE UPDATE ON book_postings WHEN NEW.id=7 BEGIN SELECT RAISE(ABORT,'stop'); END;";
+        "CREATE TRIGGER stop BEFORE UPDATE ON journal_postings WHEN NEW.id=7 BEGIN SELECT RAISE(ABORT,'stop'); END;";
     db.conn.execute_batch(stop).unwrap();
     let before = dump(&db.conn);
     assert!(db.apply_rules().is_err());
@@ -787,7 +787,7 @@ fn one(db: &Db, a: i64, row: &str) -> Transaction {
 
 /// As a file of format 7 has it.
 fn forget_texts(db: &Db) {
-    db.conn.execute("UPDATE book_postings SET original_payee=NULL, original_memo=NULL, rules=NULL", []).unwrap();
+    db.conn.execute("UPDATE journal_postings SET original_payee=NULL, original_memo=NULL, rules=NULL", []).unwrap();
 }
 
 #[test]
@@ -811,7 +811,7 @@ fn what_may_be_the_users_is_never_replaced() {
     assert_eq!((kept.original_payee, kept.original_memo.as_deref()), (None, Some("satispay")));
     let plain = one(&db, a, "SATISPAY 4;satispay");
     db.conn
-        .execute("UPDATE book_postings SET original_payee=NULL, original_memo=NULL WHERE id=?1", [plain.id])
+        .execute("UPDATE journal_postings SET original_payee=NULL, original_memo=NULL WHERE id=?1", [plain.id])
         .unwrap();
     let rule = Rule { pattern: "satispay".into(), rename_payee: "Satispay".into(), ..Default::default() };
     db.insert_rule(&rule, false).unwrap();
@@ -868,7 +868,7 @@ fn the_keys_of_an_import_prove_the_text_of_the_bank() {
     let file = importer::ofx_table(ofx::read(ofx::tests::sgml().as_bytes()).unwrap().0, "UTF-8");
     let b = db.add_account("B", AccountKind::Bank, "EUR", 0, "").unwrap();
     import(&db, b, &file);
-    db.conn.execute("UPDATE book_postings SET original_payee=NULL, original_memo=NULL", []).unwrap();
+    db.conn.execute("UPDATE journal_postings SET original_payee=NULL, original_memo=NULL", []).unwrap();
     // Nothing says who wrote "Shop": it stays, and the notes are the bank's payee.
     let y = cat(&db, "Y");
     db.insert_rule(&Rule { memo: "pos".into(), category_id: Some(y), ..Default::default() }, true).unwrap();
@@ -1086,7 +1086,7 @@ fn a_rule_from_a_transaction_can_always_be_saved() {
         db.update_transaction(t, &TxEdit { payee: n, category_id: Some(x), ..edit_of(&db.transaction(t).unwrap()) })
             .unwrap();
         if r.below(2) == 0 {
-            db.conn.execute("UPDATE book_postings SET original_payee=?2 WHERE id=?1", params![t, p]).unwrap();
+            db.conn.execute("UPDATE journal_postings SET original_payee=?2 WHERE id=?1", params![t, p]).unwrap();
         }
         let rule = db.rule_from(t).unwrap();
         let id = db.insert_rule(&rule, true).unwrap_or_else(|e| panic!("{rule:?} {e:#}"));

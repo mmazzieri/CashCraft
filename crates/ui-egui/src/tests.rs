@@ -1,5 +1,6 @@
-use crate::gui::{App, Dialog, LANGUAGES, short_eur};
+use crate::gui::{App, Dialog, LANGUAGES, View, short_eur};
 use crate::ledger::{EntryForm, tree};
+use crate::reconcile::Unlock;
 use cashcraft_engine::db::{AccountKind, Db, NewTx};
 use cashcraft_engine::i18n::{Lang, META_KEY, with_lang};
 use cashcraft_engine::ledger::{Class, NewEntry, NewLine};
@@ -103,6 +104,7 @@ fn every_symbol_has_a_glyph() {
         include_str!("dialogs.rs"),
         include_str!("ledger.rs"),
         include_str!("rules.rs"),
+        include_str!("reconcile.rs"),
         // What it writes of a rule is drawn too.
         include_str!("../../engine/src/rules.rs"),
         cashcraft_engine::i18n::IT_TSV,
@@ -221,7 +223,7 @@ fn deleting_a_split_asks_first() {
         ctx.run_ui(Default::default(), |ui| app.ledger_view(ui)).textures_delta.clear();
     }
     assert_eq!(app.ledger.as_ref().unwrap().journal.as_ref().unwrap().0.len(), 2);
-    app.db.conn.execute_batch("ALTER TABLE book_postings RENAME TO gone").unwrap();
+    app.db.conn.execute_batch("ALTER TABLE journal_postings RENAME TO gone").unwrap();
     app.ledger = None;
     ctx.run_ui(Default::default(), |ui| app.ledger_view(ui)).textures_delta.clear();
     let l = app.ledger.as_ref().unwrap();
@@ -315,6 +317,7 @@ fn a_card_statement_is_checked_imported_and_paid() {
                 closing: parse_date("2026-11-30"),
                 debit_date: Some(date),
                 debit: Some(900),
+                residual: None,
                 cards: vec!["1234".into()],
                 rows: vec![row.clone()],
                 unread: 0,
@@ -780,4 +783,74 @@ fn the_theme_follows_the_system_until_chosen() {
     for t in Theme::ALL {
         assert_eq!(Theme::from_setting(Some(t.code())), t);
     }
+}
+
+/// A statement is reconciled without the mouse; a reconciled transaction asks before it goes.
+#[test]
+fn a_statement_is_reconciled_with_the_keyboard() {
+    use cashcraft_engine::reconcile::{Source, Start, Status};
+    use egui::{Event, Key, Modifiers};
+    with_lang(Lang::En, || {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.add_account("A", AccountKind::Bank, "EUR", 0, "").unwrap();
+        let date = parse_date("2026-01-02").unwrap();
+        let bar = NewTx { account_id: a, date, amount: -120, payee: "BAR".into(), ..Default::default() };
+        let bar = db.add_transaction(&bar).unwrap().unwrap();
+        let t = cashcraft_engine::importer::analyze(
+            "Data;Descrizione;Importo\n02/01/2026;BAR;-1,20\n10/01/2026;STIPENDIO;1500,00\n",
+            "UTF-8",
+        )
+        .unwrap();
+        let rows = cashcraft_engine::importer::parse_rows(&t, &t.mapping, false).0;
+        let end = parse_date("2026-01-31").unwrap();
+        let id = db
+            .start_reconciliation(&Start { account: a, date: end, balance: 149_880, source: Source::Csv, rows: &rows })
+            .unwrap()
+            .id;
+        let mut app = App::new(db, None);
+        app.view = View::Reconcile(a);
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        let mut send = |app: &mut App, events: Vec<Event>| {
+            for events in [events, vec![]] {
+                time += 0.5;
+                let screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0)));
+                let input = egui::RawInput { events, screen_rect, time: Some(time), ..Default::default() };
+                ctx.run_ui(input, |ui| app.reconcile_view(ui, a)).textures_delta.clear();
+            }
+        };
+        let press = |key, modifiers| {
+            let event = |pressed| Event::Key { key, physical_key: None, pressed, repeat: false, modifiers };
+            vec![event(true), event(false)]
+        };
+        send(&mut app, vec![]);
+        // The bar is proposed: Space confirms it. The salary is missing: Space adds it.
+        send(&mut app, press(Key::Space, Modifiers::NONE));
+        assert!(app.db.transaction(bar).unwrap().cleared);
+        send(&mut app, press(Key::ArrowDown, Modifiers::NONE));
+        send(&mut app, press(Key::Space, Modifiers::NONE));
+        assert_eq!(app.db.reconciliation(id).unwrap().difference, 0);
+        send(&mut app, press(Key::Enter, Modifiers::COMMAND));
+        assert_eq!(app.db.reconciliation(id).unwrap().status, Status::Finished);
+        assert!(app.db.transaction(bar).unwrap().reconciled);
+        send(&mut app, vec![]);
+        assert!(app.reconcile.as_ref().is_some_and(|r| r.preview.is_none() && r.history.len() == 1));
+        // Deleting it asks first; after the yes it goes and the reconciliation is broken.
+        let r = app.db.delete_transaction(bar).map(|_| String::new());
+        assert!(app.unless_reconciled(r, || Unlock::Delete(bar)).is_none());
+        assert!(matches!(app.dialog, Some(Dialog::ConfirmUnreconcile(_))));
+        for _ in 0..2 {
+            ctx.run_ui(Default::default(), |ui| app.dialogs(&ui.ctx().clone())).textures_delta.clear();
+        }
+        assert!(app.db.transaction(bar).is_ok());
+        app.run_unlock(&Unlock::Delete(bar)).unwrap();
+        assert!(app.db.transaction(bar).is_err());
+        assert_eq!(app.db.reconciliation(id).unwrap().status, Status::Broken);
+        // The form of a new one, and the history, draw.
+        app.reconcile = None;
+        app.view = View::Reconcile(a);
+        for _ in 0..2 {
+            ctx.run_ui(Default::default(), |ui| app.reconcile_view(ui, a)).textures_delta.clear();
+        }
+    });
 }

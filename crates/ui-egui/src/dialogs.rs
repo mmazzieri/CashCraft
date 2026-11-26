@@ -5,6 +5,7 @@ use crate::gui::{
     category_combo, column_combo, cut, error_text, expense_toggle, form_row, kind_icon, money, pal, primary_button,
     section_title,
 };
+use crate::reconcile::Unlock;
 use anyhow::Result;
 use cashcraft_engine::cards::{CardStatement, PaymentProposal};
 use cashcraft_engine::db::{Account, AccountKind, NewScheduled, NewTx, Transaction, TxEdit};
@@ -105,7 +106,13 @@ impl App {
                                     message = Some(Ok(m));
                                     keep = false;
                                 }
-                                Err(e) => f.error = format!("{e:#}"),
+                                Err(e) => {
+                                    let form = Box::new(f.clone());
+                                    match self.unless_reconciled(Err(e), || Unlock::Save(form)) {
+                                        Some(Err(e)) => f.error = format!("{e:#}"),
+                                        _ => keep = false,
+                                    }
+                                }
                             }
                         }
                         if let Some(id) = f.id
@@ -201,7 +208,10 @@ impl App {
                     ui.horizontal(|ui| {
                         if primary_button(ui, tr("Separate")).clicked() {
                             let done = self.db.separate_transfer(t.id, *keep_other);
-                            message = Some(done.map(|_| tr("Transfer separated").into()));
+                            let (id, other) = (t.id, *keep_other);
+                            message = self.unless_reconciled(done.map(|_| tr("Transfer separated").into()), || {
+                                Unlock::Separate(id, other)
+                            });
                             keep = false;
                         }
                         if ui.button(tr("Cancel")).clicked() {
@@ -402,6 +412,9 @@ impl App {
                         }
                     });
                 }
+                Dialog::ConfirmUnreconcile(asked) => {
+                    keep = self.unlock_dialog(ui, asked, &mut message);
+                }
                 Dialog::ConfirmDeleteCategory(id, name, rules) => {
                     ui.heading(tr("Delete the category?"));
                     ui.label(trf("The transactions of \"{name}\" stay, uncategorized.", &[("name", name)]));
@@ -489,7 +502,9 @@ impl App {
                             .add(egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(pal().red_fill))
                             .clicked()
                         {
-                            message = Some(self.db.delete_entry(*id).map(|_| tr("Entry deleted").into()));
+                            let done = self.db.delete_entry(*id).map(|_| tr("Entry deleted").into());
+                            let entry = *id;
+                            message = self.unless_reconciled(done, || Unlock::DeleteEntry(entry));
                             keep = false;
                         }
                         if ui.button(tr("Cancel")).clicked() {
@@ -642,7 +657,13 @@ impl App {
                         message = Some(Ok(text.into()));
                         keep = false;
                     }
-                    Err(e) => f.error = format!("{e:#}"),
+                    Err(e) => {
+                        let (id, other) = (f.tx.id, f.other);
+                        match self.unless_reconciled(Err(e), || Unlock::Turn(id, account, other)) {
+                            Some(Err(e)) => f.error = format!("{e:#}"),
+                            _ => keep = false,
+                        }
+                    }
                 }
             }
             if ui.button(tr("Cancel")).clicked() {
@@ -652,7 +673,7 @@ impl App {
         (keep, message)
     }
 
-    pub(crate) fn save_tx(&mut self, f: &TxForm) -> Result<String> {
+    pub(crate) fn save_tx(&self, f: &TxForm) -> Result<String> {
         let account = f.account.ok_or_else(|| anyhow::anyhow!(tr("choose an account")))?;
         let date = parse_date(&f.date).ok_or_else(|| anyhow::anyhow!(tr("the date is not valid (yyyy-mm-dd)")))?;
         let a = parse_amount(&f.amount)?.abs();
@@ -795,6 +816,18 @@ impl App {
                         self.period = Period::All;
                         self.selected = None;
                     }
+                    keep = false;
+                    msg = Some(Ok(String::new()));
+                }
+                if let (Some(a), Some(t)) = (st.account, st.table.as_ref())
+                    && ui
+                        .button(tr("🔒 Reconcile with this statement"))
+                        .on_hover_text(tr("Its balance against the books, line by line"))
+                        .clicked()
+                {
+                    let stated = cashcraft_engine::reconcile::stated_balance(t, st.invert, &st.rows);
+                    let source = cashcraft_engine::reconcile::Source::of(t.format());
+                    self.reconcile_with(a, st.rows.clone(), source, stated);
                     keep = false;
                     msg = Some(Ok(String::new()));
                 }
