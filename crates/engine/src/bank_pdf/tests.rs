@@ -114,6 +114,8 @@ fn rows_that_do_not_add_up_or_cannot_be_read_are_refused() {
     assert_eq!(read(&lost_date, Font::NotEmbedded), Err(Failure::Mismatch));
     let long = "x".repeat(MAX_TEXT + 1);
     assert_eq!(read(&with(&[("EMITTENTE", &long)]), Font::Type3), Err(Failure::TooLarge));
+    // Also when the long text is a line below the date.
+    assert_eq!(read(&with(&[("ID_BONIFICO: 0000", &long)]), Font::Type3), Err(Failure::TooLarge));
     for change in [("-9,35", "-9,36"), ("-9,35", "-9,3x"), ("18/11/2026", "18/1x/2026"), ("996,00", "995,00")] {
         assert_eq!(read(&with(&[change]), Font::NotEmbedded), Err(Failure::Mismatch), "{change:?}");
     }

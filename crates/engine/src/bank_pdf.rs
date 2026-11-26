@@ -88,6 +88,11 @@ fn cells(words: &[Word], c: &Columns) -> Cells {
     out
 }
 
+/// A description longer than any bank writes is not cut: the list is refused. Counted as it is joined.
+fn too_long(text: &[String]) -> bool {
+    text.iter().map(|t| t.chars().count() + 1).sum::<usize>() > MAX_TEXT + 1
+}
+
 struct Row {
     booking: String,
     value: String,
@@ -125,7 +130,12 @@ pub fn parse(pages: &[Page]) -> Result<Movements, Failure> {
                 let next = body.get(i + 1);
                 let leads = next.is_some_and(|n| n.y - l.y <= LEAD && !cells(&n.words, &c).booking.is_empty());
                 match current.and_then(|r| rows.get_mut(r)) {
-                    Some(r) if !leads => r.text.extend(here.text),
+                    Some(r) if !leads => {
+                        r.text.extend(here.text);
+                        if too_long(&r.text) {
+                            return Err(Failure::TooLarge);
+                        }
+                    }
                     _ => waiting.extend(here.text),
                 }
                 continue;
@@ -142,8 +152,7 @@ pub fn parse(pages: &[Page]) -> Result<Movements, Failure> {
             };
             let mut text = std::mem::take(&mut waiting);
             text.extend(here.text);
-            // A description longer than any bank writes is not cut: the list is refused.
-            if text.iter().map(|t| t.chars().count() + 1).sum::<usize>() > MAX_TEXT {
+            if too_long(&text) {
                 return Err(Failure::TooLarge);
             }
             let head = compact(&text.join(""));
