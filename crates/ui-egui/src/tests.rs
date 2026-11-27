@@ -833,6 +833,10 @@ fn both_themes_keep_text_readable() {
         for fg in [p.accent, p.red, p.green] {
             assert!(contrast(fg, p.card) >= 4.5);
         }
+        // The selected item of the sidebar: accent text on its soft fill.
+        for bg in [p.accent_soft, p.sidebar] {
+            assert!(contrast(p.accent, bg) >= 4.5);
+        }
         // White text on filled buttons.
         for fill in [p.accent_fill, p.red_fill, p.green_fill] {
             assert!(contrast(Color32::WHITE, fill) >= 4.5);

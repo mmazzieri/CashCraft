@@ -65,9 +65,10 @@ pub struct Palette {
 }
 
 pub static LIGHT: Palette = Palette {
-    accent: Color32::from_rgb(0x1F, 0x7A, 0x6A),
-    accent_fill: Color32::from_rgb(0x1F, 0x7A, 0x6A),
-    accent_soft: Color32::from_rgb(0xDD, 0xEF, 0xEA),
+    // Ochre, the colour of the icon's tile, darkened to carry white text.
+    accent: Color32::from_rgb(0x8E, 0x5F, 0x0E),
+    accent_fill: Color32::from_rgb(0x8E, 0x5F, 0x0E),
+    accent_soft: Color32::from_rgb(0xF6, 0xEC, 0xD6),
     sidebar: Color32::from_rgb(0xF2, 0xF4, 0xF3),
     bg: Color32::from_rgb(0xFA, 0xFB, 0xFB),
     card: Color32::WHITE,
@@ -83,19 +84,19 @@ pub static LIGHT: Palette = Palette {
     blue: Color32::from_rgb(0x3B, 0x6E, 0xC4),
     zebra: Color32::from_rgb(0xF6, 0xF8, 0xF8),
     track: Color32::from_rgb(0xEC, 0xEF, 0xEE),
-    hover: Color32::from_rgb(0xE0, 0xE8, 0xE6),
+    hover: Color32::from_rgb(0xEB, 0xE6, 0xDC),
     grid: Color32::from_rgb(0xEE, 0xF1, 0xF0),
     header: Color32::from_rgb(0xF4, 0xF6, 0xF5),
-    row_selected: Color32::from_rgb(0xEF, 0xF4, 0xF3),
+    row_selected: Color32::from_rgb(0xF7, 0xF2, 0xE7),
     check_border: Color32::from_rgb(0xB8, 0xC0, 0xBE),
     warn_bg: Color32::from_rgb(0xFF, 0xF4, 0xDC),
     warn_text: Color32::from_rgb(0x7A, 0x55, 0x10),
 };
 
 pub static DARK: Palette = Palette {
-    accent: Color32::from_rgb(0x4F, 0xC2, 0xAA),
-    accent_fill: Color32::from_rgb(0x1F, 0x7A, 0x6A),
-    accent_soft: Color32::from_rgb(0x1E, 0x3D, 0x37),
+    accent: Color32::from_rgb(0xE0, 0xAE, 0x4A),
+    accent_fill: Color32::from_rgb(0x8E, 0x5F, 0x0E),
+    accent_soft: Color32::from_rgb(0x3A, 0x30, 0x1A),
     sidebar: Color32::from_rgb(0x1A, 0x20, 0x1F),
     bg: Color32::from_rgb(0x14, 0x19, 0x18),
     card: Color32::from_rgb(0x1E, 0x25, 0x24),
@@ -111,10 +112,10 @@ pub static DARK: Palette = Palette {
     blue: Color32::from_rgb(0x74, 0xA1, 0xEA),
     zebra: Color32::from_rgb(0x22, 0x29, 0x28),
     track: Color32::from_rgb(0x2B, 0x33, 0x32),
-    hover: Color32::from_rgb(0x33, 0x3E, 0x3C),
+    hover: Color32::from_rgb(0x3A, 0x38, 0x31),
     grid: Color32::from_rgb(0x2A, 0x32, 0x31),
     header: Color32::from_rgb(0x25, 0x2D, 0x2C),
-    row_selected: Color32::from_rgb(0x24, 0x33, 0x30),
+    row_selected: Color32::from_rgb(0x2E, 0x2B, 0x22),
     check_border: Color32::from_rgb(0x5A, 0x66, 0x64),
     warn_bg: Color32::from_rgb(0x3A, 0x2F, 0x14),
     warn_text: Color32::from_rgb(0xF0, 0xC8, 0x70),
@@ -1671,7 +1672,7 @@ pub fn line_chart(ui: &mut Ui, data: &[(String, Cents)], height: f32) {
         .collect();
     for (a, b) in pts.iter().zip(pts.iter().skip(1)) {
         let quad = vec![*a, *b, Pos2::new(b.x, plot.bottom()), Pos2::new(a.x, plot.bottom())];
-        p.add(egui::Shape::convex_polygon(quad, Color32::from_rgba_unmultiplied(0x1F, 0x7A, 0x6A, 28), Stroke::NONE));
+        p.add(egui::Shape::convex_polygon(quad, pal().accent.gamma_multiply(0.11), Stroke::NONE));
     }
     p.line(pts.clone(), Stroke::new(2.5, pal().accent));
     for (pt, (m, _)) in pts.iter().zip(data) {
