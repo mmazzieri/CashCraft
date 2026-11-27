@@ -38,6 +38,11 @@ data class Movement(
 
 data class BudgetLine(val category: String, val budget: BigDecimal, val spent: BigDecimal, val remaining: BigDecimal)
 
+data class EnvelopeLine(val id: Long, val name: String, val assigned: BigDecimal, val spent: BigDecimal, val available: BigDecimal)
+
+/** The month of the envelopes, when the file's budget is made of them. */
+data class Envelopes(val toBeAssigned: BigDecimal, val lines: List<EnvelopeLine>)
+
 /** A folder the person picked, and the data files in it. */
 data class Picked(val tree: Uri, val names: List<String>)
 
@@ -51,6 +56,7 @@ data class BooksState(
     val movements: List<Movement> = emptyList(),
     val categories: List<String> = emptyList(),
     val budget: List<BudgetLine> = emptyList(),
+    val envelopes: Envelopes? = null,
     /** The shared file could not be reached: changes wait on the phone. */
     val offline: Boolean = false,
     /** A computer has the file open: the phone only reads. */
@@ -308,6 +314,7 @@ object Books {
         val movements = call("list_transactions", JSONObject().put("limit", 300).put("search", search))
         val categories = call("list_categories")
         val budget = call("budget_status")
+        val envelopes = call("list_envelopes")
         mutableState.update { state ->
             state.copy(
             accounts = objects(accounts.getJSONArray("accounts")).map {
@@ -325,6 +332,12 @@ object Books {
             budget = objects(budget.getJSONArray("lines")).map {
                 BudgetLine(it.getString("category"), money(it, "budget"), money(it, "spent"), money(it, "remaining"))
             },
+            envelopes = if (envelopes.optString("mode") != "envelopes") null else Envelopes(
+                money(envelopes, "to_be_assigned"),
+                objects(envelopes.getJSONArray("envelopes")).map {
+                    EnvelopeLine(it.getLong("id"), it.getString("name"), money(it, "assigned"), money(it, "spent"), money(it, "available"))
+                },
+            ),
         ) }
     }
 

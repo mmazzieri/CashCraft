@@ -3,6 +3,7 @@
 
 mod datafile;
 mod dialogs;
+mod envelopes;
 pub mod gui;
 mod ledger;
 mod reconcile;

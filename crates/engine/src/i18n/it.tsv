@@ -1038,3 +1038,116 @@ Yes, check daily	Sì, ogni giorno
 No	No
 Off	Spento
 CashCraft {version} is available: {page}	È disponibile CashCraft {version}: {page}
+"{category}" is already in the envelope "{name}"	"{category}" è già nella busta "{name}"
+"{category}" is an income category: its money is to be assigned	"{category}" è una categoria di entrata: il suo denaro va assegnato
+Carry it into the next month	Portala nel mese dopo
+From the monthly budget	Dal budget mensile
+Take it from next month's money to assign	Prendila da ciò che c'è da assegnare il mese dopo
+an undo cannot be undone: make the change again	un annullamento non si annulla: rifai la modifica
+change {id} not found	modifica {id} non trovata
+envelope "{name}" not found	busta "{name}" non trovata
+money is moved between two different envelopes	il denaro si sposta tra due buste diverse
+that change was undone already	quella modifica è già stata annullata
+the amount to move must be more than zero	l'importo da spostare deve essere più di zero
+the envelope needs a name	la busta ha bisogno di un nome
+the envelopes start in {month}	le buste cominciano in {month}
+the first month of the envelopes is out of range	il primo mese delle buste è fuori dai limiti
+the month cannot be computed	il mese non si può calcolare
+the month is too far from the first month of the envelopes	il mese è troppo lontano dal primo mese delle buste
+the name is too long	il nome è troppo lungo
+the reason is too long	il motivo è troppo lungo
+there are too many envelopes	ci sono troppe buste
+there is already an envelope "{name}"	c'è già una busta "{name}"
+there is no change of the envelopes to undo	non c'è nessuna modifica delle buste da annullare
+too many categories	troppe categorie
+undoes change {id}	annulla la modifica {id}
+change undone	modifica annullata
+envelope "{name}" added	busta "{name}" aggiunta
+envelope "{name}" changed	busta "{name}" modificata
+monthly budgets assigned in {month}	budget mensili assegnati in {month}
+nothing changed	nulla è cambiato
+overspending is carry or next_month	overspending è carry o next_month
+recomputed: {months}	ricalcolati: {months}
+the budget shows the envelopes	il budget mostra le buste
+the budget shows the monthly limits	il budget mostra i limiti mensili
+the mode is monthly or envelopes	la modalità è monthly o envelopes
+{amount} assigned to "{name}" in {month}	{amount} assegnati a "{name}" in {month}
+{amount} moved from "{from}" to "{to}" in {month}	{amount} spostati da "{from}" a "{to}" in {month}
+{n} envelope made from the monthly budgets	{n} busta creata dai budget mensili
+{n} envelopes made from the monthly budgets	{n} buste create dai budget mensili
+! Some spending is in no envelope: give its categories an envelope, or a category to it.	! Alcune spese non sono in nessuna busta: dai una busta alle loro categorie, o una categoria a loro.
+! {n} amounts in other currencies are not in the envelopes.	! {n} importi in altre valute non sono nelle buste.
+A past month: what changes here is carried into every month after it.	Un mese passato: ciò che cambia qui si riporta in ogni mese successivo.
+Add a category…	Aggiungi una categoria…
+Arrows up and down choose an envelope · type an amount or press Enter to assign it · Enter saves · Esc cancels · ⌘Z undoes the last change of the month	Frecce su e giù scelgono una busta · scrivi un importo o premi Invio per assegnarlo · Invio salva · Esc annulla · ⌘Z annulla l'ultima modifica del mese
+Assign the monthly budgets	Assegna i budget mensili
+Assigned	Assegnato
+Available	Disponibile
+Budget: {mode}	Budget: {mode}
+Carried	Riportato
+Change undone	Modifica annullata
+Changes	Modifiche
+Changes of this month	Modifiche di questo mese
+Choose an envelope…	Scegli una busta…
+Cover…	Copri…
+Each envelope gets the monthly budgets of its categories	Ogni busta riceve i budget mensili delle sue categorie
+Envelope	Busta
+Envelope added	Busta aggiunta
+Envelope renamed	Busta rinominata
+Envelopes	Buste
+Envelopes of {month}	Buste di {month}
+Every euro has a job	Ogni euro ha un compito
+Still to assign	Ancora da assegnare
+Every euro that arrives, given to an envelope	Ogni euro che arriva, dato a una busta
+Left from before	Avanzato da prima
+Money moved	Denaro spostato
+Monthly budgets assigned in {month}	Budget mensili assegnati in {month}
+Monthly limits	Limiti mensili
+Move	Sposta
+Move money into "{name}" from	Sposta denaro in "{name}" da
+Name:	Nome:
+New envelope:	Nuova busta:
+No envelopes: add one below.	Nessuna busta: aggiungine una qui sotto.
+Over-assigned by {amount}	Assegnati {amount} in più
+Overspent last month	Sforato il mese scorso
+Settings of the envelope	Impostazioni della busta
+Spent outside envelopes	Speso fuori dalle buste
+Start them in this month	Falle cominciare da questo mese
+Take it out	Toglila
+The budget shows the envelopes	Il budget mostra le buste
+The budget shows the monthly limits	Il budget mostra i limiti mensili
+The envelopes start in {month}	Le buste cominciano in {month}
+The envelopes start in {month}.	Le buste cominciano in {month}.
+To be assigned	Da assegnare
+Undo the last change of the month	Annulla l'ultima modifica del mese
+When it is overspent:	Quando è sforata:
+assigned {amount}	assegnato {amount}
+envelopes	buste
+every euro has a job	ogni euro ha un compito
+income {amount}	entrate {amount}
+left from before {amount}	avanzato da prima {amount}
+monthly limits	limiti mensili
+none	nessuna
+over-assigned by {amount}	assegnati {amount} in più
+overspent	sforata
+overspent last month {amount}	sforato il mese scorso {amount}
+reason	motivo
+still to assign	ancora da assegnare
+{amount} of uncategorized money, taken from here	{amount} di denaro senza categoria, presi da qui
+{amount} spent in categories without an envelope, taken from here	{amount} spesi in categorie senza busta, presi da qui
+{n} amount in another currency is not in the envelopes	{n} importo in un'altra valuta non è nelle buste
+{n} amounts in other currencies are not in the envelopes	{n} importi in altre valute non sono nelle buste
+"{name}" is the id of one envelope and the name of another: use the id	"{name}" è l'id di una busta e il nome di un'altra: usa l'id
+Categories from {month} on (with those under them):	Categorie da {month} in poi (con quelle sotto):
+Categories saved from {month} on	Categorie salvate da {month} in poi
+Delete "{name}"? In {month} it holds {amount}, which goes back to be assigned, and the spending of its categories counts outside the envelopes in every month. The deletion can be undone.	Eliminare "{name}"? In {month} contiene {amount}, che torna da assegnare, e le spese delle sue categorie contano fuori dalle buste in ogni mese. L'eliminazione si può annullare.
+Delete the envelope…	Elimina la busta…
+Envelope deleted: ⌘Z brings it back	Busta eliminata: ⌘Z la riporta
+Envelopes only in the data file	Buste solo nell'archivio
+Envelopes only in the other file	Buste solo nell'altro file
+envelope "{name}" deleted; undo_envelope_change brings it back	busta "{name}" eliminata; undo_envelope_change la riporta
+from {month}	da {month}
+{category} in {name}	{category} in {name}
+{category} out of the envelopes	{category} fuori dalle buste
+{name} deleted	{name} eliminata
+{n} changes of the envelopes come before {month} and would no longer count: confirm to start there	{n} modifiche delle buste vengono prima di {month} e non conterebbero più: conferma per cominciare da lì

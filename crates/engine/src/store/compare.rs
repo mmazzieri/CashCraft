@@ -32,12 +32,25 @@ pub struct Differences {
     /// Only in the first file.
     pub first: Vec<Line>,
     pub second: Vec<Line>,
-    /// The entries are the same, and something else is not: names, budgets, rules…
+    /// Changes of the envelopes in force in the first file alone, as `month what`.
+    pub envelopes_first: Vec<String>,
+    pub envelopes_second: Vec<String>,
+    /// The entries and the envelopes are the same, and something else is not: names, budgets, rules…
     pub others: bool,
 }
 
+impl Differences {
+    /// Nothing that is listed differs.
+    pub fn none_listed(&self) -> bool {
+        self.first.is_empty()
+            && self.second.is_empty()
+            && self.envelopes_first.is_empty()
+            && self.envelopes_second.is_empty()
+    }
+}
+
 /// The entries of a data file, read from a private copy of it.
-fn entries(home: &Home, path: &Path) -> Result<(BTreeMap<Line, usize>, String)> {
+fn entries(home: &Home, path: &Path) -> Result<(BTreeMap<Line, usize>, Vec<String>, String)> {
     let dir = home.scratch()?;
     let copy = dir.0.join("compare.db");
     std::fs::copy(path, &copy).with_context(|| path.display().to_string())?;
@@ -49,14 +62,33 @@ fn entries(home: &Home, path: &Path) -> Result<(BTreeMap<Line, usize>, String)> 
         postings.sort();
         *out.entry(Line { date: e.date, payee: e.payee, memo: e.memo, postings }).or_insert(0) += 1;
     }
-    Ok((out, print))
+    Ok((out, db.live_changes()?, print))
+}
+
+/// What one sorted list has more than the other.
+fn beyond(a: &[String], b: &[String]) -> Vec<String> {
+    let mut left: Vec<&String> = b.iter().collect();
+    let mut out = Vec::new();
+    for x in a {
+        match left.iter().position(|y| *y == x) {
+            Some(i) => {
+                left.swap_remove(i);
+            }
+            None => out.push(x.clone()),
+        }
+    }
+    out
 }
 
 /// The entries that only one of two files has.
 pub fn differences(home: &Home, first: &Path, second: &Path) -> Result<Differences> {
-    let (mut a, print_a) = entries(home, first)?;
-    let (b, print_b) = entries(home, second)?;
-    let mut out = Differences::default();
+    let (mut a, changes_a, print_a) = entries(home, first)?;
+    let (b, changes_b, print_b) = entries(home, second)?;
+    let mut out = Differences {
+        envelopes_first: beyond(&changes_a, &changes_b),
+        envelopes_second: beyond(&changes_b, &changes_a),
+        ..Differences::default()
+    };
     for (line, n) in b {
         let there = a.remove(&line).unwrap_or(0);
         out.second.extend(std::iter::repeat_n(line.clone(), n.saturating_sub(there)));
@@ -66,6 +98,6 @@ pub fn differences(home: &Home, first: &Path, second: &Path) -> Result<Differenc
         out.first.extend(std::iter::repeat_n(line, n));
     }
     out.first.sort();
-    out.others = out.first.is_empty() && out.second.is_empty() && print_a != print_b;
+    out.others = out.none_listed() && print_a != print_b;
     Ok(out)
 }

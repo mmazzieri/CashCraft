@@ -36,6 +36,10 @@ const ALLOWED: &[&str] = &[
     "net_worth",
     "set_budget",
     "budget_status",
+    "list_envelopes",
+    "assign_envelope",
+    "move_envelope_money",
+    "undo_envelope_change",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -126,7 +130,7 @@ fn stage(from: &Path) -> Result<()> {
     remove_logs(from)?;
     check(from)?;
     with_db(from, |db| {
-        for tool in ["list_accounts", "list_transactions", "list_categories", "budget_status"] {
+        for tool in ["list_accounts", "list_transactions", "list_categories", "budget_status", "list_envelopes"] {
             ops::call_in_cents(db, tool, &json!({}))?;
         }
         Ok(())

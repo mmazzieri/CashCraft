@@ -534,7 +534,7 @@ fn a_file_without_transactions_and_an_empty_file_open() {
 }
 
 #[test]
-fn files_of_formats_2_to_8_open() {
+fn files_of_formats_2_to_9_open() {
     ledger_file_opens(2, include_str!("v2.sql"));
     ledger_file_opens(3, include_str!("v3.sql"));
     ledger_file_opens(4, include_str!("v4.sql"));
@@ -542,6 +542,7 @@ fn files_of_formats_2_to_8_open() {
     ledger_file_opens(6, include_str!("v6.sql"));
     ledger_file_opens(7, include_str!("v7.sql"));
     ledger_file_opens(8, include_str!("v8.sql"));
+    ledger_file_opens(9, include_str!("v9.sql"));
 }
 
 /// What is new is added, after a copy; everything else stays as it was.
@@ -551,6 +552,7 @@ fn ledger_file_opens(version: i64, schema: &str) {
     let table = match version {
         7 => "ledger_postings",
         8 => "book_postings",
+        9 => "journal_postings",
         _ => "postings",
     };
     let run = |sql: &str| old.execute_batch(&sql.replace("postings", table)).unwrap();
@@ -1018,6 +1020,7 @@ fn a_migrated_file_is_like_a_new_one() {
         (6, include_str!("v6.sql")),
         (7, include_str!("v7.sql")),
         (8, include_str!("v8.sql")),
+        (9, include_str!("v9.sql")),
     ] {
         let dir = Dir::new(&format!("like-new-{version}"));
         let old = Connection::open(dir.file()).unwrap();
@@ -1100,4 +1103,49 @@ fn a_copy_before_an_update_holds_the_whole_file_and_never_replaces_one() {
     // Nothing but the two copies is left in the folder, and the file itself is as it was.
     assert_eq!(std::fs::read_dir(&into).unwrap().count(), 2);
     assert_eq!(dump(&db.conn), before);
+}
+
+/// A window of format 9 that has the file open goes on working: what it writes to the books is in the envelopes,
+/// which are computed from them, and a category it deletes leaves its envelope.
+#[test]
+fn a_window_of_format_9_with_the_file_open_harms_no_envelope() {
+    use crate::envelopes::{Mode, Overspending, parse_month};
+    let dir = Dir::new("format-9-open");
+    let old = Connection::open(dir.file()).unwrap();
+    old.execute_batch(include_str!("v9.sql")).unwrap();
+    old.execute_batch(
+        "PRAGMA foreign_keys=ON;
+         INSERT INTO accounts(id,name,kind) VALUES (1,'Bank','bank');
+         INSERT INTO categories(id,name) VALUES (1,'Food'), (2,'Fun');
+         INSERT INTO category_budgets(category_id, monthly) VALUES (1, 30000);",
+    )
+    .unwrap();
+    old.pragma_update(None, "user_version", 9).unwrap();
+    let file = dump(&old);
+    let (db, _) = Db::open(&dir.file()).unwrap();
+    assert_eq!(dump(&Connection::open(dir.0.join("books.v9-backup.db")).unwrap()), file);
+    assert_sound(&db, "opened");
+    db.set_envelopes_start(parse_month("2026-01").unwrap(), false).unwrap();
+    assert_eq!(db.set_budget_mode(Mode::Envelopes).unwrap(), 1);
+    let fun = db.add_envelope("Fun", &[2], Overspending::Carry, db.envelopes_start()).unwrap();
+    db.assign(fun, parse_month("2026-01").unwrap(), 5_000, "").unwrap();
+    // The old window posts a purchase, changes a budget and deletes a category.
+    old.execute_batch(
+        "INSERT INTO entries(id,date,payee) VALUES (1,'2026-01-05','Shop');
+         INSERT INTO journal_postings(id,entry_id,ledger_account_id,amount,currency)
+         SELECT 1,1,id,-700,'EUR' FROM ledger_accounts WHERE money_account_id=1 UNION ALL
+         SELECT 2,1,id,700,'EUR' FROM ledger_accounts WHERE category_id=2;
+         UPDATE category_budgets SET monthly=1 WHERE category_id=1;",
+    )
+    .unwrap();
+    let v = db.envelope_month(parse_month("2026-01").unwrap()).unwrap();
+    let line = v.envelopes.iter().find(|e| e.id == fun).unwrap();
+    assert_eq!((line.spent, line.available), (700, 4_300));
+    old.execute_batch("DELETE FROM ledger_accounts WHERE category_id=1; DELETE FROM categories WHERE id=1;").unwrap();
+    let v = db.envelope_month(parse_month("2026-01").unwrap()).unwrap();
+    assert!(v.envelopes.iter().all(|e| e.id == fun || e.categories.is_empty()));
+    // The link of the category that went stays in the history, without its category.
+    let sql = "SELECT COUNT(*) FROM envelope_changes WHERE kind='link' AND category_id IS NULL";
+    assert_eq!(db.conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert_sound(&db, "kept");
 }

@@ -28,6 +28,20 @@ struct BudgetLine: Identifiable {
     let remaining: Decimal
 }
 
+struct EnvelopeLine: Identifiable {
+    let id: Int
+    let name: String
+    let assigned: Decimal
+    let spent: Decimal
+    let available: Decimal
+}
+
+/// The month of the envelopes, when the file's budget is made of them.
+struct Envelopes {
+    let toBeAssigned: Decimal
+    let lines: [EnvelopeLine]
+}
+
 /// What the screens show.
 struct Shown {
     var accounts: [Account] = []
@@ -35,6 +49,7 @@ struct Shown {
     var movements: [Movement] = []
     var categories: [String] = []
     var budget: [BudgetLine] = []
+    var envelopes: Envelopes?
     /// The shared file could not be reached: changes wait on the phone.
     var offline = false
     /// A computer has the file open: the phone only reads.
@@ -320,6 +335,7 @@ final class Worker: @unchecked Sendable {
         let movements = try call("list_transactions", ["limit": 300, "search": query])
         let categories = try call("list_categories")
         let budget = try call("budget_status")
+        let envelopes = try call("list_envelopes")
         shown.worth = money(accounts["net_worth"])
         shown.accounts = list(accounts["accounts"]).compactMap { a in
             guard let id = a["id"] as? Int else { return nil }
@@ -337,6 +353,13 @@ final class Worker: @unchecked Sendable {
         shown.budget = list(budget["lines"]).map {
             BudgetLine(category: string($0["category"]), budget: money($0["budget"]), spent: money($0["spent"]), remaining: money($0["remaining"]))
         }
+        shown.envelopes = string(envelopes["mode"]) != "envelopes" ? nil : Envelopes(
+            toBeAssigned: money(envelopes["to_be_assigned"]),
+            lines: list(envelopes["envelopes"]).compactMap { e in
+                guard let id = e["id"] as? Int else { return nil }
+                return EnvelopeLine(id: id, name: string(e["name"]), assigned: money(e["assigned"]), spent: money(e["spent"]), available: money(e["available"]))
+            }
+        )
     }
 
     private func list(_ v: Any?) -> [[String: Any]] { v as? [[String: Any]] ?? [] }
