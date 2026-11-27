@@ -17,7 +17,7 @@ mod migrate;
 pub mod money;
 pub mod ofx;
 pub mod ops;
-mod paths;
+pub mod paths;
 pub mod pdf;
 pub mod reconcile;
 pub mod rules;
@@ -26,3 +26,9 @@ pub mod store;
 pub mod testing;
 pub mod transfers;
 mod xls;
+
+/// The public keys of CashCraft's release signature, in base64 (32 bytes each): the one the release workflow signs
+/// `SHA256SUMS.txt` with, and a spare kept offline. A copy that updates itself takes nothing that neither signed;
+/// while both are empty, new versions are told of and never downloaded (`docs/updates.md`).
+pub const RELEASE_KEYS: [&str; 2] =
+    ["Q2i3aDSyj1nC18g5PkfzftbGgAEwa+AVZd3pjwT/fiQ=", "WzZcSbHzDN9an9lG2qOT6VpSNbXMbFE3tOPaYVdIITY="];

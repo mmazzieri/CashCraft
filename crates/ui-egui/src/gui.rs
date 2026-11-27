@@ -775,6 +775,8 @@ pub struct App {
     frame_count: u32,
     shot_requested: bool,
     shot_done: Arc<AtomicBool>,
+    /// New versions: `None` until the first frame of a window on a file, and in a picture.
+    pub updates: Option<crate::updates::Updates>,
 }
 
 // ------------------------------------------------------------------ avvio
@@ -942,6 +944,7 @@ impl App {
             frame_count: 0,
             shot_requested: false,
             shot_done: Arc::new(AtomicBool::new(false)),
+            updates: None,
         };
         app.data_version = app.db.data_version();
         app.reload();
@@ -998,6 +1001,11 @@ impl App {
     }
 
     /// Changes the language of the window, and of the command line on this data file.
+    /// Whether this window only takes a picture of itself (`--screenshot`).
+    pub(crate) fn screenshot_mode(&self) -> bool {
+        self.screenshot.is_some()
+    }
+
     pub fn choose_language(&mut self, ui: &Ui, l: Option<Lang>) {
         let r = self.db.set_meta(i18n::META_KEY, l.map_or("system", Lang::code));
         if r.is_ok() {
@@ -1336,6 +1344,7 @@ impl eframe::App for App {
         self.sidebar(ui);
         self.toolbar(ui);
         self.status_bar(ui);
+        self.updates_tick(ui);
         egui::CentralPanel::default().frame(Frame::new().fill(pal().bg).inner_margin(Margin::symmetric(22, 16))).show(
             ui,
             |ui| match self.view {
@@ -1357,6 +1366,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        self.updates_on_exit();
         self.file_close();
     }
 }

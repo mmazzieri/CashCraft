@@ -12,6 +12,7 @@ CashCraft was written by a coding agent from its author's description of the fea
 | `crates/engine/src/db.rs` default categories and rules | Our own wording | MIT OR Apache-2.0 |
 | Statement fixtures in the tests | Our own invented examples | MIT OR Apache-2.0 |
 | `packaging/` | Adapted from `storytold/craft-launcher`, as the headers say | MIT OR Apache-2.0 |
+| `crates/update` (checking, downloading, verifying and installing new versions) | Adapted from MailCraft's own updater ([UCS-Care-Group/mailcraft](https://github.com/UCS-Care-Group/mailcraft): `crates/model/src/update.rs`, `crates/net/src/update.rs`, `crates/net/src/update_download.rs`, `apps/mailcraft/src/install.rs`, `apps/mailcraft/src/self_update.rs`), Copyright MailCraft contributors, as the headers say | MIT OR Apache-2.0 |
 
 ## Third-party material
 
@@ -27,6 +28,9 @@ Rust crates are listed with their licenses by `cargo deny list`; `cargo deny che
 | Android Gradle plugin, Kotlin and Compose Gradle plugins (build only, not in this repository) | 8.10, 2.1 | Apache-2.0 |
 | `mobile/android/gradlew`, `gradlew.bat`, `gradle/wrapper/` (Gradle wrapper) | 8.14 | Apache-2.0 |
 | rusqlite, with SQLite bundled | 0.37 | MIT; SQLite is public domain |
+| ureq (with rustls and ring), rustls-native-certs (the system's own root certificates; none bundled) | 3.5, 0.8 | MIT OR Apache-2.0; rustls-native-certs: Apache-2.0 OR ISC OR MIT; ring: Apache-2.0 AND ISC |
+| base64 | 0.22 | MIT OR Apache-2.0 |
+| winreg (Windows only) | 0.55 | MIT |
 | craft-xls (storytold/craft-libs) | 0.1.0, pinned commit | MIT OR Apache-2.0 |
 | hayro-interpret, hayro-syntax (text of PDF files; no fonts or CMaps bundled; they use `unsafe` code of their own) | 0.7.0, 0.7.2, pinned | MIT OR Apache-2.0 |
 | kurbo | 0.13 | MIT OR Apache-2.0 |
@@ -52,4 +56,4 @@ Fonts bundled in the app through `epaint_default_fonts` 0.37 (egui's `default_fo
 | emoji-icon-font | MIT |
 | egui-icons (subset of emoji-icon-font) | MIT |
 
-The license texts of the fonts and of the encoding_rs data are collected, unchanged, in [`THIRD-PARTY-LICENSES.txt`](THIRD-PARTY-LICENSES.txt), which every release package carries together with this file, `NOTICE` and the two license texts.
+The license texts of the fonts, of the encoding_rs data and of MailCraft (whose updater `crates/update` is adapted from) are collected, unchanged, in [`THIRD-PARTY-LICENSES.txt`](THIRD-PARTY-LICENSES.txt), which every release package carries together with this file, `NOTICE` and the two license texts.

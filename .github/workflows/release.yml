@@ -1,7 +1,7 @@
 name: Release
 
-# A tag vX.Y.Z builds every package and opens a draft GitHub release with them and
-# SHA256SUMS.txt; the release is published by hand. A pull request that touches the
+# A tag vX.Y.Z builds every package and opens a draft GitHub release with them,
+# SHA256SUMS.txt and its signature SHA256SUMS.txt.sig (docs/updates.md); the release is published by hand. A pull request that touches the
 # packaging builds the same packages without releasing anything, so they are tested
 # before a tag.
 on:
@@ -129,6 +129,30 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      # The copies that update themselves take a release only by this signature (docs/updates.md).
+      # Without the secret the release is unsigned: it is told of, and never installed by itself.
+      - name: Sign the checksums (skipped without the key)
+        working-directory: dist
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_SIGNING_KEY:-}" ]; then
+            echo "::warning::RELEASE_SIGNING_KEY is not set: the release is not signed and no copy installs it by itself"
+            exit 0
+          fi
+          umask 077
+          key="$RUNNER_TEMP/release-key.pem"
+          trap 'rm -f "$key" "$RUNNER_TEMP/sums.sig" "$RUNNER_TEMP/release-key.pub"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key"
+          openssl pkeyutl -sign -rawin -inkey "$key" -in SHA256SUMS.txt -out "$RUNNER_TEMP/sums.sig"
+          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/release-key.pub"
+          openssl pkeyutl -verify -rawin -pubin -inkey "$RUNNER_TEMP/release-key.pub" \
+            -sigfile "$RUNNER_TEMP/sums.sig" -in SHA256SUMS.txt
+          base64 -w0 "$RUNNER_TEMP/sums.sig" > SHA256SUMS.txt.sig
+          echo >> SHA256SUMS.txt.sig
+          echo "Signed by the key whose public half is:"
+          openssl pkey -pubin -in "$RUNNER_TEMP/release-key.pub" -outform DER | tail -c 32 | base64
       - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
