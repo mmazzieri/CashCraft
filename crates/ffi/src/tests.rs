@@ -219,3 +219,49 @@ fn a_reconciled_transaction_is_asked_about() {
     tool(&f, "update_transaction", json!({"id": id, "amount": -13, "unreconcile": true}));
     assert_sound(&f);
 }
+
+/// The phone reads the envelopes of the month, in cents, and assigns; what it may not do is refused.
+#[test]
+fn the_phone_reads_and_assigns_the_envelopes() {
+    let d = Dir::new("envelopes");
+    let a = d.file("a.db");
+    ask(json!({"op": "new", "path": a}));
+    let (db, _) = cashcraft_engine::db::Db::open(&a).unwrap();
+    for (path, income) in [("Food", false), ("Fun", false), ("Pay", true)] {
+        ops::call(&db, "create_category", &json!({"path": path, "income": income}), None).unwrap();
+    }
+    drop(db);
+    tool(&a, "create_account", json!({"name": "Wallet", "kind": "cash"}));
+    tool(&a, "set_budget", json!({"category": "Food", "monthly_amount": 200}));
+    assert_eq!(tool(&a, "budget_status", json!({}))["mode"], "monthly");
+    assert_eq!(tool(&a, "list_envelopes", json!({}))["mode"], "monthly");
+    for refused in ["envelope_settings", "add_envelope", "delete_envelope", "assign_budgets"] {
+        let r = answer(json!({"op": "call", "path": a, "tool": refused, "args": {}}));
+        assert!(r.get("error").is_some(), "{refused}: {r}");
+    }
+    // Chosen on a computer.
+    let (db, _) = cashcraft_engine::db::Db::open(&a).unwrap();
+    ops::call(&db, "envelope_settings", &json!({"mode": "envelopes"}), None).unwrap();
+    ops::call(&db, "add_envelope", &json!({"name": "Fun", "categories": "Fun"}), None).unwrap();
+    drop(db);
+    tool(&a, "add_transaction", json!({"account": "Wallet", "amount": 500, "payee": "Gift", "category": "Pay"}));
+    tool(&a, "add_transaction", json!({"account": "Wallet", "amount": -12.5, "payee": "Shop", "category": "Food"}));
+    let v = tool(&a, "list_envelopes", json!({}));
+    assert_eq!(
+        (v["mode"].as_str(), v["income"].as_i64(), v["to_be_assigned"].as_i64()),
+        (Some("envelopes"), Some(50_000), Some(30_000))
+    );
+    let groceries = v["envelopes"].as_array().unwrap().iter().find(|e| e["name"] == "Food").unwrap().clone();
+    assert_eq!((groceries["assigned"].as_i64(), groceries["spent"].as_i64()), (Some(20_000), Some(1_250)));
+    tool(&a, "assign_envelope", json!({"envelope": "Fun", "amount": "300"}));
+    tool(&a, "move_envelope_money", json!({"from": "Fun", "to": "Food", "amount": 1}));
+    let v = tool(&a, "list_envelopes", json!({}));
+    assert_eq!(v["to_be_assigned"].as_i64(), Some(0));
+    tool(&a, "undo_envelope_change", json!({}));
+    let r = answer(
+        json!({"op": "call", "path": a, "tool": "assign_envelope", "args": {"envelope": "Nobody", "amount": 1}}),
+    );
+    assert!(r.get("error").is_some(), "{r}");
+    assert!(!beside(&a, "-wal").exists());
+    assert_sound(&a);
+}
