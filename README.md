@@ -32,7 +32,8 @@
   or ⌘T/Ctrl+T) makes a transfer of an imported line and joins the other side when it is there already;
   a transfer can be separated again.
 - **Overview, reports and budgets**: income vs. spending by month, spending by category,
-  net worth over time, monthly budgets per category with progress bars.
+  net worth over time, monthly budgets per category with progress bars, or a zero-based budget with envelopes
+  ([docs/envelopes.md](docs/envelopes.md)).
 - **Categories, tags and rules**: nested categories; rules on payee, notes (keywords or regular expressions), amount and
   account that give new and imported transactions a category, tags and a cleaner payee, in the order you choose, always
   saying which rule it was. **Always categorize like this…** makes a rule of a transaction; on demand they run

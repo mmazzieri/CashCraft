@@ -111,6 +111,22 @@ fn what_one_computer_writes_the_other_sees() {
     assert_sound(&a, "shared");
 }
 
+/// A change of the envelopes alone, which touches no posting, reaches the shared file and the other computer.
+#[test]
+fn an_assignment_alone_reaches_the_other_computer() {
+    let p = Place::new();
+    let (a, sa, _) = p.start("one");
+    let e = a.add_envelope("Fun", &[], crate::envelopes::Overspending::Carry).unwrap();
+    sa.sync().unwrap();
+    let (b, sb, _) = p.start("two");
+    let month = crate::db::first_of_month(crate::db::today());
+    a.assign(e, month, 1_234, "").unwrap();
+    assert!(!sa.sync().unwrap().pending);
+    assert!(sb.sync().unwrap().adopted);
+    let assigned = |db: &Db| db.envelope_month(month).unwrap().envelopes[0].assigned;
+    assert_eq!((assigned(&a), assigned(&b)), (1_234, 1_234));
+}
+
 #[test]
 fn nothing_is_written_when_nothing_changed() {
     let p = Place::new();
@@ -772,8 +788,12 @@ fn every_new_row_of_a_shared_file_has_an_id_of_its_own() {
         r["lines"].as_array().unwrap().iter().map(|l| format!("{}={}", l["line"], l["exact"]["id"])).collect();
     call("match_reconciliation", serde_json::json!({"id": id, "pairs": pairs.join(",")}));
     call("finish_reconciliation", serde_json::json!({"id": id}));
+    call("add_envelope", json(r#"{"name":"Fun","categories":"Leisure"}"#));
+    call("assign_envelope", json(r#"{"envelope":"Fun","amount":5}"#));
     assert!(!moved.is_null());
-    let reconciled = ["reconciliations", "reconciliation_lines", "reconciled_postings"].map(|t| (t, vec![]));
+    let reconciled =
+        ["reconciliations", "reconciliation_lines", "reconciled_postings", "envelopes", "envelope_changes"]
+            .map(|t| (t, vec![]));
     for (table, before) in
         seeded.iter().map(|(t, b)| (*t, b.clone())).chain([("card_statements", vec![])]).chain(reconciled)
     {
@@ -801,11 +821,17 @@ fn every_new_row_of_a_shared_file_has_an_id_of_its_own() {
         include_str!("../importer.rs"),
         include_str!("../duplicates.rs"),
         include_str!("../reconcile.rs"),
+        include_str!("../envelopes.rs"),
     ];
     let mut found = 0;
-    for table in
-        WITH_IDS.iter().chain(&["card_statements", "reconciliations", "reconciliation_lines", "reconciled_postings"])
-    {
+    for table in WITH_IDS.iter().chain(&[
+        "card_statements",
+        "reconciliations",
+        "reconciliation_lines",
+        "reconciled_postings",
+        "envelopes",
+        "envelope_changes",
+    ]) {
         for s in sources {
             // Not the triggers.
             for (at, _) in s.match_indices(&format!("\"INSERT INTO {table}(")) {

@@ -1,6 +1,6 @@
 # The phone apps
 
-`mobile/android` (Kotlin, Jetpack Compose) and `mobile/ios` (SwiftUI) are thin apps on the operations of `cashcraft_engine::ops`. Their first version shows accounts and net worth, lists and searches transactions, adds, edits and deletes them, records transfers, makes accounts, and shows and sets the budget of the month. Not yet (issue #19): importing statements, merging two changed files, a lock with the device's biometrics, editing transfers and split transactions, a signed APK in the releases.
+`mobile/android` (Kotlin, Jetpack Compose) and `mobile/ios` (SwiftUI) are thin apps on the operations of `cashcraft_engine::ops`. Their first version shows accounts and net worth, lists and searches transactions, adds, edits and deletes them, records transfers, makes accounts, and shows and sets the budget of the month: the monthly limits, or, when the file uses them, the envelopes, with what is to be assigned and the amount assigned to each ([envelopes.md](envelopes.md)). Not yet (issue #19): importing statements, merging two changed files, a lock with the device's biometrics, editing transfers and split transactions, a signed APK in the releases.
 
 ## The data file
 

@@ -3,7 +3,7 @@
 `cashcraft-cli mcp` speaks the Model Context Protocol (JSON-RPC 2.0, one message per line) on
 standard input and output. It offers the same operations as the command line
 (`cashcraft-cli tools` lists them): accounts, transactions, transfers, CSV preview and import,
-categories, rules, budgets, reports, scheduled transactions, CSV export and the double-entry ledger.
+categories, rules, budgets and envelopes ([envelopes.md](envelopes.md)), reports, scheduled transactions, CSV export and the double-entry ledger.
 
 ## Ledger
 
