@@ -24,7 +24,7 @@ use cashcraft_update::github::{self, Release};
 use cashcraft_update::install::{self, Install};
 use cashcraft_update::version::Version;
 use cashcraft_update::{MOST_ASKS, Problem, Project, Settings};
-use egui::{Align, Frame, Layout, Margin, RichText, Stroke, Ui};
+use egui::{Frame, Margin, RichText, Stroke, Ui};
 
 use crate::gui::{App, pal, primary_button};
 
@@ -365,14 +365,18 @@ impl App {
                     ui.selectable_value(&mut mode, m, m.name());
                 }
             });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        });
+        // On a line of its own, under the choice: the sidebar is too narrow for both side by side.
+        if mode != Mode::Off {
+            ui.horizontal(|ui| {
+                crate::views::setting_label(ui, "");
                 let busy = u.checking();
-                let button = ui.add_enabled(!busy, egui::Button::new("⟳").small()).on_hover_text(tr("Check now"));
-                if button.clicked() {
+                let text = format!("⟳ {}", tr("Check now"));
+                if ui.add_enabled(!busy, egui::Button::new(text).small()).clicked() {
                     u.check_now(&ctx);
                 }
             });
-        });
+        }
         if mode != u.mode() {
             said = u.choose(mode);
             if mode != Mode::Off && u.settings.due(cashcraft_update::now()) {
