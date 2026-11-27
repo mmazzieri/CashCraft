@@ -72,5 +72,15 @@ fn a_month_is_assigned_and_an_overspent_envelope_covered() {
     ok(&["envelopes", "undo"]);
     assert!(ok(&["envelopes", "list", "2026-04"]).contains("-€50.00"));
     assert!(!run(&["envelopes", "move", "Fun", "Fun", "5"]).0);
+    // A later first month would drop March's money: only with --confirm.
+    assert!(!run(&["envelopes", "settings", "--start", "2026-04"]).0);
+    let later = ok(&["envelopes", "settings", "--start", "2026-04", "--confirm"]);
+    assert!(later.contains("recomputed") && later.contains("2026-03"), "{later}");
+    // A part of a name finds nothing.
+    assert!(!run(&["envelopes", "assign", "Gro", "5"]).0);
+    let deleted = ok(&["envelopes", "delete", "Fun"]);
+    assert!(deleted.contains("brings it back"), "{deleted}");
+    ok(&["envelopes", "undo"]);
+    assert!(ok(&["envelopes", "list", "2026-04"]).contains("Fun"));
     assert!(!run(&["envelopes", "assign", "Nothing", "5"]).0);
 }

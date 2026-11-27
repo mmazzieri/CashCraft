@@ -18,6 +18,8 @@ pub struct EnvelopeState {
     pub stale: bool,
     /// The envelope chosen with the keyboard.
     pub cursor: usize,
+    /// The month the panels below are of: another month closes them, and what was being typed is dropped.
+    pub month: Option<NaiveDate>,
     /// The envelope whose assigned amount is being typed, and the text.
     pub editing: Option<(i64, String)>,
     /// The field just opened still has to take the keyboard.
@@ -28,6 +30,19 @@ pub struct EnvelopeState {
     pub settings: Option<(i64, String, Option<i64>)>,
     /// A new envelope: name and first category.
     pub new: (String, Option<i64>),
+    /// The deletion of this envelope waits for a yes.
+    pub deleting: Option<i64>,
+}
+
+impl EnvelopeState {
+    /// Closes what was open on one month: nothing typed there ever reaches another.
+    pub fn leave(&mut self) {
+        self.editing = None;
+        self.cover = None;
+        self.settings = None;
+        self.deleting = None;
+        self.month = None;
+    }
 }
 
 /// What the user asked for in a frame, done once the screen is drawn.
@@ -51,6 +66,10 @@ fn label_amount(c: Cents) -> RichText {
 impl App {
     pub fn envelopes_view(&mut self, ui: &mut Ui, month: NaiveDate) {
         let st = &mut self.envelopes;
+        if st.month != Some(month) {
+            st.leave();
+            st.month = Some(month);
+        }
         if st.stale || st.view.as_ref().is_none_or(|v| v.month != month_key(month)) {
             st.stale = false;
             st.view = or_report(self.db.envelope_month(month).map(Some), &mut self.toast);
@@ -62,9 +81,10 @@ impl App {
         st.cursor = st.cursor.min(rows.saturating_sub(1));
         // The last change of this month that can be undone: the changes come last first.
         let last = v.changes.iter().find(|c| c.kind != ChangeKind::Undo && !c.undone).map(|c| c.group_id);
-        if self.dialog.is_none()
-            && st.editing.is_none()
-            && !ui.ctx().egui_wants_keyboard_input()
+        // Keys are the screen's while no text field has them; Enter is left to a button that has the keyboard.
+        let free = self.dialog.is_none() && st.editing.is_none() && !ui.ctx().text_edit_focused();
+        let nothing_focused = !ui.ctx().egui_wants_keyboard_input();
+        if free
             && let Some(g) = last
             && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z))
         {
@@ -72,7 +92,7 @@ impl App {
         }
 
         // The keyboard, when no field has it.
-        if self.dialog.is_none() && st.editing.is_none() && !ui.ctx().egui_wants_keyboard_input() && rows > 0 {
+        if free && rows > 0 {
             ui.input_mut(|i| {
                 if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
                     st.cursor = (st.cursor + 1).min(rows - 1);
@@ -82,7 +102,7 @@ impl App {
                 }
                 let line = v.envelopes.get(st.cursor);
                 if let Some(l) = line {
-                    if i.consume_key(Modifiers::NONE, Key::Enter) {
+                    if nothing_focused && i.consume_key(Modifiers::NONE, Key::Enter) {
                         st.editing = Some((l.id, fmt_plain(l.assigned)));
                         st.focus = true;
                     }
@@ -205,20 +225,28 @@ impl App {
                         match &mut st.editing {
                             Some((id, text)) if *id == l.id => {
                                 let r = ui.add(egui::TextEdit::singleline(text).desired_width(90.0));
-                                if st.focus {
+                                let opening = st.focus;
+                                if opening {
                                     r.request_focus();
                                     st.focus = false;
                                 }
-                                let (enter, escape, down, up) = ui.input_mut(|i| {
-                                    (
-                                        i.consume_key(Modifiers::NONE, Key::Enter),
-                                        i.consume_key(Modifiers::NONE, Key::Escape),
-                                        i.consume_key(Modifiers::NONE, Key::ArrowDown),
-                                        i.consume_key(Modifiers::NONE, Key::ArrowUp),
-                                    )
-                                });
-                                let save = enter || down || up || (r.lost_focus() && !escape);
-                                if escape {
+                                // Keys are the field's only while it has the keyboard; leaving it otherwise drops
+                                // what was typed.
+                                let focused = r.has_focus() || r.lost_focus();
+                                let (enter, escape, down, up) = if focused && self.dialog.is_none() {
+                                    ui.input_mut(|i| {
+                                        (
+                                            i.consume_key(Modifiers::NONE, Key::Enter),
+                                            i.consume_key(Modifiers::NONE, Key::Escape),
+                                            i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                                            i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                                        )
+                                    })
+                                } else {
+                                    (false, false, false, false)
+                                };
+                                let save = enter || down || up;
+                                if escape || (!save && !opening && !r.has_focus()) {
                                     st.editing = None;
                                 } else if save {
                                     match parse_amount(text) {
@@ -251,7 +279,14 @@ impl App {
                         ui.label(available);
                         ui.horizontal(|ui| {
                             if l.available < 0 && ui.small_button(tr("Cover…")).clicked() {
-                                st.cover = Some((l.id, None, fmt_plain(-l.available), String::new()));
+                                // From the envelope with the most left, which the user can change.
+                                let richest = v
+                                    .envelopes
+                                    .iter()
+                                    .filter(|e| e.id != l.id && e.available > 0)
+                                    .max_by_key(|e| e.available)
+                                    .map(|e| e.id);
+                                st.cover = Some((l.id, richest, fmt_plain(-l.available), String::new()));
                             }
                             if ui.small_button("⚙").on_hover_text(tr("Settings of the envelope")).clicked() {
                                 st.settings = Some((l.id, l.name.clone(), None));
@@ -308,13 +343,12 @@ impl App {
                             todo = Some(Do::Rename(e.id, name.clone()));
                         }
                     });
-                    let own = or_report(self.db.envelopes(), &mut self.toast)
-                        .into_iter()
-                        .find(|x| x.id == e.id)
-                        .map(|x| x.category_ids)
-                        .unwrap_or_default();
+                    let own = e.category_ids.clone();
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(tr("Categories (with those under them):"));
+                        ui.label(trf(
+                            "Categories from {month} on (with those under them):",
+                            &[("month", &month_and_year(month))],
+                        ));
                         for c in &own {
                             let path = cats.iter().find(|x| x.id == *c).map(|x| x.path.clone()).unwrap_or_default();
                             if ui.small_button(format!("{path} ✕")).on_hover_text(tr("Take it out")).clicked() {
@@ -338,14 +372,32 @@ impl App {
                             }
                         }
                     });
-                    ui.horizontal(|ui| {
-                        if ui.button(tr("Delete the envelope")).clicked() {
-                            todo = Some(Do::Delete(e.id));
-                        }
-                        if ui.button(tr("Close")).clicked() {
-                            st.settings = None;
-                        }
-                    });
+                    if st.deleting == Some(e.id) {
+                        ui.label(
+                            RichText::new(trf(
+                                "Delete \"{name}\"? In {month} it holds {amount}, which goes back to be assigned, and the spending of its categories counts outside the envelopes in every month. The deletion can be undone.",
+                                &[("name", &e.name), ("month", &month_and_year(month)), ("amount", &fmt_eur(e.available))],
+                            ))
+                            .color(pal().red),
+                        );
+                        ui.horizontal(|ui| {
+                            if ui.button(tr("Delete")).clicked() {
+                                todo = Some(Do::Delete(e.id));
+                            }
+                            if ui.button(tr("Cancel")).clicked() {
+                                st.deleting = None;
+                            }
+                        });
+                    } else {
+                        ui.horizontal(|ui| {
+                            if ui.button(tr("Delete the envelope…")).clicked() {
+                                st.deleting = Some(e.id);
+                            }
+                            if ui.button(tr("Close")).clicked() {
+                                st.settings = None;
+                            }
+                        });
+                    }
                 }
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {
@@ -379,9 +431,7 @@ impl App {
                     ui.collapsing(tr("Changes of this month"), |ui| {
                         for c in &v.changes {
                             ui.horizontal(|ui| {
-                                let from = c.from.clone().unwrap_or_else(|| tr("To be assigned").to_string());
-                                let to = c.to.clone().unwrap_or_default();
-                                let text = format!("{}  {from} → {to}  {}  {}", c.made_at, fmt_eur(c.amount), c.reason);
+                                let text = format!("{}  {}  {}", c.made_at, c.text, c.reason);
                                 let color = if c.undone { pal().muted } else { pal().text };
                                 ui.label(RichText::new(text).color(color).size(12.5));
                                 if c.undone {
@@ -400,9 +450,10 @@ impl App {
         let month_text = month_and_year(month);
         let r = match todo {
             Do::Assign(id, c) => {
-                let before = or_report(self.db.fingerprints(month), &mut self.toast);
+                let before = or_report(self.db.fingerprints(), &mut self.toast);
                 self.db.assign(id, month, c, "").and_then(|g| {
-                    let later = self.db.months_changed_after(month, &before)?;
+                    let mut later = self.db.months_changed(&before)?;
+                    later.retain(|m| *m != month_key(month));
                     Ok(match (g, later.is_empty()) {
                         (None, _) => String::new(),
                         (Some(_), true) => tr("Assigned").to_string(),
@@ -422,7 +473,7 @@ impl App {
             Do::Add(name, c) => {
                 self.envelopes.new = (String::new(), None);
                 let cats: Vec<i64> = c.into_iter().collect();
-                self.db.add_envelope(&name, &cats, Overspending::Carry).map(|_| tr("Envelope added").to_string())
+                self.db.add_envelope(&name, &cats, Overspending::Carry, month).map(|_| tr("Envelope added").to_string())
             }
             Do::Rename(id, name) => {
                 self.db.edit_envelope(id, Some(&name), None, None).map(|_| tr("Envelope renamed").to_string())
@@ -431,16 +482,19 @@ impl App {
                 if let Some(s) = self.envelopes.settings.as_mut() {
                     s.2 = None;
                 }
-                self.db.edit_envelope(id, None, Some(&all), None).map(|_| tr("Categories saved").to_string())
+                self.db
+                    .edit_envelope(id, None, Some((&all, month)), None)
+                    .map(|_| trf("Categories saved from {month} on", &[("month", &month_text)]))
             }
             Do::Overspending(id, o) => self.db.edit_envelope(id, None, None, Some(o)).map(|_| tr("Saved").to_string()),
             Do::Delete(id) => {
                 self.envelopes.settings = None;
-                self.db.delete_envelope(id).map(|_| tr("Envelope deleted").to_string())
+                self.envelopes.deleting = None;
+                self.db.delete_envelope(id, month).map(|_| tr("Envelope deleted: ⌘Z brings it back").to_string())
             }
             Do::Start => self
                 .db
-                .set_envelopes_start(month)
+                .set_envelopes_start(month, false)
                 .map(|_| trf("The envelopes start in {month}", &[("month", &month_text)])),
         };
         self.act(ui, r);

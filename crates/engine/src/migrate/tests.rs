@@ -1104,9 +1104,9 @@ fn a_window_of_format_9_with_the_file_open_harms_no_envelope() {
     let (db, _) = Db::open(&dir.file()).unwrap();
     assert_eq!(dump(&Connection::open(dir.0.join("books.v9-backup.db")).unwrap()), file);
     assert_sound(&db, "opened");
-    db.set_envelopes_start(parse_month("2026-01").unwrap()).unwrap();
+    db.set_envelopes_start(parse_month("2026-01").unwrap(), false).unwrap();
     assert_eq!(db.set_budget_mode(Mode::Envelopes).unwrap(), 1);
-    let fun = db.add_envelope("Fun", &[2], Overspending::Carry).unwrap();
+    let fun = db.add_envelope("Fun", &[2], Overspending::Carry, db.envelopes_start()).unwrap();
     db.assign(fun, parse_month("2026-01").unwrap(), 5_000, "").unwrap();
     // The old window posts a purchase, changes a budget and deletes a category.
     old.execute_batch(
@@ -1123,6 +1123,8 @@ fn a_window_of_format_9_with_the_file_open_harms_no_envelope() {
     old.execute_batch("DELETE FROM ledger_accounts WHERE category_id=1; DELETE FROM categories WHERE id=1;").unwrap();
     let v = db.envelope_month(parse_month("2026-01").unwrap()).unwrap();
     assert!(v.envelopes.iter().all(|e| e.id == fun || e.categories.is_empty()));
-    assert_eq!(db.conn.query_row("SELECT COUNT(*) FROM envelope_categories", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    // The link of the category that went stays in the history, without its category.
+    let sql = "SELECT COUNT(*) FROM envelope_changes WHERE kind='link' AND category_id IS NULL";
+    assert_eq!(db.conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap(), 1);
     assert_sound(&db, "kept");
 }

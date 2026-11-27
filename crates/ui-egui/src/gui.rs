@@ -979,8 +979,9 @@ impl App {
             if v == "entry" {
                 app.open_entry();
             }
-            if v == "envelopes" || v == "buste" {
-                // The sample budgets become envelopes, as a file of the user's would.
+            if (v == "envelopes" || v == "buste") && app.db.path.is_none() {
+                // The sample budgets in memory become envelopes, as a file of the user's would; a real file keeps its
+                // mode.
                 let r = app.db.set_budget_mode(cashcraft_engine::envelopes::Mode::Envelopes);
                 or_report(r.map(|_| ()), &mut app.toast);
             }
@@ -1071,6 +1072,7 @@ impl App {
     pub fn go(&mut self, v: View) {
         if self.view != v {
             self.view = v;
+            self.envelopes.leave();
             self.selected = None;
             if matches!(v, View::Register(_)) {
                 self.reload_txs();

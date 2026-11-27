@@ -1022,18 +1022,15 @@ From the monthly budget	Dal budget mensile
 Take it from next month's money to assign	Prendila da ciò che c'è da assegnare il mese dopo
 an undo cannot be undone: make the change again	un annullamento non si annulla: rifai la modifica
 change {id} not found	modifica {id} non trovata
-deleted envelope	busta eliminata
 envelope "{name}" not found	busta "{name}" non trovata
 money is moved between two different envelopes	il denaro si sposta tra due buste diverse
 that change was undone already	quella modifica è già stata annullata
 the amount to move must be more than zero	l'importo da spostare deve essere più di zero
 the envelope needs a name	la busta ha bisogno di un nome
-the envelopes have had too many changes	le buste hanno avuto troppe modifiche
 the envelopes start in {month}	le buste cominciano in {month}
 the first month of the envelopes is out of range	il primo mese delle buste è fuori dai limiti
 the month cannot be computed	il mese non si può calcolare
 the month is too far from the first month of the envelopes	il mese è troppo lontano dal primo mese delle buste
-the month of a change cannot be read	il mese di una modifica non si legge
 the name is too long	il nome è troppo lungo
 the reason is too long	il motivo è troppo lungo
 there are too many envelopes	ci sono troppe buste
@@ -1044,7 +1041,6 @@ undoes change {id}	annulla la modifica {id}
 change undone	modifica annullata
 envelope "{name}" added	busta "{name}" aggiunta
 envelope "{name}" changed	busta "{name}" modificata
-envelope "{name}" deleted	busta "{name}" eliminata
 monthly budgets assigned in {month}	budget mensili assegnati in {month}
 nothing changed	nulla è cambiato
 overspending is carry or next_month	overspending è carry o next_month
@@ -1067,18 +1063,14 @@ Assigned; recomputed: {months}	Assegnato; ricalcolati: {months}
 Available	Disponibile
 Budget: {mode}	Budget: {mode}
 Carried	Riportato
-Categories (with those under them):	Categorie (con quelle sotto):
-Categories saved	Categorie salvate
 Change undone	Modifica annullata
 Changes	Modifiche
 Changes of this month	Modifiche di questo mese
 Choose an envelope…	Scegli una busta…
 Cover…	Copri…
-Delete the envelope	Elimina la busta
 Each envelope gets the monthly budgets of its categories	Ogni busta riceve i budget mensili delle sue categorie
 Envelope	Busta
 Envelope added	Busta aggiunta
-Envelope deleted	Busta eliminata
 Envelope renamed	Busta rinominata
 Envelopes	Buste
 Envelopes of {month}	Buste di {month}
@@ -1123,3 +1115,17 @@ still to assign	ancora da assegnare
 {amount} spent in categories without an envelope, taken from here	{amount} spesi in categorie senza busta, presi da qui
 {n} amount in another currency is not in the envelopes	{n} importo in un'altra valuta non è nelle buste
 {n} amounts in other currencies are not in the envelopes	{n} importi in altre valute non sono nelle buste
+"{name}" is the id of one envelope and the name of another: use the id	"{name}" è l'id di una busta e il nome di un'altra: usa l'id
+Categories from {month} on (with those under them):	Categorie da {month} in poi (con quelle sotto):
+Categories saved from {month} on	Categorie salvate da {month} in poi
+Delete "{name}"? In {month} it holds {amount}, which goes back to be assigned, and the spending of its categories counts outside the envelopes in every month. The deletion can be undone.	Eliminare "{name}"? In {month} contiene {amount}, che torna da assegnare, e le spese delle sue categorie contano fuori dalle buste in ogni mese. L'eliminazione si può annullare.
+Delete the envelope…	Elimina la busta…
+Envelope deleted: ⌘Z brings it back	Busta eliminata: ⌘Z la riporta
+Envelopes only in the data file	Buste solo nell'archivio
+Envelopes only in the other file	Buste solo nell'altro file
+envelope "{name}" deleted; undo_envelope_change brings it back	busta "{name}" eliminata; undo_envelope_change la riporta
+from {month}	da {month}
+{category} in {name}	{category} in {name}
+{category} out of the envelopes	{category} fuori dalle buste
+{name} deleted	{name} eliminata
+{n} changes of the envelopes come before {month} and would no longer count: confirm to start there	{n} modifiche delle buste vengono prima di {month} e non conterebbero più: conferma per cominciare da lì

@@ -116,7 +116,7 @@ fn what_one_computer_writes_the_other_sees() {
 fn an_assignment_alone_reaches_the_other_computer() {
     let p = Place::new();
     let (a, sa, _) = p.start("one");
-    let e = a.add_envelope("Fun", &[], crate::envelopes::Overspending::Carry).unwrap();
+    let e = a.add_envelope("Fun", &[], crate::envelopes::Overspending::Carry, a.envelopes_start()).unwrap();
     sa.sync().unwrap();
     let (b, sb, _) = p.start("two");
     let month = crate::db::first_of_month(crate::db::today());
@@ -147,6 +147,36 @@ fn nothing_is_written_when_nothing_changed() {
     a.conn.execute("DELETE FROM meta WHERE key='q'", []).unwrap();
     assert!(!sa.sync().unwrap().pending);
     assert_eq!(std::fs::read(p.file()).unwrap(), bytes);
+}
+
+/// Two computers that change the envelopes at once: neither is lost, and the comparison lists what differs.
+#[test]
+fn envelope_changes_of_two_computers_are_both_kept_and_listed() {
+    use crate::envelopes::Overspending;
+    let p = Place::new();
+    let (a, sa, _) = p.start("one");
+    let month = crate::db::first_of_month(crate::db::today());
+    let e = a.add_envelope("Fun", &[], Overspending::Carry, month).unwrap();
+    sa.sync().unwrap();
+    let (b, sb, _) = p.start("two");
+    a.assign(e, month, 1_000, "one").unwrap();
+    b.assign(e, month, 2_500, "two").unwrap();
+    b.add_envelope("Food", &[], Overspending::Carry, month).unwrap();
+    sb.sync().unwrap();
+    let report = sa.sync().unwrap();
+    let name = report.conflict.clone().unwrap();
+    let assigned = |db: &Db| db.envelope_month(month).unwrap().envelopes.iter().map(|l| l.assigned).sum::<i64>();
+    assert_eq!(assigned(&a), 2_500);
+    let d = sa.differences(&p.folder().join(&name)).unwrap();
+    assert!(d.first.is_empty() && d.second.is_empty() && !d.others, "{d:?}");
+    let key = crate::envelopes::month_key(month);
+    assert_eq!(d.envelopes_first.len(), 1, "{d:?}");
+    assert!(d.envelopes_first[0].starts_with(&key) && d.envelopes_first[0].contains("25"), "{d:?}");
+    assert_eq!(d.envelopes_second.len(), 1, "{d:?}");
+    assert!(d.envelopes_second[0].contains("10"), "{d:?}");
+    // The same file twice: nothing listed.
+    let same = sa.differences(&p.file()).unwrap();
+    assert!(same.none_listed() && !same.others);
 }
 
 #[test]

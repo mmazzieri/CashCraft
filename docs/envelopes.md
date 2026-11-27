@@ -19,11 +19,16 @@ budget too, while an envelope does not count those that are in another envelope.
 
 ## The first month
 
-The envelopes start in a month (`meta.envelopes_from`): the month in which they were first chosen, or the one set
-with `--start`. Nothing before it counts, so the income of past years does not land in *to be assigned*. Changing
-it computes every month again from there. A month earlier than the start shows everything at zero; a month more than
-1200 after it is refused. The start is at most 1200 months away from this month, so this month can always be shown; one
-further away in a file changed by hand is taken as the furthest allowed.
+The envelopes start in a month (`meta.envelopes_from`). Nothing before it counts, so the income of past years does not
+land in *to be assigned*. It is fixed by the first change of the envelopes, whoever makes it — choosing the mode, adding
+an envelope, assigning, over the window, the command line, MCP or the phone — at the month of that change or this one,
+whichever comes first; until then it is this month, and nothing depends on it. It moves only when the user moves it
+(`envelope_settings start`, `--start`): earlier at once; later only with `confirm`, when money assigned or moved before
+the new first month would stop counting. The answer lists the months whose figures changed.
+
+A month earlier than the start shows everything at zero; a month more than 1200 after it is refused. The start is at
+most 1200 months away from this month, so this month can always be shown; one further away in a file changed by hand
+is taken as the furthest allowed.
 
 The money already in the accounts at the start is not income: opening balances are equity. To budget it, record
 it as income in the first month, or start from an empty month and let the next salary fill the envelopes.
@@ -66,19 +71,36 @@ Changing it changes every month, as it is a setting of the envelope.
 
 ## Changes
 
-Nothing of a month is stored but the changes: an amount assigned to an envelope (from *to be assigned*, or back to
-it when negative), money moved from one envelope to another, each with its month, the time it was made and a
-reason. `assign_envelope` takes the new amount assigned in the month and writes the difference. The table
-`envelope_changes` is only ever added to: an undo (`undo_envelope_change`) writes the opposite of a change, as a
-change of its own that cannot itself be undone, and the history keeps both.
+Nothing of a month is stored but the changes (`envelope_changes`), each with its month, the time it was made and a
+reason:
 
-Every figure is computed again from the ledger each time. So editing a past month — an assignment, a move, a
-transaction — changes every month after it. That is what happens to money, and the screen says so: a past month
-carries a note, and an assignment to it lists the months whose figures changed (`recomputed`).
+- an amount assigned to an envelope (from *to be assigned*, or back to it when negative): `assign_envelope` takes the
+  new amount assigned in the month and writes the difference;
+- money moved from one envelope to another;
+- a category put in an envelope, or taken out, **from a month on**: the months before keep the envelope they had
+  (`month` of `add_envelope` and `edit_envelope`, the month shown in the window, this month by default). A category is
+  in one envelope at most in each month; to move it, take it out of one and put it in the other;
+- an envelope deleted.
 
-Deleting an envelope makes every month as if it had never been: what was assigned to it is to be assigned again, the
-spending of its categories is outside the envelopes, and its changes stay in the history as those of a deleted
-envelope. A category that is deleted leaves its envelope; its transactions become uncategorized.
+The table is only ever added to. An undo (`undo_envelope_change`, ⌘Z in the window) is a change of its own that names
+the group it undoes, which then counts no more; it cannot itself be undone, and the history keeps both.
+
+Every figure is computed again from the ledger each time. So editing a past month — an assignment, a move, a category
+put in an envelope, a transaction — changes every month after it. That is what happens to money, and it is shown: a
+past month carries a note, and every change answers with the months whose figures changed (`recomputed`).
+
+Deleting an envelope makes every month as if it had never been: what was assigned to it is to be assigned again and
+the spending of its categories is outside the envelopes. The window asks first, saying what goes back. The envelope
+stays in the file, so its id is never given to another and its changes keep its name; undoing the deletion brings it
+back as it was, unless another envelope has taken its name. A category that is deleted leaves its envelope; its
+transactions become uncategorized.
+
+Envelopes are named by their id or their whole name, whatever the case; a text that is the id of one and the name of
+another is refused. Nothing is found by a part of its name.
+
+When two computers changed the envelopes of a shared file at once, the conflict copy is kept as for any change
+([data-file.md](data-file.md)), and *Show what differs* lists, besides the entries, the changes of the envelopes in
+force in one file alone.
 
 ## Currencies
 
@@ -88,14 +110,15 @@ there are no exchange rates in CashCraft, and an envelope per currency would spl
 ## Limits
 
 At most 500 envelopes; a category in one envelope at most, and only expense categories; names and reasons of at
-most 200 characters; an amount of at most 10^13 euros a change; all the changes together, whatever their sign, at
-most `MAX_TURNOVER`, so that every sum fits in 64 bits.
+most 200 characters; what an envelope is assigned in a month, and so each change, of at most 10^13 euros. There is no
+limit on how many changes there are: sums are made in 128 bits, a figure that would not fit in 64 is an error of that
+month and not of the file, and an undo is always allowed.
 
 ## The data file
 
-Format 10 adds `envelopes`, `envelope_categories` and `envelope_changes`, after a copy as `cashcraft.v9-backup.db`
+Format 10 adds `envelopes` and `envelope_changes`, after a copy as `cashcraft.v9-backup.db`
 ([ledger.md](ledger.md)). A window of a program of format 9 that has the file open goes on working: what it writes to the books is in
-the envelopes, which are computed from them, and a category it deletes takes its link with it, as the foreign keys
+the envelopes, which are computed from them, and a category it deletes leaves its envelope, as the foreign keys
 are in the file. Nothing it can do leaves an envelope wrong, so no table is renamed to keep it out. New rows get
 their ids from `Db::new_id` ([data-file.md](data-file.md)).
 
@@ -103,6 +126,8 @@ their ids from `Db::new_id` ([data-file.md](data-file.md)).
 
 - Window: *Budget*, *Envelopes*. Arrows up and down choose an envelope, typing an amount or Enter starts assigning
   it, Enter saves, Esc cancels; arrows while typing save and move on; ⌘Z (Ctrl+Z) undoes the last change of the month shown.
+  What is typed belongs to its month: going to another month or screen, or clicking elsewhere, drops it. *Cover…*
+  moves money into an overspent envelope from the one with the most left, or another chosen.
 - Command line: `cashcraft-cli envelopes list|add|edit|delete|assign|move|from-budgets|undo|settings`.
 - MCP: `list_envelopes`, `add_envelope`, `edit_envelope`, `delete_envelope`, `assign_envelope`,
   `move_envelope_money`, `assign_budgets`, `undo_envelope_change`, `envelope_settings`.

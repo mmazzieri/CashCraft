@@ -464,6 +464,9 @@ pub enum EnvelopeCmd {
         /// When it ends a month below zero: carry (default) or next_month
         #[arg(long)]
         overspending: Option<String>,
+        /// The categories are in it from this month, YYYY-MM (default: this month)
+        #[arg(long)]
+        month: Option<String>,
     },
     /// Change an envelope
     Edit {
@@ -476,9 +479,17 @@ pub enum EnvelopeCmd {
         /// carry or next_month
         #[arg(long)]
         overspending: Option<String>,
+        /// The categories change from this month, YYYY-MM (default: this month); the months before keep theirs
+        #[arg(long)]
+        month: Option<String>,
     },
-    /// Delete an envelope
-    Delete { envelope: String },
+    /// Delete an envelope (undo brings it back)
+    Delete {
+        envelope: String,
+        /// The month whose changes list the deletion, YYYY-MM (default: this month)
+        #[arg(long)]
+        month: Option<String>,
+    },
     /// Set the amount assigned to an envelope in a month
     Assign {
         envelope: String,
@@ -515,6 +526,9 @@ pub enum EnvelopeCmd {
         /// YYYY-MM
         #[arg(long)]
         start: Option<String>,
+        /// Start later even if money assigned before stops counting
+        #[arg(long)]
+        confirm: bool,
     },
 }
 
@@ -1053,20 +1067,28 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
         },
         Cmd::Envelopes(c) => match c {
             EnvelopeCmd::List { month } => ("list_envelopes", args(&[("month", o(&month))])),
-            EnvelopeCmd::Add { name, categories, overspending } => (
+            EnvelopeCmd::Add { name, categories, overspending, month } => (
                 "add_envelope",
-                args(&[("name", v(name)), ("categories", o(&categories)), ("overspending", o(&overspending))]),
+                args(&[
+                    ("name", v(name)),
+                    ("categories", o(&categories)),
+                    ("overspending", o(&overspending)),
+                    ("month", o(&month)),
+                ]),
             ),
-            EnvelopeCmd::Edit { envelope, name, categories, overspending } => (
+            EnvelopeCmd::Edit { envelope, name, categories, overspending, month } => (
                 "edit_envelope",
                 args(&[
                     ("envelope", v(envelope)),
                     ("name", o(&name)),
                     ("categories", o(&categories)),
                     ("overspending", o(&overspending)),
+                    ("month", o(&month)),
                 ]),
             ),
-            EnvelopeCmd::Delete { envelope } => ("delete_envelope", args(&[("envelope", v(envelope))])),
+            EnvelopeCmd::Delete { envelope, month } => {
+                ("delete_envelope", args(&[("envelope", v(envelope)), ("month", o(&month))]))
+            }
             EnvelopeCmd::Assign { envelope, amount, month, reason } => (
                 "assign_envelope",
                 args(&[("envelope", v(envelope)), ("amount", v(amount)), ("month", o(&month)), ("reason", o(&reason))]),
@@ -1083,9 +1105,10 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
             ),
             EnvelopeCmd::FromBudgets { month } => ("assign_budgets", args(&[("month", o(&month))])),
             EnvelopeCmd::Undo { change } => ("undo_envelope_change", args(&[("change", change.map(|c| json!(c)))])),
-            EnvelopeCmd::Settings { mode, start } => {
-                ("envelope_settings", args(&[("mode", o(&mode)), ("start", o(&start))]))
-            }
+            EnvelopeCmd::Settings { mode, start, confirm } => (
+                "envelope_settings",
+                args(&[("mode", o(&mode)), ("start", o(&start)), ("confirm", confirm.then_some(json!(true)))]),
+            ),
         },
         Cmd::Rules(c) => match c {
             RulesCmd::List => ("list_rules", json!({})),
@@ -1275,18 +1298,13 @@ fn print_envelopes(r: &Value) {
         println!("{}", tr("Changes"));
     }
     for c in changes {
-        let none = tr("To be assigned").to_string();
-        let from = field(&c, "from").as_str().map_or(none.clone(), str::to_string);
-        let to = field(&c, "to").as_str().map_or(none, str::to_string);
         let undone =
             if field(&c, "undone").as_bool().unwrap_or(false) { format!(" ({})", tr("undone")) } else { String::new() };
         println!(
-            "  {:>4}  {}  {} -> {} {:>12}  {}{undone}",
+            "  {:>4}  {}  {}  {}{undone}",
             st(field(&c, "group_id")),
             st(field(&c, "made_at")),
-            from,
-            to,
-            eur(field(&c, "amount")),
+            st(field(&c, "text")),
             st(field(&c, "reason"))
         );
     }

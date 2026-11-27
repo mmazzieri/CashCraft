@@ -627,7 +627,22 @@ impl Syncer {
                     ui.label("…");
                 }
             }
-            if d.first.is_empty() && d.second.is_empty() {
+            for (title, lines) in [
+                (tr("Envelopes only in the data file"), &d.envelopes_first),
+                (tr("Envelopes only in the other file"), &d.envelopes_second),
+            ] {
+                if lines.is_empty() {
+                    continue;
+                }
+                ui.label(RichText::new(title).strong());
+                for l in lines.iter().take(SHOWN) {
+                    ui.label(l);
+                }
+                if lines.len() > SHOWN {
+                    ui.label("…");
+                }
+            }
+            if d.none_listed() {
                 ui.label(if d.others {
                     tr("The entries are the same; something else is different, such as names, budgets or rules.")
                 } else {

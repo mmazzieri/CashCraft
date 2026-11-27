@@ -963,8 +963,8 @@ fn envelopes_are_assigned_with_the_keyboard() {
             };
             db.add_transaction(&t).unwrap();
         }
-        let e_food = db.add_envelope("Food", &[food], Overspending::Carry).unwrap();
-        let e_fun = db.add_envelope("Fun", &[fun], Overspending::Carry).unwrap();
+        let e_food = db.add_envelope("Food", &[food], Overspending::Carry, db.envelopes_start()).unwrap();
+        let e_fun = db.add_envelope("Fun", &[fun], Overspending::Carry, db.envelopes_start()).unwrap();
         let mut app = App::new(db, None);
         app.view = View::Budget;
         let ctx = egui::Context::default();
@@ -1040,5 +1040,184 @@ fn envelopes_are_assigned_with_the_keyboard() {
         // Back to the monthly limits.
         app.db.set_budget_mode(Mode::Monthly).unwrap();
         send(&mut app, vec![]);
+    });
+}
+
+/// The middle of the widget whose accessible label is `label`, as the screen last drew it.
+fn spot(out: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
+    let update = out.platform_output.accesskit_update.as_ref()?;
+    update.nodes.iter().find_map(|(_, n)| {
+        let b = n.bounds().filter(|_| n.label().is_some_and(|l| l == label))?;
+        Some(egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32))
+    })
+}
+
+/// The budget screen driven as a person would: keys, and clicks where the buttons are drawn.
+struct Screen {
+    app: App,
+    ctx: egui::Context,
+    time: f64,
+    last: Option<egui::FullOutput>,
+}
+
+impl Screen {
+    fn new(app: App) -> Screen {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut s = Screen { app, ctx, time: 0.0, last: None };
+        s.send(vec![]);
+        s.send(vec![]);
+        s
+    }
+
+    fn send(&mut self, events: Vec<egui::Event>) {
+        self.time += 0.5;
+        let screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0)));
+        let input = egui::RawInput { events, screen_rect, time: Some(self.time), ..Default::default() };
+        let app = &mut self.app;
+        let mut out = self.ctx.run_ui(input, |ui| {
+            app.budget(ui);
+            app.dialogs(&ui.ctx().clone());
+        });
+        out.textures_delta.clear();
+        self.last = Some(out);
+    }
+
+    fn key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+        let event = |pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers };
+        self.send(vec![event(true), event(false)]);
+        self.send(vec![]);
+    }
+
+    fn click(&mut self, label: &str) {
+        use egui::{Event, Modifiers, PointerButton};
+        let pos = self.last.as_ref().and_then(|o| spot(o, label)).unwrap_or_else(|| panic!("no \"{label}\""));
+        self.send(vec![Event::PointerMoved(pos)]);
+        self.send(vec![Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }]);
+        self.send(vec![Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        self.send(vec![]);
+        self.send(vec![]);
+    }
+
+    fn shows(&self, label: &str) -> bool {
+        self.last.as_ref().and_then(|o| spot(o, label)).is_some()
+    }
+}
+
+/// What is being typed belongs to its month: another month, or another screen, drops it; nothing reaches the other
+/// month. Enter is the field's only while it has the keyboard.
+#[test]
+fn an_amount_being_typed_never_reaches_another_month() {
+    use cashcraft_engine::envelopes::{Mode, Overspending};
+    use egui::{Event, Key, Modifiers};
+    with_lang(Lang::En, || {
+        let db = Db::open_in_memory().unwrap();
+        let fun = db.category_by_path("Fun", false, true).unwrap();
+        db.set_budget_mode(Mode::Envelopes).unwrap();
+        let this = cashcraft_engine::db::first_of_month(cashcraft_engine::db::today());
+        let next = this.checked_add_months(chrono::Months::new(1)).unwrap();
+        let e = db.add_envelope("Fun", &[fun], Overspending::Carry, this).unwrap();
+        let mut app = App::new(db, None);
+        app.view = View::Budget;
+        let mut s = Screen::new(app);
+        let assigned =
+            |s: &Screen, m| s.app.db.envelope_month(m).unwrap().envelopes.iter().find(|l| l.id == e).unwrap().assigned;
+        s.send(vec![Event::Text("75".into())]);
+        s.send(vec![]);
+        assert!(s.app.envelopes.editing.is_some());
+        s.click("▶");
+        assert_eq!(s.app.budget_month, next);
+        assert!(s.app.envelopes.editing.is_none());
+        assert_eq!((assigned(&s, this), assigned(&s, next)), (0, 0));
+        // Typed and saved with Enter, after the click: in the month shown.
+        s.send(vec![Event::Text("12".into())]);
+        s.send(vec![]);
+        s.key(Key::Enter, Modifiers::NONE);
+        assert_eq!((assigned(&s, this), assigned(&s, next)), (0, 1_200));
+        // Typed, then another screen and back: dropped.
+        s.send(vec![Event::Text("3".into())]);
+        s.send(vec![]);
+        assert!(s.app.envelopes.editing.is_some());
+        s.app.go(View::Reports);
+        s.app.go(View::Budget);
+        s.send(vec![]);
+        assert!(s.app.envelopes.editing.is_none());
+        // Typed, then Escape: dropped; Enter alone opens the field with what the month has.
+        s.send(vec![Event::Text("4".into())]);
+        s.send(vec![]);
+        s.key(Key::Escape, Modifiers::NONE);
+        assert!(s.app.envelopes.editing.is_none());
+        s.key(Key::Enter, Modifiers::NONE);
+        assert_eq!(s.app.envelopes.editing.as_ref().map(|e| e.1.as_str()), Some("12.00"));
+        s.key(Key::Escape, Modifiers::NONE);
+        assert_eq!((assigned(&s, this), assigned(&s, next)), (0, 1_200));
+    });
+}
+
+/// Cover…, Move, and the deletion that asks first and comes back with ⌘Z, all by clicking.
+#[test]
+fn an_overspent_envelope_is_covered_and_one_deleted_by_clicking() {
+    use cashcraft_engine::envelopes::{Mode, Overspending};
+    use egui::{Key, Modifiers};
+    with_lang(Lang::En, || {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.add_account("A", AccountKind::Bank, "EUR", 0, "").unwrap();
+        let food = db.category_by_path("Food", false, true).unwrap();
+        let fun = db.category_by_path("Fun", false, true).unwrap();
+        db.set_budget_mode(Mode::Envelopes).unwrap();
+        let month = cashcraft_engine::db::first_of_month(cashcraft_engine::db::today());
+        let t = NewTx {
+            account_id: a,
+            date: month,
+            amount: -3_000,
+            payee: "x".into(),
+            category_id: Some(food),
+            ..Default::default()
+        };
+        db.add_transaction(&t).unwrap();
+        let e_food = db.add_envelope("Food", &[food], Overspending::Carry, month).unwrap();
+        let e_fun = db.add_envelope("Fun", &[fun], Overspending::Carry, month).unwrap();
+        db.assign(e_fun, month, 10_000, "").unwrap();
+        let mut app = App::new(db, None);
+        app.view = View::Budget;
+        let mut s = Screen::new(app);
+        let line = |s: &Screen, id| {
+            let v = s.app.db.envelope_month(month).unwrap();
+            v.envelopes.iter().find(|l| l.id == id).map(|l| (l.assigned, l.available))
+        };
+        s.click("Cover…");
+        assert!(s.app.envelopes.cover.is_some());
+        s.click("Move");
+        assert_eq!((line(&s, e_food), line(&s, e_fun)), (Some((3_000, 0)), Some((7_000, 7_000))));
+        assert!(!s.shows("Cover…"));
+        // Deleting asks first, and says what goes back.
+        s.app.envelopes.cursor = 1;
+        s.app.envelopes.settings = Some((e_fun, "Fun".into(), None));
+        s.send(vec![]);
+        s.click("Delete the envelope…");
+        assert!(line(&s, e_fun).is_some());
+        let asked = s.last.as_ref().and_then(|o| o.platform_output.accesskit_update.as_ref()).is_some_and(|u| {
+            u.nodes.iter().any(|(_, n)| {
+                [n.label(), n.value()]
+                    .into_iter()
+                    .flatten()
+                    .any(|l| l.contains("€70.00, which goes back to be assigned"))
+            })
+        });
+        assert!(asked);
+        s.click("Delete");
+        assert_eq!(line(&s, e_fun), None);
+        s.key(Key::Z, Modifiers::COMMAND);
+        assert_eq!(line(&s, e_fun), Some((7_000, 7_000)));
     });
 }
