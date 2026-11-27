@@ -1010,6 +1010,24 @@ fn envelopes_are_assigned_with_the_keyboard() {
         app.reload();
         send(&mut app, vec![]);
         assert_eq!(line(&app, e_food), (3_000, 0));
+        // ⌘Z undoes the last change of the month shown, not one made later in another month.
+        let next = month.checked_add_months(chrono::Months::new(1)).unwrap();
+        app.db.assign(e_food, next, 1, "").unwrap();
+        app.reload();
+        let z = vec![
+            Event::Key { key: Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::COMMAND },
+            Event::Key {
+                key: Key::Z,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: Modifiers::COMMAND,
+            },
+        ];
+        send(&mut app, z);
+        assert_eq!(line(&app, e_food), (0, -3_000));
+        let later = app.db.envelope_month(next).unwrap();
+        assert_eq!(later.envelopes.iter().find(|e| e.id == e_food).unwrap().assigned, 1);
         // The settings of an envelope, the changes and a month before the start draw.
         app.envelopes.settings = Some((e_food, "Food".into(), None));
         send(&mut app, vec![]);

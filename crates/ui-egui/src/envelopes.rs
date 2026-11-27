@@ -60,6 +60,16 @@ impl App {
         let cats: Vec<Category> = self.categories.iter().filter(|c| !c.is_income).cloned().collect();
         let rows = v.envelopes.len();
         st.cursor = st.cursor.min(rows.saturating_sub(1));
+        // The last change of this month that can be undone: the changes come last first.
+        let last = v.changes.iter().find(|c| c.kind != ChangeKind::Undo && !c.undone).map(|c| c.group_id);
+        if self.dialog.is_none()
+            && st.editing.is_none()
+            && !ui.ctx().egui_wants_keyboard_input()
+            && let Some(g) = last
+            && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z))
+        {
+            todo = Some(Do::Undo(Some(g)));
+        }
 
         // The keyboard, when no field has it.
         if self.dialog.is_none() && st.editing.is_none() && !ui.ctx().egui_wants_keyboard_input() && rows > 0 {
@@ -251,7 +261,7 @@ impl App {
                     }
                 });
                 ui.label(
-                    RichText::new(tr("Arrows up and down choose an envelope · type an amount or press Enter to assign it · Enter saves · Esc cancels"))
+                    RichText::new(tr("Arrows up and down choose an envelope · type an amount or press Enter to assign it · Enter saves · Esc cancels · ⌘Z undoes the last change of the month"))
                         .color(pal().muted)
                         .size(12.0),
                 );
@@ -355,9 +365,10 @@ impl App {
                     {
                         todo = Some(Do::Budgets);
                     }
-                    let undoable = v.changes.iter().any(|c| c.kind != ChangeKind::Undo && !c.undone);
-                    if undoable && ui.button(tr("Undo the last change")).clicked() {
-                        todo = Some(Do::Undo(None));
+                    if let Some(g) = last
+                        && ui.button(tr("Undo the last change of the month")).on_hover_text("⌘Z").clicked()
+                    {
+                        todo = Some(Do::Undo(Some(g)));
                     }
                 });
             });

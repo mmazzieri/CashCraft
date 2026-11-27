@@ -307,6 +307,17 @@ fn months_out_of_range_and_large_amounts_are_refused() {
     assert!(b.db.envelope_month(month("9999-12")).is_err());
     assert!(b.db.assign(food, month("9999-12"), 1, "").is_err());
     assert!(b.db.set_envelopes_start(month("9999-12")).is_err());
+    // The oldest first month that may be chosen still shows this month; one older is refused.
+    let this = first_of_month(today());
+    let oldest = this.checked_sub_months(Months::new(MAX_MONTHS)).unwrap();
+    assert!(b.db.set_envelopes_start(oldest.checked_sub_months(Months::new(1)).unwrap()).is_err());
+    b.db.set_envelopes_start(oldest).unwrap();
+    assert!(!b.db.envelope_month(this).unwrap().before_start);
+    // One written by hand is taken as the oldest.
+    b.db.set_meta("envelopes_from", "1066-10").unwrap();
+    assert_eq!(b.db.envelopes_start(), oldest);
+    b.db.envelope_month(this).unwrap();
+    b.db.set_envelopes_start(month("2026-01")).unwrap();
     assert!(b.db.assign(food, month("2026-01"), MAX_BALANCE + 1, "").is_err());
     assert!(b.db.assign(food, month("2026-01"), i64::MIN, "").is_err());
     assert!(b.db.move_money(food, fun, month("2026-01"), 0, "").is_err());

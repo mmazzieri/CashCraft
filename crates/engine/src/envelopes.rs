@@ -204,6 +204,15 @@ impl MonthView {
     }
 }
 
+/// The figures of an envelope in a month.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Figures {
+    carried: i128,
+    assigned: i128,
+    spent: i128,
+    available: i128,
+}
+
 /// The figures of one month that the next one needs, and those that tell whether a change moved something.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Computed {
@@ -216,8 +225,7 @@ struct Computed {
     assigned: i128,
     to_be_assigned: i128,
     other_currencies: i64,
-    /// By envelope: carried, assigned, spent, available.
-    lines: BTreeMap<i64, [i128; 4]>,
+    lines: BTreeMap<i64, Figures>,
 }
 
 pub fn month_key(d: NaiveDate) -> String {
@@ -272,6 +280,12 @@ struct Row {
     kind: &'static str,
 }
 
+/// The first months that may be chosen: up to [`MAX_MONTHS`] before or after this one.
+fn start_range(this: NaiveDate) -> (NaiveDate, NaiveDate) {
+    let span = Months::new(MAX_MONTHS);
+    (this.checked_sub_months(span).unwrap_or(this), this.checked_add_months(span).unwrap_or(this))
+}
+
 fn months_between(from: NaiveDate, to: NaiveDate) -> i64 {
     i64::from(to.year() - from.year()) * 12 + i64::from(to.month()) - i64::from(from.month())
 }
@@ -282,8 +296,14 @@ impl Db {
     }
 
     /// The first month of the envelopes: the one chosen, else this one.
+    /// The first month of the envelopes: the one chosen, else this one. One that is further than [`MAX_MONTHS`] from
+    /// this month, which only a file changed by hand or a clock gone wrong could have, is taken as the furthest that
+    /// is not: this month can always be shown.
     pub fn envelopes_start(&self) -> NaiveDate {
-        self.meta("envelopes_from").and_then(|m| parse_month(&m)).unwrap_or_else(|| first_of_month(today()))
+        let this = first_of_month(today());
+        let chosen = self.meta("envelopes_from").and_then(|m| parse_month(&m)).unwrap_or(this);
+        let (oldest, latest) = start_range(this);
+        chosen.clamp(oldest, latest)
     }
 
     /// Chooses what the budget screen shows. When envelopes are chosen and there are none, and no change was ever
@@ -310,8 +330,8 @@ impl Db {
     /// Changes the first month: every month after it is computed again from there.
     pub fn set_envelopes_start(&self, month: NaiveDate) -> Result<()> {
         let month = first_of_month(month);
-        let far = first_of_month(today()).checked_add_months(Months::new(MAX_MONTHS)).ok_or_else(too_big)?;
-        if month.year() < 1900 || month > far {
+        let (oldest, latest) = start_range(first_of_month(today()));
+        if month < oldest || month > latest {
             bail!(tr("the first month of the envelopes is out of range"));
         }
         self.set_meta("envelopes_from", &month_key(month))
@@ -730,7 +750,7 @@ impl Db {
         let cats = self.categories()?;
         let budgets = self.category_budget_map()?;
         let paths: HashMap<i64, &Category> = cats.iter().map(|c| (c.id, c)).collect();
-        let line = |e: &Envelope, f: [i128; 4]| -> Result<EnvelopeLine> {
+        let line = |e: &Envelope, f: Figures| -> Result<EnvelopeLine> {
             let mut categories: Vec<String> =
                 e.category_ids.iter().filter_map(|c| paths.get(c).map(|c| c.path.clone())).collect();
             categories.sort_by_key(|c| c.to_lowercase());
@@ -741,10 +761,10 @@ impl Db {
                 overspending: e.overspending,
                 categories,
                 budget: cents(budget)?,
-                carried: cents(f[0])?,
-                assigned: cents(f[1])?,
-                spent: cents(f[2])?,
-                available: cents(f[3])?,
+                carried: cents(f.carried)?,
+                assigned: cents(f.assigned)?,
+                spent: cents(f.spent)?,
+                available: cents(f.available)?,
             })
         };
         let this = first_of_month(today());
@@ -766,7 +786,7 @@ impl Db {
             changes: Vec::new(),
         };
         if month < start {
-            view.envelopes = envelopes.iter().map(|e| line(e, [0; 4])).collect::<Result<_>>()?;
+            view.envelopes = envelopes.iter().map(|e| line(e, Figures::default())).collect::<Result<_>>()?;
             return Ok(view);
         }
         let all = self.compute(month)?;
@@ -779,8 +799,10 @@ impl Db {
         view.assigned = cents(c.assigned)?;
         view.to_be_assigned = cents(c.to_be_assigned)?;
         view.other_currencies = c.other_currencies;
-        view.envelopes =
-            envelopes.iter().map(|e| line(e, c.lines.get(&e.id).copied().unwrap_or([0; 4]))).collect::<Result<_>>()?;
+        view.envelopes = envelopes
+            .iter()
+            .map(|e| line(e, c.lines.get(&e.id).copied().unwrap_or_default()))
+            .collect::<Result<_>>()?;
         view.changes = self.changes(Some(month))?;
         Ok(view)
     }
@@ -860,12 +882,12 @@ impl Db {
                 assigned: 0,
                 to_be_assigned: 0,
                 other_currencies: 0,
-                lines: envelopes.iter().map(|e| (e.id, [0; 4])).collect(),
+                lines: envelopes.iter().map(|e| (e.id, Figures::default())).collect(),
             };
             if let Some(prev) = out.last() {
                 c.left_over = prev.to_be_assigned;
                 for e in &envelopes {
-                    let before = prev.lines.get(&e.id).map_or(0, |l| l[3]);
+                    let before = prev.lines.get(&e.id).map_or(0, |l| l.available);
                     let carried = if before < 0 && e.overspending == Overspending::NextMonth {
                         c.overspent_before -= before;
                         0
@@ -873,7 +895,7 @@ impl Db {
                         before
                     };
                     if let Some(l) = c.lines.get_mut(&e.id) {
-                        l[0] = carried;
+                        l.carried = carried;
                     }
                 }
             }
@@ -887,7 +909,7 @@ impl Db {
                     (true, _) => c.income -= sum,
                     (false, Some(e)) => {
                         if let Some(l) = c.lines.get_mut(&e) {
-                            l[2] += sum;
+                            l.spent += sum;
                         }
                     }
                     (false, None) if category.is_some() => c.outside += sum,
@@ -897,13 +919,13 @@ impl Db {
             for (from, to, amount) in changes.get(&key).map(Vec::as_slice).unwrap_or_default() {
                 for (e, sign) in [(from, -1), (to, 1)] {
                     if let Some(l) = e.and_then(|e| c.lines.get_mut(&e)) {
-                        l[1] += sign * i128::from(*amount);
+                        l.assigned += sign * i128::from(*amount);
                     }
                 }
             }
             for l in c.lines.values_mut() {
-                l[3] = l[0] + l[1] - l[2];
-                c.assigned += l[1];
+                l.available = l.carried + l.assigned - l.spent;
+                c.assigned += l.assigned;
             }
             c.to_be_assigned = c.left_over + c.income - c.outside - c.uncategorized - c.overspent_before - c.assigned;
             out.push(c);

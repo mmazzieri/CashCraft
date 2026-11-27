@@ -22,7 +22,8 @@ budget too, while an envelope does not count those that are in another envelope.
 The envelopes start in a month (`meta.envelopes_from`): the month in which they were first chosen, or the one set
 with `--start`. Nothing before it counts, so the income of past years does not land in *to be assigned*. Changing
 it computes every month again from there. A month earlier than the start shows everything at zero; a month more than
-1200 after it is refused.
+1200 after it is refused. The start is at most 1200 months away from this month, so this month can always be shown; one
+further away in a file changed by hand is taken as the furthest allowed.
 
 The money already in the accounts at the start is not income: opening balances are equity. To budget it, record
 it as income in the first month, or start from an empty month and let the next salary fill the envelopes.
@@ -101,7 +102,7 @@ their ids from `Db::new_id` ([data-file.md](data-file.md)).
 ## Where
 
 - Window: *Budget*, *Envelopes*. Arrows up and down choose an envelope, typing an amount or Enter starts assigning
-  it, Enter saves, Esc cancels; arrows while typing save and move on.
+  it, Enter saves, Esc cancels; arrows while typing save and move on; ⌘Z (Ctrl+Z) undoes the last change of the month shown.
 - Command line: `cashcraft-cli envelopes list|add|edit|delete|assign|move|from-budgets|undo|settings`.
 - MCP: `list_envelopes`, `add_envelope`, `edit_envelope`, `delete_envelope`, `assign_envelope`,
   `move_envelope_money`, `assign_budgets`, `undo_envelope_change`, `envelope_settings`.
