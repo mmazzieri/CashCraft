@@ -8,6 +8,7 @@ use crate::gui::{
 };
 use crate::reconcile::Unlock;
 use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Transaction, TxKind};
+use cashcraft_engine::envelopes::Mode;
 use cashcraft_engine::i18n::{tr, trf, trn};
 use cashcraft_engine::money::{
     fmt_date, fmt_day, fmt_eur, fmt_number, fmt_plain, month_and_year, month_name, parse_amount, total,
@@ -207,6 +208,9 @@ impl App {
                 )
             }
             View::Reports => (tr("Reports").into(), tr("Where your money goes").into()),
+            View::Budget if self.db.budget_mode() == Mode::Envelopes => {
+                (tr("Budget").into(), tr("Every euro that arrives, given to an envelope").into())
+            }
             View::Budget => (tr("Budget").into(), tr("Monthly spending limits by category").into()),
             View::Categories => (tr("Categories").into(), tr("How income and expenses are grouped").into()),
             View::Rules => (tr("Automatic rules").into(), tr("They categorize imported transactions").into()),
@@ -1018,8 +1022,29 @@ impl App {
             if self.budget_month != db::first_of_month(db::today()) && ui.link(tr("Current month")).clicked() {
                 self.budget_month = db::first_of_month(db::today());
             }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let mode = self.db.budget_mode();
+                for (m, label) in [(Mode::Envelopes, tr("Envelopes")), (Mode::Monthly, tr("Monthly limits"))] {
+                    if ui.selectable_label(mode == m, label).clicked() && mode != m {
+                        let r = self.db.set_budget_mode(m).map(|made| match (m, made) {
+                            (Mode::Envelopes, 0) => tr("The budget shows the envelopes").to_string(),
+                            (Mode::Envelopes, n) => trn(
+                                n,
+                                "{n} envelope made from the monthly budgets",
+                                "{n} envelopes made from the monthly budgets",
+                            ),
+                            (Mode::Monthly, _) => tr("The budget shows the monthly limits").to_string(),
+                        });
+                        self.act(ui, r);
+                    }
+                }
+            });
         });
         ui.add_space(10.0);
+        if self.db.budget_mode() == Mode::Envelopes {
+            self.envelopes_view(ui, self.budget_month);
+            return;
+        }
         let lines = or_report(self.db.budget_status(self.budget_month), &mut self.toast);
         let total_b = total(lines.iter().map(|l| l.budget));
         let total_s = total(lines.iter().map(|l| l.spent));

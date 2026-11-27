@@ -329,10 +329,15 @@ impl Db {
             let Some(c) = cats.iter().find(|c| c.id == cid && !c.is_income) else {
                 continue;
             };
-            if self.envelopes()?.iter().any(|e| e.name.to_lowercase() == c.path.to_lowercase()) {
+            // Named after the category, or after its path when another envelope has that name.
+            let taken = |n: &str| -> Result<bool> {
+                Ok(self.envelopes()?.iter().any(|e| e.name.to_lowercase() == n.to_lowercase()))
+            };
+            let name = if taken(&c.name)? { c.path.clone() } else { c.name.clone() };
+            if taken(&name)? {
                 continue;
             }
-            let id = self.add_envelope(&c.path, &[cid], Overspending::Carry)?;
+            let id = self.add_envelope(&name, &[cid], Overspending::Carry)?;
             made += 1;
             let amount = monthly.clamp(0, MAX_BALANCE);
             if amount != 0 {

@@ -751,6 +751,8 @@ pub struct App {
     pub rules: Option<(Vec<Rule>, Option<LastRun>)>,
     /// The screen of the reconciliation of an account.
     pub reconcile: Option<crate::reconcile::ReconcileState>,
+    /// The budget made of envelopes.
+    pub envelopes: crate::envelopes::EnvelopeState,
     pub new_cat: (String, bool, Option<i64>),
     pub rename_cat: Option<(i64, String)>,
     pub dash: Option<Dash>,
@@ -921,6 +923,7 @@ impl App {
             new_budget: (None, String::new()),
             rules: None,
             reconcile: None,
+            envelopes: Default::default(),
             new_cat: (String::new(), false, None),
             rename_cat: None,
             dash: None,
@@ -948,7 +951,7 @@ impl App {
                 "register" | "movimenti" | "selected" | "transfer" => View::Register(first),
                 "all" | "tutti" => View::Register(None),
                 "reports" | "report" => View::Reports,
-                "budget" => View::Budget,
+                "budget" | "envelopes" | "buste" => View::Budget,
                 "categories" | "categorie" => View::Categories,
                 "rules" | "regole" => View::Rules,
                 "scheduled" | "pianificati" => View::Scheduled,
@@ -974,6 +977,11 @@ impl App {
             }
             if v == "entry" {
                 app.open_entry();
+            }
+            if v == "envelopes" || v == "buste" {
+                // The sample budgets become envelopes, as a file of the user's would.
+                let r = app.db.set_budget_mode(cashcraft_engine::envelopes::Mode::Envelopes);
+                or_report(r.map(|_| ()), &mut app.toast);
             }
             if v == "journal" {
                 let all = or_report(app.db.ledger_accounts(), &mut app.toast);
@@ -1019,6 +1027,7 @@ impl App {
         if let Some(r) = self.reconcile.as_mut() {
             r.stale = true;
         }
+        self.envelopes.stale = true;
     }
 
     pub fn reload_txs(&mut self) {

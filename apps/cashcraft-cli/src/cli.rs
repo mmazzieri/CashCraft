@@ -1278,7 +1278,8 @@ fn print_envelopes(r: &Value) {
         let none = tr("To be assigned").to_string();
         let from = field(&c, "from").as_str().map_or(none.clone(), str::to_string);
         let to = field(&c, "to").as_str().map_or(none, str::to_string);
-        let undone = if field(&c, "undone").as_bool().unwrap_or(false) { tr(" (undone)") } else { "" };
+        let undone =
+            if field(&c, "undone").as_bool().unwrap_or(false) { format!(" ({})", tr("undone")) } else { String::new() };
         println!(
             "  {:>4}  {}  {} -> {} {:>12}  {}{undone}",
             st(field(&c, "group_id")),

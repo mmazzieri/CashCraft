@@ -1056,3 +1056,70 @@ the mode is monthly or envelopes	la modalità è monthly o envelopes
 {amount} moved from "{from}" to "{to}" in {month}	{amount} spostati da "{from}" a "{to}" in {month}
 {n} envelope made from the monthly budgets	{n} busta creata dai budget mensili
 {n} envelopes made from the monthly budgets	{n} buste create dai budget mensili
+! Some spending is in no envelope: give its categories an envelope, or a category to it.	! Alcune spese non sono in nessuna busta: dai una busta alle loro categorie, o una categoria a loro.
+! {n} amounts in other currencies are not in the envelopes.	! {n} importi in altre valute non sono nelle buste.
+A past month: what changes here is carried into every month after it.	Un mese passato: ciò che cambia qui si riporta in ogni mese successivo.
+Add a category…	Aggiungi una categoria…
+Arrows up and down choose an envelope · type an amount or press Enter to assign it · Enter saves · Esc cancels	Frecce su e giù scelgono una busta · scrivi un importo o premi Invio per assegnarlo · Invio salva · Esc annulla
+Assign the monthly budgets	Assegna i budget mensili
+Assigned	Assegnato
+Assigned; recomputed: {months}	Assegnato; ricalcolati: {months}
+Available	Disponibile
+Budget: {mode}	Budget: {mode}
+Carried	Riportato
+Categories (with those under them):	Categorie (con quelle sotto):
+Categories saved	Categorie salvate
+Change undone	Modifica annullata
+Changes	Modifiche
+Changes of this month	Modifiche di questo mese
+Choose an envelope…	Scegli una busta…
+Cover…	Copri…
+Delete the envelope	Elimina la busta
+Each envelope gets the monthly budgets of its categories	Ogni busta riceve i budget mensili delle sue categorie
+Envelope	Busta
+Envelope added	Busta aggiunta
+Envelope deleted	Busta eliminata
+Envelope renamed	Busta rinominata
+Envelopes	Buste
+Envelopes of {month}	Buste di {month}
+Every euro has a job	Ogni euro ha un compito
+Still to assign	Ancora da assegnare
+Every euro that arrives, given to an envelope	Ogni euro che arriva, dato a una busta
+Left from before	Avanzato da prima
+Money moved	Denaro spostato
+Monthly budgets assigned in {month}	Budget mensili assegnati in {month}
+Monthly limits	Limiti mensili
+Move	Sposta
+Move money into "{name}" from	Sposta denaro in "{name}" da
+Name:	Nome:
+New envelope:	Nuova busta:
+No envelopes: add one below.	Nessuna busta: aggiungine una qui sotto.
+Over-assigned by {amount}	Assegnati {amount} in più
+Overspent last month	Sforato il mese scorso
+Settings of the envelope	Impostazioni della busta
+Spent outside envelopes	Speso fuori dalle buste
+Start them in this month	Falle cominciare da questo mese
+Take it out	Toglila
+The budget shows the envelopes	Il budget mostra le buste
+The budget shows the monthly limits	Il budget mostra i limiti mensili
+The envelopes start in {month}	Le buste cominciano in {month}
+The envelopes start in {month}.	Le buste cominciano in {month}.
+To be assigned	Da assegnare
+Undo the last change	Annulla l'ultima modifica
+When it is overspent:	Quando è sforata:
+assigned {amount}	assegnato {amount}
+envelopes	buste
+every euro has a job	ogni euro ha un compito
+income {amount}	entrate {amount}
+left from before {amount}	avanzato da prima {amount}
+monthly limits	limiti mensili
+none	nessuna
+over-assigned by {amount}	assegnati {amount} in più
+overspent	sforata
+overspent last month {amount}	sforato il mese scorso {amount}
+reason	motivo
+still to assign	ancora da assegnare
+{amount} of uncategorized money, taken from here	{amount} di denaro senza categoria, presi da qui
+{amount} spent in categories without an envelope, taken from here	{amount} spesi in categorie senza busta, presi da qui
+{n} amount in another currency is not in the envelopes	{n} importo in un'altra valuta non è nelle buste
+{n} amounts in other currencies are not in the envelopes	{n} importi in altre valute non sono nelle buste

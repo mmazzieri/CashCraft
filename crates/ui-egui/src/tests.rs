@@ -934,3 +934,89 @@ fn a_statement_is_reconciled_with_the_keyboard() {
         }
     });
 }
+
+/// An amount is typed on the envelope chosen with the arrows and saved with Enter; an overspent one is covered.
+#[test]
+fn envelopes_are_assigned_with_the_keyboard() {
+    use cashcraft_engine::envelopes::{Mode, Overspending};
+    use egui::{Event, Key, Modifiers};
+    with_lang(Lang::En, || {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.add_account("A", AccountKind::Bank, "EUR", 0, "").unwrap();
+        let food = db.category_by_path("Food", false, true).unwrap();
+        let fun = db.category_by_path("Fun", false, true).unwrap();
+        let pay = db.category_by_path("Pay", true, true).unwrap();
+        db.set_budget_mode(Mode::Envelopes).unwrap();
+        let month = cashcraft_engine::db::first_of_month(cashcraft_engine::db::today());
+        for (amount, category) in [(100_000, pay), (-3_000, food)] {
+            let t = NewTx {
+                account_id: a,
+                date: month,
+                amount,
+                payee: "x".into(),
+                category_id: Some(category),
+                ..Default::default()
+            };
+            db.add_transaction(&t).unwrap();
+        }
+        let e_food = db.add_envelope("Food", &[food], Overspending::Carry).unwrap();
+        let e_fun = db.add_envelope("Fun", &[fun], Overspending::Carry).unwrap();
+        let mut app = App::new(db, None);
+        app.view = View::Budget;
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        let mut send = |app: &mut App, events: Vec<Event>| {
+            for events in [events, vec![]] {
+                time += 0.5;
+                let screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0)));
+                let input = egui::RawInput { events, screen_rect, time: Some(time), ..Default::default() };
+                ctx.run_ui(input, |ui| {
+                    app.budget(ui);
+                    app.dialogs(&ui.ctx().clone());
+                })
+                .textures_delta
+                .clear();
+            }
+        };
+        let press = |key| {
+            let event =
+                |pressed| Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+            vec![event(true), event(false)]
+        };
+        let line = |app: &App, id| {
+            let v = app.db.envelope_month(month).unwrap();
+            v.envelopes.iter().find(|e| e.id == id).map(|e| (e.assigned, e.available)).unwrap()
+        };
+        send(&mut app, vec![]);
+        // Fun is the second: an amount typed there is saved with Enter.
+        send(&mut app, press(Key::ArrowDown));
+        send(&mut app, vec![Event::Text("9".into())]);
+        send(&mut app, vec![Event::Text("70".into())]);
+        send(&mut app, press(Key::Enter));
+        assert_eq!(line(&app, e_fun), (97_000, 97_000));
+        // Up, Enter edits Food; Escape leaves it as it was.
+        send(&mut app, press(Key::ArrowUp));
+        send(&mut app, press(Key::Enter));
+        assert!(app.envelopes.editing.is_some());
+        send(&mut app, press(Key::Escape));
+        assert!(app.envelopes.editing.is_none());
+        assert_eq!(line(&app, e_food), (0, -3_000));
+        assert_eq!(app.db.envelope_month(month).unwrap().to_be_assigned, 3_000);
+        // Food is overspent: covered from Fun.
+        app.envelopes.cover = Some((e_food, Some(e_fun), "30".into(), "groceries".into()));
+        send(&mut app, vec![]);
+        app.db.move_money(e_fun, e_food, month, 3_000, "groceries").unwrap();
+        app.envelopes.cover = None;
+        app.reload();
+        send(&mut app, vec![]);
+        assert_eq!(line(&app, e_food), (3_000, 0));
+        // The settings of an envelope, the changes and a month before the start draw.
+        app.envelopes.settings = Some((e_food, "Food".into(), None));
+        send(&mut app, vec![]);
+        app.budget_month = month.checked_sub_months(chrono::Months::new(1)).unwrap();
+        send(&mut app, vec![]);
+        // Back to the monthly limits.
+        app.db.set_budget_mode(Mode::Monthly).unwrap();
+        send(&mut app, vec![]);
+    });
+}
