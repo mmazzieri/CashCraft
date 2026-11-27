@@ -18,3 +18,7 @@ clap.workspace = true
 
 [dev-dependencies]
 cashcraft-engine = { workspace = true, features = ["test-support"] }
+
+[build-dependencies]
+# The icon inside the Windows executable; build.rs uses it only when the target is Windows.
+winresource = { version = "0.1.34", default-features = false }
