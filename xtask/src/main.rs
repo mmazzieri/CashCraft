@@ -1,5 +1,5 @@
 //! `cargo xtask ci`: fmt, clippy and tests for the whole workspace.
-//! `cargo xtask icons`: draws every icon file the packages need.
+//! `cargo xtask icons`: writes every icon file the packages need.
 #![forbid(unsafe_code)]
 
 use std::path::Path;
@@ -18,12 +18,12 @@ fn mobile_icons() -> Result<(), Box<dyn std::error::Error>> {
     for (name, size) in [("mdpi", 48), ("hdpi", 72), ("xhdpi", 96), ("xxhdpi", 144), ("xxxhdpi", 192)] {
         let dir = mobile.join(format!("android/app/src/main/res/mipmap-{name}"));
         std::fs::create_dir_all(&dir)?;
-        cashcraft_icon::render(size).save(dir.join("ic_launcher.png"))?;
+        cashcraft_icon::render_with_margin(size, 0.04).save(dir.join("ic_launcher.png"))?;
     }
     let icon = cashcraft_icon::render(1024);
+    // The tile's own colour, from its left edge at mid height, for the corners iOS rounds itself.
+    let behind = icon.get_pixel(12, 512).0;
     let square = image::RgbImage::from_fn(1024, 1024, |x, y| {
-        // The corners take the colour of the tile at the same height, or at its nearest row.
-        let behind = icon.get_pixel(512, y.clamp(80, 943)).0;
         let [r, g, b, a] = icon.get_pixel(x, y).0;
         let mix = |c: u8, under: u8| {
             let a = u32::from(a);
@@ -36,7 +36,7 @@ fn mobile_icons() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Writes `assets/app-icon`, drawn by `crates/icon`.
+/// Writes `assets/app-icon`, scaled by `crates/icon` from `cashcraft-source.png`.
 fn icons() -> Result<(), Box<dyn std::error::Error>> {
     let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/app-icon");
     for size in [16, 24, 32, 48, 64, 128, 256, 512] {
@@ -44,7 +44,8 @@ fn icons() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(&dir)?;
         cashcraft_icon::render(size).save(dir.join(format!("{APP_ID}.png")))?;
     }
-    cashcraft_icon::render(1024).save(out.join("cashcraft-1024.png"))?;
+    // Apple's grid leaves a transparent margin around the tile.
+    cashcraft_icon::render_with_margin(1024, 100.0 / 1024.0).save(out.join("cashcraft-1024.png"))?;
     let mut frames = Vec::new();
     for size in [16, 20, 24, 32, 40, 48, 64, 128, 256] {
         let img = cashcraft_icon::render(size);

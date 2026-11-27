@@ -62,7 +62,6 @@ pub struct Palette {
     pub check_border: Color32,
     pub warn_bg: Color32,
     pub warn_text: Color32,
-    pub logo_ring: Color32,
 }
 
 pub static LIGHT: Palette = Palette {
@@ -91,7 +90,6 @@ pub static LIGHT: Palette = Palette {
     check_border: Color32::from_rgb(0xB8, 0xC0, 0xBE),
     warn_bg: Color32::from_rgb(0xFF, 0xF4, 0xDC),
     warn_text: Color32::from_rgb(0x7A, 0x55, 0x10),
-    logo_ring: Color32::from_rgb(0xBF, 0xE3, 0xDA),
 };
 
 pub static DARK: Palette = Palette {
@@ -120,7 +118,6 @@ pub static DARK: Palette = Palette {
     check_border: Color32::from_rgb(0x5A, 0x66, 0x64),
     warn_bg: Color32::from_rgb(0x3A, 0x2F, 0x14),
     warn_text: Color32::from_rgb(0xF0, 0xC8, 0x70),
-    logo_ring: Color32::from_rgb(0x2D, 0x5E, 0x55),
 };
 
 /// Whether the window is drawn dark: set at the start of each frame.
