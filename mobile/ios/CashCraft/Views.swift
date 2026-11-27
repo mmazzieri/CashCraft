@@ -161,6 +161,47 @@ struct MovementsView: View {
 
 struct BudgetView: View {
     @EnvironmentObject var books: Books
+
+    var body: some View {
+        if let envelopes = books.shown.envelopes {
+            EnvelopesView(envelopes: envelopes)
+        } else {
+            MonthlyView()
+        }
+    }
+}
+
+/// Zero-based: what is still to be assigned, then each envelope with what is left in it.
+struct EnvelopesView: View {
+    @EnvironmentObject var books: Books
+    let envelopes: Envelopes
+    @State private var editing: EnvelopeLine?
+
+    var body: some View {
+        List {
+            Status()
+            let left = envelopes.toBeAssigned
+            Line(
+                title: String(localized: "To be assigned"),
+                detail: left == 0 ? String(localized: "Every euro has a job")
+                    : left < 0 ? String(localized: "More is assigned than there is") : String(localized: "Still to assign"),
+                amount: left
+            )
+            ForEach(envelopes.lines) { e in
+                Button { editing = e } label: {
+                    Line(title: e.name, detail: String(localized: "\(show(e.assigned)) assigned, \(show(e.spent)) spent"), amount: e.available)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .navigationTitle("Budget")
+        .refreshable { books.reload() }
+        .sheet(item: $editing) { EnvelopeForm(line: $0) }
+    }
+}
+
+struct MonthlyView: View {
+    @EnvironmentObject var books: Books
     @State private var editing: BudgetLine?
     @State private var adding = false
 
@@ -339,5 +380,22 @@ struct BudgetForm: View {
             guard let line else { return }
             (category, amount) = (line.category, show(line.budget))
         }
+    }
+}
+
+struct EnvelopeForm: View {
+    @EnvironmentObject var books: Books
+    let line: EnvelopeLine
+    @State private var amount = ""
+
+    var body: some View {
+        Sheet(enabled: !blank(amount)) {
+            books.change("assign_envelope", ["envelope": String(line.id), "amount": amount])
+        } fields: {
+            Text(line.name)
+            Text("Available: \(show(line.available))")
+            TextField("Assigned this month", text: $amount).keyboardType(.decimalPad)
+        }
+        .onAppear { amount = show(line.assigned) }
     }
 }

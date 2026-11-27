@@ -92,6 +92,7 @@ private sealed interface Form {
     data object OfTransfer : Form
     data object OfAccount : Form
     data class OfBudget(val line: BudgetLine?) : Form
+    data class OfEnvelope(val line: EnvelopeLine) : Form
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -116,7 +117,9 @@ private fun App() {
                         if (tab == Tab.Movements) {
                             TextButton(onClick = { form = Form.OfTransfer }) { Text(stringResource(R.string.transfer)) }
                         }
-                        IconButton(onClick = { form = next }) { Icon(Icons.Filled.Add, stringResource(label)) }
+                        if (tab != Tab.Budget || state.envelopes == null) {
+                            IconButton(onClick = { form = next }) { Icon(Icons.Filled.Add, stringResource(label)) }
+                        }
                         IconButton(onClick = { Books.reload() }) { Icon(Icons.Filled.Refresh, stringResource(R.string.reload)) }
                         TextButton(onClick = { pick.launch(null) }) { Text(stringResource(R.string.open)) }
                     }
@@ -145,6 +148,7 @@ private fun App() {
                 !state.open -> Welcome { pick.launch(null) }
                 tab == Tab.Accounts -> Accounts(state)
                 tab == Tab.Movements -> Movements(state) { form = Form.OfMovement(it) }
+                state.envelopes != null -> state.envelopes?.let { e -> EnvelopeList(e) { form = Form.OfEnvelope(it) } }
                 else -> Budget(state) { form = Form.OfBudget(it) }
             }
         }
@@ -157,6 +161,7 @@ private fun App() {
         Form.OfTransfer -> TransferDialog(state, close)
         Form.OfAccount -> AccountDialog(close)
         is Form.OfBudget -> BudgetDialog(f.line, state, close)
+        is Form.OfEnvelope -> EnvelopeDialog(f.line, close)
     }
 }
 
@@ -253,6 +258,25 @@ private fun Budget(state: BooksState, open: (BudgetLine) -> Unit) {
     LazyColumn {
         items(state.budget, key = { it.category }) { b ->
             Line(b.category, stringResource(R.string.spent_of, show(b.spent), show(b.budget)), show(b.remaining)) { open(b) }
+        }
+    }
+}
+
+/** Zero-based: what is still to be assigned, then each envelope with what is left in it. */
+@Composable
+private fun EnvelopeList(envelopes: Envelopes, open: (EnvelopeLine) -> Unit) {
+    LazyColumn {
+        item {
+            val left = envelopes.toBeAssigned
+            val detail = when {
+                left.signum() == 0 -> stringResource(R.string.every_euro)
+                left.signum() < 0 -> stringResource(R.string.over_assigned)
+                else -> stringResource(R.string.still_to_assign)
+            }
+            Line(stringResource(R.string.to_be_assigned), detail, show(left))
+        }
+        items(envelopes.lines, key = { it.id }) { e ->
+            Line(e.name, stringResource(R.string.assigned_spent, show(e.assigned), show(e.spent)), show(e.available)) { open(e) }
         }
     }
 }
@@ -407,5 +431,19 @@ private fun BudgetDialog(line: BudgetLine?, state: BooksState, close: () -> Unit
     ) {
         if (line == null) Choice(stringResource(R.string.category), category, state.categories) { category = it } else Text(category)
         Field(R.string.monthly_amount, amount) { amount = it }
+    }
+}
+
+@Composable
+private fun EnvelopeDialog(line: EnvelopeLine, close: () -> Unit) {
+    var amount by remember { mutableStateOf(show(line.assigned)) }
+    FormDialog(
+        line.name,
+        enabled = amount.isNotBlank(),
+        save = { Books.change("assign_envelope") { put("envelope", line.id.toString()); put("amount", amount) } },
+        close,
+    ) {
+        Text(stringResource(R.string.available_now, show(line.available)))
+        Field(R.string.assigned_this_month, amount) { amount = it }
     }
 }
