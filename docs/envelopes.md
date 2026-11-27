@@ -26,9 +26,10 @@ whichever comes first; until then it is this month, and nothing depends on it. I
 (`envelope_settings start`, `--start`): earlier at once; later only with `confirm`, when money assigned or moved before
 the new first month would stop counting. The answer lists the months whose figures changed.
 
-A month earlier than the start shows everything at zero; a month more than 1200 after it is refused. The start is at
-most 1200 months away from this month, so this month can always be shown; one further away in a file changed by hand
-is taken as the furthest allowed.
+A month earlier than the start shows everything at zero. The start chosen, and every month changed, are at most 1200
+months away from this month, and 2400 months after the start are computed: a start once chosen stays readable for a
+century, and is never moved by the program. One further away, which only a file changed by hand can have, makes the
+months an error that is shown. Changing the start is not a change of the history and is not undone: it is set back.
 
 The money already in the accounts at the start is not income: opening balances are equity. To budget it, record
 it as income in the first month, or start from an empty month and let the next salary fill the envelopes.

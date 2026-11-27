@@ -328,10 +328,16 @@ fn months_out_of_range_and_large_amounts_are_refused() {
     assert!(b.db.set_envelopes_start(oldest.checked_sub_months(Months::new(1)).unwrap(), false).is_err());
     b.db.set_envelopes_start(oldest, true).unwrap();
     assert!(!b.db.envelope_month(this).unwrap().before_start);
-    // One written by hand is taken as the oldest.
+    // Chosen at the edge a month ago, as a clock that went on: it stays where it was, and this month still reads.
+    let before = oldest.checked_sub_months(Months::new(1)).unwrap();
+    b.db.set_meta("envelopes_from", &month_key(before)).unwrap();
+    assert_eq!(b.db.envelopes_start(), before);
+    assert!(!b.db.envelope_month(this).unwrap().before_start);
+    assert!(b.db.assign(food, this, 1, "").is_ok());
+    // One written by hand far away is not moved: the months are an error, shown.
     b.db.set_meta("envelopes_from", "1066-10").unwrap();
-    assert_eq!(b.db.envelopes_start(), oldest);
-    b.db.envelope_month(this).unwrap();
+    assert_eq!(b.db.envelopes_start(), month("1066-10"));
+    assert!(b.db.envelope_month(this).is_err());
     b.db.set_envelopes_start(month("2026-01"), true).unwrap();
     assert!(b.db.assign(food, month("2026-01"), MAX_BALANCE + 1, "").is_err());
     assert!(b.db.assign(food, month("2026-01"), i64::MIN, "").is_err());

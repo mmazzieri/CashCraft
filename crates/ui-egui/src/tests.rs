@@ -1221,3 +1221,21 @@ fn an_overspent_envelope_is_covered_and_one_deleted_by_clicking() {
         assert_eq!(line(&s, e_fun), Some((7_000, 7_000)));
     });
 }
+
+/// The start view of the screenshots turns only the sample data in memory into envelopes, never a file of the user's.
+#[test]
+fn the_start_view_never_changes_a_file() {
+    use cashcraft_engine::envelopes::Mode;
+    let dir = std::env::temp_dir().join(format!("cashcraft-start-view-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (db, _) = Db::open(&dir.join("books.db")).unwrap();
+    let mut app = App::new(db, None);
+    app.sample_envelopes("envelopes");
+    assert_eq!(app.db.budget_mode(), Mode::Monthly);
+    assert!(app.db.meta("envelopes_from").is_none());
+    let mut sample = App::new(Db::open_in_memory().unwrap(), None);
+    sample.sample_envelopes("envelopes");
+    assert_eq!(sample.db.budget_mode(), Mode::Envelopes);
+    drop(app);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

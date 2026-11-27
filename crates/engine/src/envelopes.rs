@@ -46,6 +46,9 @@ CREATE INDEX IF NOT EXISTS envelope_change_category ON envelope_changes(category
 
 /// How many months from this one the first month can be, and after the first one a month can be: a hundred years.
 pub const MAX_MONTHS: u32 = 1200;
+/// How many months after the first one are computed: what the furthest first month that may be chosen and the furthest
+/// month that may be changed are apart, so that a first month once chosen stays readable for a century.
+const SPAN: i64 = 2 * MAX_MONTHS as i64;
 /// How many envelopes a file may have.
 pub const MAX_ENVELOPES: usize = 500;
 /// The longest name and reason.
@@ -392,14 +395,12 @@ impl Db {
 
     /// The first month chosen, if any.
     fn chosen_start(&self) -> Option<NaiveDate> {
-        let (oldest, latest) = start_range(first_of_month(today()));
-        self.meta("envelopes_from").and_then(|m| parse_month(&m)).map(|m| m.clamp(oldest, latest))
+        self.meta("envelopes_from").and_then(|m| parse_month(&m))
     }
 
     /// The first month of the envelopes. It is fixed by the first change of the envelopes, whoever makes it, and
-    /// moves only when the user moves it; until then it is this month. One further than [`MAX_MONTHS`] from this
-    /// month, which only a file changed by hand or a clock gone wrong could have, is taken as the furthest that is not,
-    /// so this month can always be shown.
+    /// moves only when the user moves it; until then it is this month. It is never moved by itself: one too far from
+    /// this month to be computed, which only a file changed by hand could have, makes the months an error that is shown.
     pub fn envelopes_start(&self) -> NaiveDate {
         self.chosen_start().unwrap_or_else(|| first_of_month(today()))
     }
@@ -730,18 +731,16 @@ impl Db {
     /// change, the first month is not fixed yet and that change fixes it.
     fn check_month(&self, month: NaiveDate) -> Result<NaiveDate> {
         let month = first_of_month(month);
+        let (oldest, latest) = start_range(first_of_month(today()));
         match self.chosen_start() {
             Some(start) if month < start => {
                 bail!(trf("the envelopes start in {month}", &[("month", &month_key(start))]))
             }
-            Some(start) if months_between(start, month) > i64::from(MAX_MONTHS) => {
+            Some(start) if months_between(start, month) > SPAN => {
                 bail!(tr("the month is too far from the first month of the envelopes"))
             }
-            None => {
-                let (oldest, latest) = start_range(first_of_month(today()));
-                if month < oldest || month > latest {
-                    bail!(tr("the month is too far from the first month of the envelopes"));
-                }
+            _ if month < oldest || month > latest => {
+                bail!(tr("the month is too far from the first month of the envelopes"))
             }
             _ => {}
         }
@@ -1068,7 +1067,7 @@ impl Db {
     fn compute(&self, state: &State, until: NaiveDate) -> Result<Vec<Computed>> {
         let start = self.envelopes_start();
         let until = first_of_month(until);
-        if months_between(start, until) > i64::from(MAX_MONTHS) {
+        if months_between(start, until) > SPAN {
             bail!(tr("the month is too far from the first month of the envelopes"));
         }
         let (_, end) = crate::db::month_range(until);

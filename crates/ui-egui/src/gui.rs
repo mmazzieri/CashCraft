@@ -979,18 +979,22 @@ impl App {
             if v == "entry" {
                 app.open_entry();
             }
-            if (v == "envelopes" || v == "buste") && app.db.path.is_none() {
-                // The sample budgets in memory become envelopes, as a file of the user's would; a real file keeps its
-                // mode.
-                let r = app.db.set_budget_mode(cashcraft_engine::envelopes::Mode::Envelopes);
-                or_report(r.map(|_| ()), &mut app.toast);
-            }
+            app.sample_envelopes(&v);
             if v == "journal" {
                 let all = or_report(app.db.ledger_accounts(), &mut app.toast);
                 app.journal = all.first().map(|l| (l.id, 0));
             }
         }
         app
+    }
+
+    /// For the screenshot of the envelopes: the sample budgets in memory become envelopes, as a file of the user's
+    /// would. A real file keeps its mode.
+    pub fn sample_envelopes(&mut self, start_view: &str) {
+        if (start_view == "envelopes" || start_view == "buste") && self.db.path.is_none() {
+            let r = self.db.set_budget_mode(cashcraft_engine::envelopes::Mode::Envelopes);
+            or_report(r.map(|_| ()), &mut self.toast);
+        }
     }
 
     /// Changes the language of the window, and of the command line on this data file.

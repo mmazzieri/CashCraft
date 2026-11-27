@@ -448,19 +448,12 @@ impl App {
 
         let Some(todo) = todo else { return };
         let month_text = month_and_year(month);
+        let before = or_report(self.db.fingerprints(), &mut self.toast);
         let r = match todo {
-            Do::Assign(id, c) => {
-                let before = or_report(self.db.fingerprints(), &mut self.toast);
-                self.db.assign(id, month, c, "").and_then(|g| {
-                    let mut later = self.db.months_changed(&before)?;
-                    later.retain(|m| *m != month_key(month));
-                    Ok(match (g, later.is_empty()) {
-                        (None, _) => String::new(),
-                        (Some(_), true) => tr("Assigned").to_string(),
-                        (Some(_), false) => trf("Assigned; recomputed: {months}", &[("months", &later.join(", "))]),
-                    })
-                })
-            }
+            Do::Assign(id, c) => self.db.assign(id, month, c, "").map(|g| match g {
+                None => String::new(),
+                Some(_) => tr("Assigned").to_string(),
+            }),
             Do::Move(from, to, a, reason) => {
                 self.envelopes.cover = None;
                 self.db.move_money(from, to, month, a, &reason).map(|_| tr("Money moved").to_string())
@@ -497,6 +490,16 @@ impl App {
                 .set_envelopes_start(month, false)
                 .map(|_| trf("The envelopes start in {month}", &[("month", &month_text)])),
         };
+        // Which other months the change moved, whatever it was.
+        let r = r.and_then(|said| {
+            let mut later = self.db.months_changed(&before)?;
+            later.retain(|m| *m != month_key(month));
+            Ok(match (said.is_empty(), later.is_empty()) {
+                (_, true) => said,
+                (true, false) => trf("recomputed: {months}", &[("months", &later.join(", "))]),
+                (false, false) => format!("{said}; {}", trf("recomputed: {months}", &[("months", &later.join(", "))])),
+            })
+        });
         self.act(ui, r);
         self.envelopes.stale = true;
     }
