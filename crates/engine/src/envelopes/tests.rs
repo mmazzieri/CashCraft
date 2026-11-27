@@ -373,11 +373,14 @@ enum Kept {
     Split(i64),
 }
 
+/// Month, from, to, amount.
+type OracleRow = (usize, Option<usize>, Option<usize>, Cents);
+
 #[derive(Clone, Debug, Default)]
 struct Oracle {
     txs: Vec<Known>,
     /// Groups: rows of (month, from, to, amount), undoes.
-    groups: Vec<(i64, Vec<(usize, Option<usize>, Option<usize>, Cents)>, Option<i64>)>,
+    groups: Vec<(i64, Vec<OracleRow>, Option<i64>)>,
     next_month: [bool; 4],
 }
 
@@ -660,4 +663,54 @@ fn every_month_agrees_with_an_independent_count() {
         }
         assert_sound(&b.db, "oracle");
     }
+}
+
+#[test]
+fn the_operations_speak_euros_and_say_what_a_past_change_moved() {
+    use crate::ops::call;
+    use serde_json::json;
+    crate::i18n::with_lang(crate::i18n::Lang::En, || {
+        let b = books();
+        let s = call(&b.db, "envelope_settings", &json!({}), None).unwrap();
+        assert_eq!((s["mode"].as_str(), s["start"].as_str()), (Some("envelopes"), Some("2026-01")));
+        call(&b.db, "add_envelope", &json!({"name": "Food", "categories": "Food, Food:Restaurant"}), None).unwrap();
+        call(&b.db, "add_envelope", &json!({"name": "Fun", "categories": ["Fun"], "overspending": "next_month"}), None)
+            .unwrap();
+        assert!(call(&b.db, "add_envelope", &json!({"name": "X", "overspending": "sometimes"}), None).is_err());
+        assert!(call(&b.db, "add_envelope", &json!({"name": "Y", "categories": [3]}), None).is_err());
+        tx(&b, b.bank, "2026-02-01", 100_000, Some(b.salary));
+        let r =
+            call(&b.db, "assign_envelope", &json!({"envelope": "Food", "amount": "400.50", "month": "2026-02"}), None)
+                .unwrap();
+        assert!(r["recomputed"].as_array().unwrap().iter().any(|m| m == "2026-03"), "{r}");
+        assert!(r["message"].as_str().unwrap().contains("recomputed"), "{r}");
+        let again =
+            call(&b.db, "assign_envelope", &json!({"envelope": "Food", "amount": 400.5, "month": "2026-02"}), None)
+                .unwrap();
+        assert!(again["change"].is_null());
+        call(
+            &b.db,
+            "move_envelope_money",
+            &json!({"from": "Food", "to": "Fun", "amount": 0.5, "month": "2026-02", "reason": "r"}),
+            None,
+        )
+        .unwrap();
+        let v = call(&b.db, "list_envelopes", &json!({"month": "2026-02"}), None).unwrap();
+        assert_eq!(v["to_be_assigned"], json!(599.5));
+        assert_eq!(v["envelopes"][0]["assigned"], json!(400.0));
+        assert_eq!(v["changes"][0]["amount"], json!(0.5));
+        let cents = crate::ops::call_in_cents(&b.db, "list_envelopes", &json!({"month": "2026-02"})).unwrap();
+        assert_eq!(cents["to_be_assigned"], json!(59_950));
+        call(&b.db, "undo_envelope_change", &json!({}), None).unwrap();
+        let v = call(&b.db, "list_envelopes", &json!({"month": "2026-02"}), None).unwrap();
+        assert_eq!(v["envelopes"][0]["available"], json!(400.5));
+        call(&b.db, "edit_envelope", &json!({"envelope": "Fun", "name": "Leisure", "categories": ""}), None).unwrap();
+        call(&b.db, "delete_envelope", &json!({"envelope": "Leisure"}), None).unwrap();
+        let s = call(&b.db, "envelope_settings", &json!({"mode": "monthly", "start": "2026-02"}), None).unwrap();
+        assert_eq!((s["mode"].as_str(), s["start"].as_str()), (Some("monthly"), Some("2026-02")));
+        assert_eq!(call(&b.db, "budget_status", &json!({}), None).unwrap()["mode"], json!("monthly"));
+        for bad in [json!({"mode": "both"}), json!({"start": "2026-13"}), json!({"start": "9999-01"})] {
+            assert!(call(&b.db, "envelope_settings", &bad, None).is_err(), "{bad}");
+        }
+    });
 }

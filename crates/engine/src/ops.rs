@@ -4,6 +4,7 @@
 
 use crate::db::{self, AccountKind, CategoryTotal, Cents, Db, NewScheduled, NewTx, TxEdit, TxFilter, TxKind};
 use crate::duplicates::{Choice, Decision};
+use crate::envelopes::{self, Mode, Overspending};
 use crate::i18n::{Lang, lang, tr, trf, trn};
 use crate::importer::{self, Settings};
 use crate::layouts;
@@ -60,6 +61,8 @@ const SAVED: &str = "Use and remember the columns of this layout in this account
 const TAGS: &str = "Tags separated by commas.";
 const SCOPE: &str = "uncategorized (default): transactions without a category; all: the others too, for tags, payees and the categories that rules set.";
 const OVERWRITE: &str = "With scope all, also categories and payees set by hand; only if the user asked.";
+const ENVELOPE: &str = "Envelope: numeric id or name.";
+const OVERSPENDING: &str = "When the envelope ends a month below zero: carry (default: it starts the next month below zero until money is moved in) or next_month (it starts at zero and the amount is taken from next month's to be assigned).";
 const CATEGORY: &str = "Category: id, name or path \"Parent:Child\" (e.g. \"Home:Utilities\").";
 
 /// The parameters of a rule, with others.
@@ -132,6 +135,56 @@ fn tags_arg(a: &Value) -> Result<Option<Vec<String>>> {
         Some(_) => return Err(wrong()),
     };
     rules::parse_tags(&text).map(Some)
+}
+
+/// Categories by name, path or id: text with commas, or a list. None when not given.
+fn categories_arg(db: &Db, a: &Value) -> Result<Option<Vec<i64>>> {
+    let wrong = || anyhow!(trf("the parameter \"{name}\" must be text", &[("name", &"categories")]));
+    let parts: Vec<String> = match a.get("categories") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(t)) => t.split(',').map(str::to_string).collect(),
+        Some(Value::Array(l)) => {
+            l.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<_>>().ok_or_else(wrong)?
+        }
+        Some(_) => return Err(wrong()),
+    };
+    if parts.len() > 1000 {
+        bail!(tr("too many categories"));
+    }
+    let mut out = Vec::new();
+    for p in parts.iter().filter(|p| !p.trim().is_empty()) {
+        out.push(db.find_category(p)?.id);
+    }
+    Ok(Some(out))
+}
+
+fn overspending_arg(a: &Value) -> Result<Option<Overspending>> {
+    match opt_str(a, "overspending").filter(|s| !s.trim().is_empty()) {
+        None => Ok(None),
+        Some(o) => {
+            Overspending::from_code(&o).map(Some).ok_or_else(|| anyhow!(tr("overspending is carry or next_month")))
+        }
+    }
+}
+
+/// Runs a change of the envelopes in `month` and says which later months it changed.
+fn envelope_change(
+    db: &Db,
+    month: NaiveDate,
+    change: impl FnOnce() -> Result<Option<i64>>,
+    said: impl FnOnce() -> String,
+) -> Result<Value> {
+    let before = db.fingerprints(month)?;
+    let Some(group) = change()? else {
+        return Ok(json!({"change": null, "message": tr("nothing changed"), "recomputed": []}));
+    };
+    let later = db.months_changed_after(month, &before)?;
+    let mut message = said();
+    if !later.is_empty() {
+        message.push_str("; ");
+        message.push_str(&trf("recomputed: {months}", &[("months", &later.join(", "))]));
+    }
+    Ok(json!({"change": group, "message": message, "recomputed": later}))
 }
 
 /// A rule to start from: one that is there, one like a transaction, or an empty one.
@@ -498,6 +551,70 @@ fn definitions() -> Vec<ToolDef> {
             name: "budget_status",
             description: "Budget of the month: planned, spent and left by category.",
             schema: obj(json!({"month": s("Month YYYY-MM (default: current).")}), &[]),
+        },
+        ToolDef {
+            name: "list_envelopes",
+            description: "Envelopes of a month (zero-based budget): to_be_assigned (income that arrived plus what was left unassigned before, minus what is assigned and what was spent outside envelopes; it must be 0, below 0 is over-assigned), and for each envelope carried, assigned, spent and available (carried + assigned - spent; below 0 is overspent). Also the changes of the month and the mode of the budget screen.",
+            schema: obj(json!({"month": s("Month YYYY-MM (default: current).")}), &[]),
+        },
+        ToolDef {
+            name: "add_envelope",
+            description: "Adds an envelope linked to expense categories (each category in one envelope at most; those under it count too, unless they have an envelope of their own).",
+            schema: obj(
+                json!({"name": s("Name of the envelope."), "categories": list("Categories, separated by commas or as a list."),
+                       "overspending": s(OVERSPENDING)}),
+                &["name"],
+            ),
+        },
+        ToolDef {
+            name: "edit_envelope",
+            description: "Changes an envelope; what is left out stays. categories replaces those it had.",
+            schema: obj(
+                json!({"envelope": k(ENVELOPE), "name": s("New name."), "categories": list("Categories, separated by commas or as a list; empty removes them all."),
+                       "overspending": s(OVERSPENDING)}),
+                &["envelope"],
+            ),
+        },
+        ToolDef {
+            name: "delete_envelope",
+            description: "Deletes an envelope: every month is computed as if it had never been, so what it held is to be assigned again and the spending of its categories is outside envelopes.",
+            schema: obj(json!({"envelope": k(ENVELOPE)}), &["envelope"]),
+        },
+        ToolDef {
+            name: "assign_envelope",
+            description: "Sets the amount assigned to an envelope in a month; the difference comes from (or goes back to) to be assigned. A past month changes the months after it, which the answer lists.",
+            schema: obj(
+                json!({"envelope": k(ENVELOPE), "amount": k("Assigned amount in euros for the month (not added: it replaces)."),
+                       "month": s("Month YYYY-MM (default: current)."), "reason": s("Why, kept in the history.")}),
+                &["envelope", "amount"],
+            ),
+        },
+        ToolDef {
+            name: "move_envelope_money",
+            description: "Moves money from one envelope to another in a month, for example to cover an overspent one. Recorded with its date and reason, and can be undone.",
+            schema: obj(
+                json!({"from": k(ENVELOPE), "to": k(ENVELOPE), "amount": k("Amount in euros, more than zero."),
+                       "month": s("Month YYYY-MM (default: current)."), "reason": s("Why, kept in the history.")}),
+                &["from", "to", "amount"],
+            ),
+        },
+        ToolDef {
+            name: "assign_budgets",
+            description: "Assigns to each envelope, in a month, the monthly budgets of its categories, as one change that is undone at once.",
+            schema: obj(json!({"month": s("Month YYYY-MM (default: current).")}), &[]),
+        },
+        ToolDef {
+            name: "undo_envelope_change",
+            description: "Undoes a change of the envelopes (an assignment, a move, or assign_budgets) by writing its opposite; without change, the last one not undone.",
+            schema: obj(json!({"change": n("Id of the change or of its group, from list_envelopes.")}), &[]),
+        },
+        ToolDef {
+            name: "envelope_settings",
+            description: "Shows or changes the budget settings of the data file: mode monthly (a limit a month per category) or envelopes (zero-based); start, the first month of the envelopes. The first time envelopes are chosen, each category with a monthly budget becomes an envelope with that budget assigned.",
+            schema: obj(
+                json!({"mode": s("monthly or envelopes."), "start": s("First month of the envelopes, YYYY-MM: every month after it is computed again.")}),
+                &[],
+            ),
         },
         ToolDef {
             name: "list_rules",
@@ -896,7 +1013,7 @@ fn month_arg(s: &str) -> Result<NaiveDate> {
 
 /// Converte ricorsivamente i campi in centesimi in euro.
 fn to_eur(v: Value) -> Value {
-    const KEYS: [&str; 12] = [
+    const KEYS: [&str; 20] = [
         "amount",
         "balance",
         "opening_balance",
@@ -909,6 +1026,14 @@ fn to_eur(v: Value) -> Value {
         "net",
         "net_worth",
         "sum",
+        "carried",
+        "assigned",
+        "available",
+        "left_over",
+        "outside",
+        "uncategorized",
+        "overspent_before",
+        "to_be_assigned",
     ];
     match v {
         Value::Object(m) => {
@@ -1675,7 +1800,120 @@ fn call_op(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Valu
                 .into_iter()
                 .map(|l| json!({"category": l.category, "budget": l.budget, "spent": l.spent, "remaining": l.budget.saturating_sub(l.spent)}))
                 .collect();
-            json!({"month": m.format("%Y-%m").to_string(), "lines": lines})
+            json!({"month": m.format("%Y-%m").to_string(), "lines": lines, "mode": db.budget_mode()})
+        }
+        "list_envelopes" => {
+            let m = month_arg(&opt_str(a, "month").unwrap_or_default())?;
+            serde_json::to_value(db.envelope_month(m)?)?
+        }
+        "add_envelope" => {
+            let name = req_str(a, "name")?;
+            let cats = categories_arg(db, a)?.unwrap_or_default();
+            let o = overspending_arg(a)?.unwrap_or(Overspending::Carry);
+            let id = db.add_envelope(&name, &cats, o)?;
+            json!({"id": id, "message": trf("envelope \"{name}\" added", &[("name", &name.trim())])})
+        }
+        "edit_envelope" => {
+            let e = db.find_envelope(&req_str(a, "envelope")?)?;
+            let cats = categories_arg(db, a)?;
+            let name = opt_str(a, "name").filter(|n| !n.trim().is_empty());
+            db.edit_envelope(e.id, name.as_deref(), cats.as_deref(), overspending_arg(a)?)?;
+            json!({"id": e.id, "message": trf("envelope \"{name}\" changed", &[("name", &name.unwrap_or(e.name))])})
+        }
+        "delete_envelope" => {
+            let e = db.find_envelope(&req_str(a, "envelope")?)?;
+            db.delete_envelope(e.id)?;
+            json!({"message": trf("envelope \"{name}\" deleted", &[("name", &e.name)])})
+        }
+        "assign_envelope" => {
+            let e = db.find_envelope(&req_str(a, "envelope")?)?;
+            let amount = req_amount(a, "amount")?;
+            let m = month_arg(&opt_str(a, "month").unwrap_or_default())?;
+            let reason = opt_str(a, "reason").unwrap_or_default();
+            envelope_change(
+                db,
+                m,
+                || db.assign(e.id, m, amount, &reason),
+                || {
+                    trf(
+                        "{amount} assigned to \"{name}\" in {month}",
+                        &[("amount", &fmt_eur(amount)), ("name", &e.name), ("month", &envelopes::month_key(m))],
+                    )
+                },
+            )?
+        }
+        "move_envelope_money" => {
+            let from = db.find_envelope(&req_str(a, "from")?)?;
+            let to = db.find_envelope(&req_str(a, "to")?)?;
+            let amount = req_amount(a, "amount")?;
+            let m = month_arg(&opt_str(a, "month").unwrap_or_default())?;
+            let reason = opt_str(a, "reason").unwrap_or_default();
+            envelope_change(
+                db,
+                m,
+                || db.move_money(from.id, to.id, m, amount, &reason).map(Some),
+                || {
+                    trf(
+                        "{amount} moved from \"{from}\" to \"{to}\" in {month}",
+                        &[
+                            ("amount", &fmt_eur(amount)),
+                            ("from", &from.name),
+                            ("to", &to.name),
+                            ("month", &envelopes::month_key(m)),
+                        ],
+                    )
+                },
+            )?
+        }
+        "assign_budgets" => {
+            let m = month_arg(&opt_str(a, "month").unwrap_or_default())?;
+            envelope_change(
+                db,
+                m,
+                || db.assign_budgets(m),
+                || trf("monthly budgets assigned in {month}", &[("month", &envelopes::month_key(m))]),
+            )?
+        }
+        "undo_envelope_change" => {
+            let group = opt_i64_strict(a, "change")?;
+            let target = match group {
+                Some(g) => g,
+                None => db.changes(None)?.iter().find(|c| c.undoes.is_none() && !c.undone).map_or(0, |c| c.group_id),
+            };
+            let m = db
+                .changes(None)?
+                .iter()
+                .filter(|c| c.group_id == target || c.id == target)
+                .filter_map(|c| envelopes::parse_month(&c.month))
+                .min()
+                .unwrap_or_else(|| db::first_of_month(db::today()));
+            envelope_change(db, m, || db.undo_envelope_change(group).map(Some), || tr("change undone").to_string())?
+        }
+        "envelope_settings" => {
+            let mut said = Vec::new();
+            if let Some(s) = opt_str(a, "start").filter(|s| !s.trim().is_empty()) {
+                let m = envelopes::parse_month(&s)
+                    .ok_or_else(|| anyhow!(trf("\"{month}\" is not a valid month (use YYYY-MM)", &[("month", &s)])))?;
+                db.set_envelopes_start(m)?;
+                said.push(trf("the envelopes start in {month}", &[("month", &envelopes::month_key(m))]));
+            }
+            if let Some(m) = opt_str(a, "mode").filter(|s| !s.trim().is_empty()) {
+                let mode = Mode::from_code(&m).ok_or_else(|| anyhow!(tr("the mode is monthly or envelopes")))?;
+                let made = db.set_budget_mode(mode)?;
+                said.push(match mode {
+                    Mode::Monthly => tr("the budget shows the monthly limits").to_string(),
+                    Mode::Envelopes => tr("the budget shows the envelopes").to_string(),
+                });
+                if made > 0 {
+                    said.push(trn(
+                        made,
+                        "{n} envelope made from the monthly budgets",
+                        "{n} envelopes made from the monthly budgets",
+                    ));
+                }
+            }
+            json!({"mode": db.budget_mode(), "start": envelopes::month_key(db.envelopes_start()),
+                   "message": (!said.is_empty()).then(|| said.join("; "))})
         }
         "list_rules" => {
             let last = db.last_rule_run()?;

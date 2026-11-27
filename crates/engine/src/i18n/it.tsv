@@ -1041,3 +1041,18 @@ there is already an envelope "{name}"	c'è già una busta "{name}"
 there is no change of the envelopes to undo	non c'è nessuna modifica delle buste da annullare
 too many categories	troppe categorie
 undoes change {id}	annulla la modifica {id}
+change undone	modifica annullata
+envelope "{name}" added	busta "{name}" aggiunta
+envelope "{name}" changed	busta "{name}" modificata
+envelope "{name}" deleted	busta "{name}" eliminata
+monthly budgets assigned in {month}	budget mensili assegnati in {month}
+nothing changed	nulla è cambiato
+overspending is carry or next_month	overspending è carry o next_month
+recomputed: {months}	ricalcolati: {months}
+the budget shows the envelopes	il budget mostra le buste
+the budget shows the monthly limits	il budget mostra i limiti mensili
+the mode is monthly or envelopes	la modalità è monthly o envelopes
+{amount} assigned to "{name}" in {month}	{amount} assegnati a "{name}" in {month}
+{amount} moved from "{from}" to "{to}" in {month}	{amount} spostati da "{from}" a "{to}" in {month}
+{n} envelope made from the monthly budgets	{n} busta creata dai budget mensili
+{n} envelopes made from the monthly budgets	{n} buste create dai budget mensili

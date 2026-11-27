@@ -255,6 +255,9 @@ type Flow = (bool, Option<i64>, bool, i64, i64);
 /// A row of a change: from, to, amount.
 type Moved = (Option<i64>, Option<i64>, i64);
 
+/// A row of a change as it is kept: month, from, to, amount, whether a move.
+type Stored = (String, Option<i64>, Option<i64>, i64, bool);
+
 const ASSIGN: &str = "assign";
 const MOVE: &str = "move";
 
@@ -656,7 +659,7 @@ impl Db {
             let mut st = self.conn.prepare(
                 "SELECT month, from_envelope_id, to_envelope_id, amount, kind='move' FROM envelope_changes WHERE group_id=?1 ORDER BY id",
             )?;
-            let rows: Vec<(String, Option<i64>, Option<i64>, i64, bool)> = st
+            let rows: Vec<Stored> = st
                 .query_map([target], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
                 .collect::<std::result::Result<_, _>>()?;
             let mut group = None;

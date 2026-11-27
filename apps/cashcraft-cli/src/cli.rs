@@ -99,6 +99,9 @@ pub enum Cmd {
     /// Monthly budgets
     #[command(subcommand)]
     Budget(BudgetCmd),
+    /// Zero-based budget: every euro that arrives is assigned to an envelope
+    #[command(subcommand, visible_alias = "buste")]
+    Envelopes(EnvelopeCmd),
     /// Automatic categorization rules
     #[command(subcommand, visible_alias = "regole")]
     Rules(RulesCmd),
@@ -446,6 +449,73 @@ pub enum BudgetCmd {
     Status { month: Option<String> },
     /// Set the monthly budget of a category (0 removes it)
     Set { category: String, amount: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EnvelopeCmd {
+    /// The envelopes of a month (YYYY-MM) and what is to be assigned
+    List { month: Option<String> },
+    /// Add an envelope
+    Add {
+        name: String,
+        /// Its categories, separated by commas
+        #[arg(long)]
+        categories: Option<String>,
+        /// When it ends a month below zero: carry (default) or next_month
+        #[arg(long)]
+        overspending: Option<String>,
+    },
+    /// Change an envelope
+    Edit {
+        envelope: String,
+        #[arg(long)]
+        name: Option<String>,
+        /// Its categories, separated by commas, in place of those it has; "" removes them
+        #[arg(long)]
+        categories: Option<String>,
+        /// carry or next_month
+        #[arg(long)]
+        overspending: Option<String>,
+    },
+    /// Delete an envelope
+    Delete { envelope: String },
+    /// Set the amount assigned to an envelope in a month
+    Assign {
+        envelope: String,
+        amount: String,
+        /// YYYY-MM (default: this month)
+        #[arg(long)]
+        month: Option<String>,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Move money from one envelope to another in a month
+    Move {
+        from: String,
+        to: String,
+        amount: String,
+        /// YYYY-MM (default: this month)
+        #[arg(long)]
+        month: Option<String>,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Assign to each envelope the monthly budgets of its categories
+    FromBudgets {
+        /// YYYY-MM (default: this month)
+        #[arg(long)]
+        month: Option<String>,
+    },
+    /// Undo a change (default: the last one)
+    Undo { change: Option<i64> },
+    /// Show or change the mode of the budget (monthly or envelopes) and the first month of the envelopes
+    Settings {
+        #[arg(long)]
+        mode: Option<String>,
+        /// YYYY-MM
+        #[arg(long)]
+        start: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -981,6 +1051,42 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
                 ("set_budget", args(&[("category", v(category)), ("monthly_amount", v(amount))]))
             }
         },
+        Cmd::Envelopes(c) => match c {
+            EnvelopeCmd::List { month } => ("list_envelopes", args(&[("month", o(&month))])),
+            EnvelopeCmd::Add { name, categories, overspending } => (
+                "add_envelope",
+                args(&[("name", v(name)), ("categories", o(&categories)), ("overspending", o(&overspending))]),
+            ),
+            EnvelopeCmd::Edit { envelope, name, categories, overspending } => (
+                "edit_envelope",
+                args(&[
+                    ("envelope", v(envelope)),
+                    ("name", o(&name)),
+                    ("categories", o(&categories)),
+                    ("overspending", o(&overspending)),
+                ]),
+            ),
+            EnvelopeCmd::Delete { envelope } => ("delete_envelope", args(&[("envelope", v(envelope))])),
+            EnvelopeCmd::Assign { envelope, amount, month, reason } => (
+                "assign_envelope",
+                args(&[("envelope", v(envelope)), ("amount", v(amount)), ("month", o(&month)), ("reason", o(&reason))]),
+            ),
+            EnvelopeCmd::Move { from, to, amount, month, reason } => (
+                "move_envelope_money",
+                args(&[
+                    ("from", v(from)),
+                    ("to", v(to)),
+                    ("amount", v(amount)),
+                    ("month", o(&month)),
+                    ("reason", o(&reason)),
+                ]),
+            ),
+            EnvelopeCmd::FromBudgets { month } => ("assign_budgets", args(&[("month", o(&month))])),
+            EnvelopeCmd::Undo { change } => ("undo_envelope_change", args(&[("change", change.map(|c| json!(c)))])),
+            EnvelopeCmd::Settings { mode, start } => {
+                ("envelope_settings", args(&[("mode", o(&mode)), ("start", o(&start))]))
+            }
+        },
         Cmd::Rules(c) => match c {
             RulesCmd::List => ("list_rules", json!({})),
             RulesCmd::Add { keywords, category, like, first, last, rule } => {
@@ -1104,6 +1210,85 @@ fn eur(v: &Value) -> String {
 fn exact(v: &Value, currency: &Value) -> String {
     let n = parse_amount_with(&st(v), Some(false)).map(fmt_plain).unwrap_or_else(|_| st(v));
     format!("{n} {}", st(currency))
+}
+
+fn print_envelopes(r: &Value) {
+    let list = |k: &str| field(r, k).as_array().cloned().unwrap_or_default();
+    println!("{}", trf("Envelopes of {month}", &[("month", &st(field(r, "month")))]));
+    if field(r, "before_start").as_bool().unwrap_or(false) {
+        println!("{}", trf("The envelopes start in {month}", &[("month", &st(field(r, "start")))]));
+        return;
+    }
+    let tba = field(r, "to_be_assigned");
+    let left = tba.as_f64().unwrap_or(0.0);
+    let state = if left == 0.0 {
+        tr("every euro has a job").to_string()
+    } else if left < 0.0 {
+        trf("over-assigned by {amount}", &[("amount", &eur(&json!(-left)))])
+    } else {
+        tr("still to assign").to_string()
+    };
+    println!("  {:<30} {:>12}  {state}", tr("To be assigned"), eur(tba));
+    for (k, label) in [
+        ("left_over", tr("Left from before")),
+        ("income", tr("Income")),
+        ("overspent_before", tr("Overspent last month")),
+        ("outside", tr("Spent outside envelopes")),
+        ("uncategorized", tr("Uncategorized")),
+        ("assigned", tr("Assigned")),
+    ] {
+        if field(r, k).as_f64().unwrap_or(0.0) != 0.0 {
+            println!("    {:<28} {:>12}", label, eur(field(r, k)));
+        }
+    }
+    println!(
+        "  {:<30} {:>12} {:>12} {:>12} {:>12}",
+        head(tr("Envelope")),
+        head(tr("Carried")),
+        head(tr("Assigned")),
+        head(tr("Spent")),
+        head(tr("Available"))
+    );
+    for e in list("envelopes") {
+        let over = field(&e, "available").as_f64().unwrap_or(0.0) < 0.0;
+        println!(
+            "  {:<30} {:>12} {:>12} {:>12} {:>12}{}",
+            cut(&format!("{} {}", st(field(&e, "id")), st(field(&e, "name"))), 30),
+            eur(field(&e, "carried")),
+            eur(field(&e, "assigned")),
+            eur(field(&e, "spent")),
+            eur(field(&e, "available")),
+            if over { format!("  {}", tr("overspent")) } else { String::new() }
+        );
+    }
+    let outside = field(r, "outside").as_f64().unwrap_or(0.0) != 0.0;
+    let loose = field(r, "uncategorized").as_f64().unwrap_or(0.0) != 0.0;
+    if outside || loose {
+        println!("{}", tr("! Some spending is in no envelope: give its categories an envelope, or a category to it."));
+    }
+    let other = field(r, "other_currencies").as_i64().unwrap_or(0);
+    if other > 0 {
+        println!("{}", trf("! {n} amounts in other currencies are not in the envelopes.", &[("n", &other)]));
+    }
+    let changes = list("changes");
+    if !changes.is_empty() {
+        println!("{}", tr("Changes"));
+    }
+    for c in changes {
+        let none = tr("To be assigned").to_string();
+        let from = field(&c, "from").as_str().map_or(none.clone(), str::to_string);
+        let to = field(&c, "to").as_str().map_or(none, str::to_string);
+        let undone = if field(&c, "undone").as_bool().unwrap_or(false) { tr(" (undone)") } else { "" };
+        println!(
+            "  {:>4}  {}  {} -> {} {:>12}  {}{undone}",
+            st(field(&c, "group_id")),
+            st(field(&c, "made_at")),
+            from,
+            to,
+            eur(field(&c, "amount")),
+            st(field(&c, "reason"))
+        );
+    }
 }
 
 fn print_entry(e: &Value) {
@@ -1665,6 +1850,15 @@ fn print_human(tool: &str, r: &Value) {
                     eur(field(&l, "remaining"))
                 );
             }
+        }
+        "list_envelopes" => print_envelopes(r),
+        "envelope_settings" => {
+            if let Some(m) = r.get("message").filter(|m| !m.is_null()) {
+                println!("{}", st(m));
+            }
+            let mode = if st(field(r, "mode")) == "envelopes" { tr("envelopes") } else { tr("monthly limits") };
+            println!("{}", trf("Budget: {mode}", &[("mode", &mode)]));
+            println!("{}", trf("The envelopes start in {month}", &[("month", &st(field(r, "start")))]));
         }
         "list_categories" => {
             for c in arr("categories") {
