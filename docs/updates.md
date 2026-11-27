@@ -23,6 +23,8 @@ The release workflow signs `SHA256SUMS.txt` with an ed25519 key (`RELEASE_SIGNIN
 
 The `.msi` is installed once CashCraft has closed, by a copy of the program in `updates/helper/` that waits for it to have gone, works out the SHA-256 again on a copy of the file held open, and runs `%SystemRoot%\System32\msiexec.exe /i … /passive /norestart`, in the scope the running copy was installed in: for the user alone (`ALLUSERS=2 MSIINSTALLPERUSER=1`, no prompt, as the launcher installs it) or for the whole computer (`ALLUSERS=1`, with Windows' administrator prompt). The scope is known from the App Paths entry the installer wrote, in the user's registry or the computer's.
 
+The copy waits for CashCraft's lock and then for `cashcraft.exe` itself to be free: the lock goes a moment before the process does, and an installer started in that moment found the program in use and left it out (seen on 2026-11-27 in the first test, 0.2.99 to 0.3.0). Windows Installer writes its whole log (`/l*vx`) to `updates/helper/install.log`. When it says it is done and `cashcraft.exe` is not there, the copy repairs the installation once (`msiexec /fa`, log in `updates/helper/repair.log`) and starts CashCraft again only if the program is there. The `.msi` installed stays in `updates/source/` until the next update, because Windows Installer repairs an installation from the file it was made from.
+
 ## The keys
 
 Made once, on the maintainer's computer, never in the repository:

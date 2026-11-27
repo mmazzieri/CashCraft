@@ -215,10 +215,12 @@ fn only_an_msi_copy_updates_itself_in_the_scope_it_was_installed_in() {
 #[test]
 fn the_installer_s_job_goes_through_its_arguments_and_nothing_else_is_one() {
     let msi = std::env::temp_dir().join(MSI);
-    let job =
-        Job { msi: msi.clone(), sha256: [7; 32], per_user: true, start: Some(std::env::temp_dir().join("example")) };
+    let exe = std::env::temp_dir().join("example.exe");
+    let job = Job { msi: msi.clone(), sha256: [7; 32], per_user: true, exe: exe.clone(), restart: true };
     let mut args = job.args();
     assert_eq!(Job::parse(&args), Some(job.clone()));
+    let stay = Job { restart: false, ..job.clone() };
+    assert_eq!(Job::parse(&stay.args()), Some(stay));
     args.push("more".into());
     assert_eq!(Job::parse(&args), None);
     let bad = |i: usize, with: &str| {
@@ -231,6 +233,8 @@ fn the_installer_s_job_goes_through_its_arguments_and_nothing_else_is_one() {
     assert_eq!(bad(1, &std::env::temp_dir().join("x.exe").to_string_lossy()), None);
     assert_eq!(bad(2, "00"), None);
     assert_eq!(bad(3, "everyone"), None);
+    assert_eq!(bad(4, "example.exe"), None);
+    assert_eq!(bad(5, "maybe"), None);
 }
 
 #[test]
@@ -241,31 +245,77 @@ fn windows_installer_is_handed_a_checked_copy_in_the_right_scope() {
     std::fs::write(&msi, b"the installer").unwrap();
     let sha: [u8; 32] = Sha256::digest(b"the installer").into();
     let mut seen = Vec::new();
-    let job = Job { msi: msi.clone(), sha256: sha, per_user: true, start: None };
-    let ok = apply::install_msi_with(&job, &folders, &mut |run| {
-        let handed = PathBuf::from(&run.args[1]);
-        assert_ne!(handed, msi);
-        assert_eq!(std::fs::read(&handed).unwrap(), b"the installer");
-        seen = run.args.clone();
-        Some(0)
-    });
+    let job = Job { msi: msi.clone(), sha256: sha, per_user: true, exe: dir.join("example.exe"), restart: false };
+    let there = |_: &Path| true;
+    let ok = apply::install_msi_with(
+        &job,
+        &folders,
+        &mut |run| {
+            let handed = PathBuf::from(&run.args[1]);
+            assert_ne!(handed, msi);
+            assert_eq!(std::fs::read(&handed).unwrap(), b"the installer");
+            seen = run.args.clone();
+            Some(0)
+        },
+        &there,
+    );
     assert!(ok);
     assert!(seen.contains(&"MSIINSTALLPERUSER=1".into()) && seen.contains(&"/passive".into()));
+    // The file installed from stays, for Windows Installer to repair from.
+    assert_eq!(std::fs::read(PathBuf::from(&seen[1])).unwrap(), b"the installer");
     // A file changed since it was checked is never run.
     std::fs::write(&msi, b"changed").unwrap();
     let ran = std::cell::Cell::new(false);
-    assert!(!apply::install_msi_with(&job, &folders, &mut |_| {
-        ran.set(true);
-        Some(0)
-    }));
+    assert!(!apply::install_msi_with(
+        &job,
+        &folders,
+        &mut |_| {
+            ran.set(true);
+            Some(0)
+        },
+        &there,
+    ));
     assert!(!ran.get());
     // For the whole computer, and an installer that says no.
     std::fs::write(&msi, b"the installer").unwrap();
-    let machine = Job { per_user: false, ..job };
-    assert!(!apply::install_msi_with(&machine, &folders, &mut |run| {
-        assert!(run.args.contains(&"ALLUSERS=1".into()) && !run.args.contains(&"MSIINSTALLPERUSER=1".into()));
-        Some(1602)
-    }));
+    let machine = Job { per_user: false, ..job.clone() };
+    assert!(!apply::install_msi_with(
+        &machine,
+        &folders,
+        &mut |run| {
+            assert!(run.args.contains(&"ALLUSERS=1".into()) && !run.args.contains(&"MSIINSTALLPERUSER=1".into()));
+            Some(1602)
+        },
+        &there,
+    ));
+    // An installer that says it is done and has left the program out: repaired once, and the
+    // update counts only when the program is there afterwards.
+    let runs = std::cell::RefCell::new(Vec::new());
+    let repaired = std::cell::Cell::new(false);
+    assert!(apply::install_msi_with(
+        &job,
+        &folders,
+        &mut |run| {
+            runs.borrow_mut().push(run.args[0].clone());
+            if run.args[0] == "/fa" {
+                repaired.set(true);
+            }
+            Some(0)
+        },
+        &|_| repaired.get(),
+    ));
+    assert_eq!(*runs.borrow(), vec![OsString::from("/i"), OsString::from("/fa")]);
+    runs.borrow_mut().clear();
+    assert!(!apply::install_msi_with(
+        &job,
+        &folders,
+        &mut |run| {
+            runs.borrow_mut().push(run.args[0].clone());
+            Some(0)
+        },
+        &|_| false,
+    ));
+    assert_eq!(runs.borrow().len(), 2, "one repair, not more");
 }
 
 #[test]
