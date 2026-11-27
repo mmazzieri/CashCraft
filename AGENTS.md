@@ -2,7 +2,7 @@
 
 Notes for people and coding agents working on CashCraft. The shared rules for Craft apps apply: https://github.com/storytold/craft-contrib/blob/main/standards/app-agents.md.
 
-- Layout: `crates/engine` (data file, bank statement import, operations; no window), `crates/ui-egui` (interface), `crates/icon` (the icon, drawn by code), `apps/cashcraft` (desktop shell), `apps/cashcraft-cli` (command line and MCP server), `crates/ffi` and `mobile/` (the phone apps: [docs/mobile.md](docs/mobile.md)), `xtask/`, `packaging/`.
+- Layout: `crates/engine` (data file, bank statement import, operations; no window), `crates/ui-egui` (interface), `crates/icon` (the icon, scaled from `assets/app-icon/cashcraft-source.png`), `apps/cashcraft` (desktop shell), `apps/cashcraft-cli` (command line and MCP server), `crates/ffi` and `mobile/` (the phone apps: [docs/mobile.md](docs/mobile.md)), `xtask/`, `packaging/`.
 - **Amounts are exact.** `Cents` is an integer; no amount goes through floating point. Negative is money going out.
 - **Debits equal credits.** Every amount is a posting of the ledger ([docs/ledger.md](docs/ledger.md)); only `Db::save_entry` writes postings. A test that changes the books ends with `assert_sound`.
 - **All or nothing.** A change made of several writes runs inside `Db::atomically`.
@@ -18,4 +18,4 @@ Notes for people and coding agents working on CashCraft. The shared rules for Cr
 - Licenses: dependencies and assets only under the license allowlist of the Craft apps, checked by `cargo deny check` (no MPL; no GPL, LGPL or AGPL code, not even read). Record every addition in `ATTRIBUTION.md`.
 - Clean room: no code, text, icons or assets from proprietary products. Do not name other products in the interface.
 - Screenshot: `cargo run -p cashcraft -- --screenshot shot.png` (`CASHCRAFT_START_VIEW=register|reports|budget|…` for another screen, `CASHCRAFT_THEME=light|dark` for a theme); with no data file it uses sample data in memory.
-- Icons: `cargo xtask icons` after a change to `crates/icon`.
+- Icons: `cargo xtask icons` after a change to `crates/icon` or to `assets/app-icon/cashcraft-source.png`.

@@ -59,6 +59,14 @@ can be changed and that are remembered for the account. The balances are not imp
 the movements must add up from one to the other, and a list with a row that could not be read or that does not
 add up is refused whole. Lists of different periods may overlap: rows already imported are skipped.
 
+The heading above the table names the account: the bank on its first line, and the IBAN, which is taken only when
+its check digits are right. The list goes to the account with that IBAN; when none has it, the import proposes a
+new current account named after the bank, with that IBAN and the list's opening balance as its own, and the name
+can be changed or emptied to choose an account that is there. An account chosen that has no IBAN is given the
+list's, so that the next list finds it; its opening balance is left as it is, since it may have older movements.
+The closing balance is then checked against the books on its day, as the balance of an OFX statement is. The
+preview of an agent (`preview_csv`) gives the same as `list`.
+
 Each row has a key, unique in its account:
 
 | Row | Key |

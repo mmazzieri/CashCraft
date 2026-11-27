@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/app-icon/hicolor/256x256/apps/it.mauromazzieri.cashcraft.png" width="128" height="128" alt="CashCraft icon: a white coin with a green euro sign on a teal rounded square">
+  <img src="assets/app-icon/hicolor/256x256/apps/it.mauromazzieri.cashcraft.png" width="128" height="128" alt="CashCraft icon: an engraved squirrel holding an acorn, on an ochre rounded square">
 </p>
 
 <h1 align="center">CashCraft</h1>

@@ -244,7 +244,7 @@ pub fn movements() -> Vec<Item> {
         add(page, 33.7, &[(333.7, "Banca di Esempio")]);
         add(page, 80.0, &[(346.8, "Movimenti")]);
         add(page, 121.0, &[(31.0, "Conto"), (134.0, "00000 00000 000000000000 conti correnti ROSSI MARIA")]);
-        add(page, 133.0, &[(31.0, "IBAN"), (134.0, "IT00X0000000000000000000000")]);
+        add(page, 133.0, &[(31.0, "IBAN"), (134.0, "IT60 X054 2811 1010 0000 0123 456")]);
         add(page, 145.0, &[(31.0, "Saldo contabile"), (134.0, "996,00")]);
         add(page, 181.0, &[(31.0, "Periodo"), (134.0, "Ultimi tre mesi")]);
         add(page, 246.3, &[(29.0, "Movimenti")]);

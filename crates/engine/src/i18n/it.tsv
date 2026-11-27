@@ -1011,3 +1011,7 @@ transaction {id} is not ticked	il movimento {id} non è spuntato
 {n} lines that the bank takes back were left out	{n} righe che la banca annulla sono state escluse
 write the balance printed on the bank statement	scrivi il saldo stampato sull'estratto conto
 as on the statement	come sull'estratto
+Account {digits}	Conto {digits}
+The new account starts with the opening balance of the list, {opening}.	Il nuovo conto parte dal saldo iniziale della lista, {opening}.
+No account has the IBAN {iban}: a new one is made, with the opening balance of the list, {opening}. To import into an account that is there, leave the name empty.	Nessun conto ha l'IBAN {iban}: ne viene creato uno nuovo, con il saldo iniziale della lista, {opening}. Per importare in un conto esistente, lascia vuoto il nome.
+The IBAN {iban} of the list is saved in "{name}".	L'IBAN {iban} della lista viene salvato in «{name}».

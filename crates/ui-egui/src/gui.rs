@@ -62,7 +62,6 @@ pub struct Palette {
     pub check_border: Color32,
     pub warn_bg: Color32,
     pub warn_text: Color32,
-    pub logo_ring: Color32,
 }
 
 pub static LIGHT: Palette = Palette {
@@ -91,7 +90,6 @@ pub static LIGHT: Palette = Palette {
     check_border: Color32::from_rgb(0xB8, 0xC0, 0xBE),
     warn_bg: Color32::from_rgb(0xFF, 0xF4, 0xDC),
     warn_text: Color32::from_rgb(0x7A, 0x55, 0x10),
-    logo_ring: Color32::from_rgb(0xBF, 0xE3, 0xDA),
 };
 
 pub static DARK: Palette = Palette {
@@ -120,7 +118,6 @@ pub static DARK: Palette = Palette {
     check_border: Color32::from_rgb(0x5A, 0x66, 0x64),
     warn_bg: Color32::from_rgb(0x3A, 0x2F, 0x14),
     warn_text: Color32::from_rgb(0xF0, 0xC8, 0x70),
-    logo_ring: Color32::from_rgb(0x2D, 0x5E, 0x55),
 };
 
 /// Whether the window is drawn dark: set at the start of each frame.
@@ -644,9 +641,37 @@ impl ImportState {
         }
         Ok(())
     }
+    /// The account the rows go into: a new one when it has a name, made from what the file says of it. Runs inside
+    /// the import's `atomically`.
+    pub fn destination(&self, db: &Db, accounts: &[Account], card: bool) -> Result<i64> {
+        let list = self.table.as_ref().and_then(|t| t.list.as_ref());
+        let iban = list.map_or("", |l| l.iban.as_str());
+        if self.new_account.trim().is_empty() {
+            let id = self.account.ok_or_else(|| anyhow::anyhow!(tr("choose an account")))?;
+            // An account without an IBAN takes that of the list, to be found by it the next time.
+            if let Some(a) =
+                accounts.iter().find(|a| a.id == id && a.iban.trim().is_empty()).filter(|_| !iban.is_empty())
+            {
+                db.set_account_iban(a.id, iban)?;
+            }
+            return Ok(id);
+        }
+        let ofx = self.table.as_ref().and_then(|t| t.ofx.as_ref()).and_then(|o| o.statement());
+        let kind = match ofx.map(|s| s.kind) {
+            Some(cashcraft_engine::ofx::Kind::CreditCard) => AccountKind::CreditCard,
+            Some(cashcraft_engine::ofx::Kind::Savings) => AccountKind::Savings,
+            Some(cashcraft_engine::ofx::Kind::Bank) => AccountKind::Bank,
+            None if card => AccountKind::CreditCard,
+            None => AccountKind::Bank,
+        };
+        let currency = ofx.map_or("EUR", |s| s.currency.as_str());
+        // A list of movements says where the account starts.
+        let opening = list.and_then(|l| l.opening).unwrap_or(0);
+        db.add_account(self.new_account.trim(), kind, currency, opening, iban)
+    }
     pub fn read_balance(&mut self, db: &Db) -> Result<()> {
-        let statement = self.table.as_ref().and_then(|t| t.ofx.as_ref()).and_then(|o| o.statement());
-        self.books = match (self.target(), statement.and_then(|s| s.balance)) {
+        let stated = self.table.as_ref().and_then(|t| t.stated_balance());
+        self.books = match (self.target(), stated) {
             (Some(a), Some((_, Some(d)))) => Some(db.balance_on(a, d)?),
             _ => None,
         };
@@ -1149,6 +1174,20 @@ impl App {
                 Some(c) => trf("Card {digits}", &[("digits", c)]),
                 None => tr("Credit card").into(),
             };
+        }
+    }
+
+    /// A list of movements goes to the account with its IBAN; when none has it, to a new account named after the
+    /// bank, which starts with the list's opening balance.
+    pub(crate) fn list_account(&self, st: &mut ImportState) {
+        let Some(l) = st.table.as_ref().and_then(|t| t.list.as_ref()) else { return };
+        if let Some(a) = l.account(&self.accounts) {
+            st.account = Some(a.id);
+            st.new_account.clear();
+            return;
+        }
+        if let Some(name) = l.account_name().filter(|_| !l.iban.is_empty() && st.new_account.is_empty()) {
+            st.new_account = name;
         }
     }
 

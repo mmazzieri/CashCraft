@@ -188,9 +188,17 @@ pub struct Table {
     pub lines: Vec<usize>,
     /// The statements of an OFX file: no columns to choose.
     pub ofx: Option<Ofx>,
+    /// What a list of movements in PDF says of its account and balances, without its rows.
+    pub list: Option<crate::bank_pdf::Movements>,
 }
 
 impl Table {
+    /// The balance that the file states, and its day: that of an OFX statement, or the closing balance of a list
+    /// of movements in PDF.
+    pub fn stated_balance(&self) -> Option<(Cents, Option<NaiveDate>)> {
+        let ofx = self.ofx.as_ref().and_then(|o| o.statement()).and_then(|s| s.balance);
+        ofx.or_else(|| self.list.as_ref().and_then(|l| Some((l.closing?, l.closing_on))))
+    }
     pub fn format(&self) -> Format {
         match (&self.statement, &self.ofx) {
             (Some(_), _) => Format::Pdf,
@@ -293,12 +301,14 @@ pub(crate) fn card_table(statement: Statement) -> Table {
         statement: Some(statement),
         lines: Vec::new(),
         ofx: None,
+        list: None,
     }
 }
 
 /// The rows of an account's list of movements in a PDF, read as those of a CSV file.
-pub(crate) fn movements_table(m: &crate::bank_pdf::Movements) -> Table {
-    table(m.records(), b'\t', PDF)
+pub fn movements_table(m: &crate::bank_pdf::Movements) -> Table {
+    let list = crate::bank_pdf::Movements { rows: Vec::new(), ..m.clone() };
+    Table { list: Some(list), ..table(m.records(), b'\t', PDF) }
 }
 
 pub(crate) fn ofx_table(file: Ofx, encoding: &'static str) -> Table {
@@ -313,6 +323,7 @@ pub(crate) fn ofx_table(file: Ofx, encoding: &'static str) -> Table {
         statement: None,
         lines: Vec::new(),
         ofx: Some(file),
+        list: None,
     }
 }
 
@@ -606,6 +617,7 @@ fn table(records: Vec<Vec<String>>, delimiter: u8, encoding: &'static str) -> Ta
         statement: None,
         lines: Vec::new(),
         ofx: None,
+        list: None,
     };
     t.decimal_comma = detect_decimal_comma(&t, &t.mapping);
     t

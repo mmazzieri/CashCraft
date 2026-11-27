@@ -336,6 +336,7 @@ fn a_card_statement_is_checked_imported_and_paid() {
                 statement: Some(statement(found)),
                 lines: vec![],
                 ofx: None,
+                list: None,
             };
             let mut st = ImportState { account: Some(bank), table: Some(table(901)), ..Default::default() };
             st.reparse();
@@ -372,6 +373,73 @@ fn a_card_statement_is_checked_imported_and_paid() {
             st.table = None;
             app.dialog = Some(Dialog::Import(st));
             draw(&mut app);
+        });
+    }
+}
+
+/// A list of movements goes to the account with its IBAN, or to a new one that starts at its opening balance and
+/// ends at its closing one.
+#[test]
+fn a_list_of_movements_finds_or_makes_its_account() {
+    use crate::gui::ImportState;
+    use cashcraft_engine::bank_pdf::Movements;
+    use cashcraft_engine::importer::{self, movements_table};
+    const IBAN: &str = "IT60X0542811101000000123456";
+    let row = |d: &str, a: &str, t: &str| [d.to_string(), d.to_string(), a.to_string(), t.to_string()];
+    let m = Movements {
+        rows: vec![row("02/11/2026", "-20,00", "Bar"), row("03/11/2026", "50,00", "Bonifico")],
+        opening: Some(10_000),
+        closing: Some(13_000),
+        closing_on: parse_date("2026-11-03"),
+        bank: "Banca di Esempio".into(),
+        iban: IBAN.into(),
+    };
+    let db = Db::open_in_memory().unwrap();
+    let old = db.add_account("Old", AccountKind::Bank, "EUR", 0, "").unwrap();
+    let mut app = App::new(db, None);
+    let state = || {
+        let t = movements_table(&m);
+        let mut st = ImportState { account: Some(old), ..Default::default() };
+        st.use_settings(importer::Settings::detected(&t), None);
+        st.table = Some(t);
+        st.reparse();
+        st
+    };
+    // No account has the IBAN: a new one is proposed, named after the bank.
+    let mut st = state();
+    app.list_account(&mut st);
+    assert_eq!(st.new_account, "Banca di Esempio");
+    let acc = app.db.atomically(|| st.destination(&app.db, &app.accounts, false)).unwrap();
+    let res = importer::import(&app.db, acc, st.table.as_ref().unwrap(), &st.rows, 0, false).unwrap();
+    assert_eq!((st.rows.len(), res.added), (2, 2), "{:?}", st.rows);
+    let made = app.db.accounts(true).unwrap().into_iter().find(|a| a.id == acc).unwrap();
+    assert_eq!((made.opening_balance, made.iban.as_str(), made.balance), (10_000, IBAN, 13_000));
+    st.new_account.clear();
+    st.account = Some(acc);
+    st.read_balance(&app.db).unwrap();
+    assert_eq!(st.books, Some(13_000));
+    // The next list goes to it.
+    app.accounts = app.db.accounts(true).unwrap();
+    let mut st = state();
+    app.list_account(&mut st);
+    assert_eq!((st.account, st.new_account.as_str()), (Some(acc), ""));
+    // An account chosen by hand, that has no IBAN, takes the list's; its opening balance stays.
+    app.db.delete_account(acc).unwrap();
+    app.accounts = app.db.accounts(true).unwrap();
+    let mut st = state();
+    app.list_account(&mut st);
+    st.new_account.clear();
+    assert_eq!(app.db.atomically(|| st.destination(&app.db, &app.accounts, false)).unwrap(), old);
+    let old = app.db.accounts(true).unwrap().into_iter().find(|a| a.id == old).unwrap();
+    assert_eq!((old.iban.as_str(), old.opening_balance), (IBAN, 0));
+    // Drawn, in both languages.
+    for l in [Lang::It, Lang::En] {
+        with_lang(l, || {
+            let mut st = state();
+            app.list_account(&mut st);
+            app.dialog = Some(Dialog::Import(Box::new(st)));
+            let ctx = egui::Context::default();
+            ctx.run_ui(Default::default(), |ui| app.dialogs(&ui.ctx().clone())).textures_delta.clear();
         });
     }
 }

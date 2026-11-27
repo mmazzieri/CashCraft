@@ -6,7 +6,8 @@ CashCraft was written by a coding agent from its author's description of the fea
 
 | File | Source | License |
 |---|---|---|
-| `assets/app-icon/` | Our own work: drawn by `crates/icon` (`cargo xtask icons`) | MIT OR Apache-2.0 |
+| `assets/app-icon/cashcraft-source.png` (an engraved squirrel holding an acorn, on an ochre tile) | Made by Mauro Mazzieri with Google Gemini (image generation, November 2026) for CashCraft | MIT OR Apache-2.0 |
+| The other files in `assets/app-icon/` and the phone apps' icons in `mobile/` | Scaled from it by `crates/icon` (`cargo xtask icons`) | MIT OR Apache-2.0 |
 | `crates/engine/src/demo.rs` sample accounts and transactions | Our own invented data (no real people, banks or brands) | MIT OR Apache-2.0 |
 | `crates/engine/src/db.rs` default categories and rules | Our own wording | MIT OR Apache-2.0 |
 | Statement fixtures in the tests | Our own invented examples | MIT OR Apache-2.0 |

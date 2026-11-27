@@ -30,13 +30,10 @@ impl App {
                     .stroke(Stroke::new(1.0, pal().border)),
             )
             .show(ui, |ui| {
-                // Marchio: una moneta stilizzata.
+                // The program's own icon, the same as the window's and the taskbar's.
                 ui.horizontal(|ui| {
-                    let (r, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
-                    let p = ui.painter();
-                    p.circle_filled(r.center(), 15.0, pal().accent_fill);
-                    p.circle_stroke(r.center(), 11.0, Stroke::new(1.5, pal().logo_ring));
-                    p.text(r.center(), Align2::CENTER_CENTER, "€", FontId::proportional(16.0), Color32::WHITE);
+                    let logo = app_logo(ui.ctx());
+                    ui.add(egui::Image::new((logo.id(), Vec2::splat(30.0))));
                     ui.label(RichText::new("CashCraft").size(19.0).strong().color(pal().text));
                 });
                 ui.add_space(12.0);
@@ -1339,4 +1336,19 @@ pub fn turn_button(ui: &mut Ui, t: &Transaction) -> bool {
 fn setting_label(ui: &mut Ui, text: &str) {
     let width = ui.label(RichText::new(text).color(pal().muted)).rect.width();
     ui.add_space((72.0 - width).max(4.0));
+}
+
+/// The icon drawn at the top of the sidebar, made once and kept by the context.
+fn app_logo(ctx: &egui::Context) -> egui::TextureHandle {
+    let id = egui::Id::unique("cashcraft_app_logo");
+    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return t;
+    }
+    // Large enough for a 30-point mark on a screen at three times the scale.
+    let img = cashcraft_icon::render(96);
+    let size = [img.width() as usize, img.height() as usize];
+    let pixels = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+    let t = ctx.load_texture("cashcraft_app_logo", pixels, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, t.clone()));
+    t
 }
