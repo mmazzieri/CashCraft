@@ -3,6 +3,7 @@
 //! Gli importi sono sempre in centesimi (i64): negativi = uscite, positivi = entrate.
 
 use crate::cards::CARD_SCHEMA;
+use crate::envelopes::ENVELOPE_SCHEMA;
 use crate::i18n::{Lang, lang, tr, trf, trn, with_lang};
 use crate::layouts::LAYOUT_SCHEMA;
 use crate::ledger::{self, COUNTED, Draft, LEDGER_SCHEMA, Line, PROFIT_AND_LOSS, UNCATEGORIZED};
@@ -335,8 +336,8 @@ pub struct Db {
 /// files and the other import keys of a posting, in a table
 /// with another name so that an older program fails to write, 8 the rules with conditions and order, the
 /// tags and the texts of the bank, in tables with other names, 9 the reconciliations with the bank, with the postings
-/// in a table with another name again: see `docs/ledger.md` and `docs/reconcile.md`).
-pub const SCHEMA_VERSION: i64 = 9;
+/// in a table with another name again, 10 the envelopes: see `docs/ledger.md`, `docs/reconcile.md` and `docs/envelopes.md`).
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// Tables of formats 0 and 1 with their name in 2. The rules have another one since 8. A window of an older program that has the file open
 /// fails at once when it writes to one, instead of doing half of what it was asked.
@@ -485,6 +486,7 @@ impl Db {
                 self.conn.execute_batch(RULE_SCHEMA)?;
                 self.conn.execute_batch(RECONCILE_SCHEMA)?;
                 self.conn.execute_batch(POSTING_IDS)?;
+                self.conn.execute_batch(ENVELOPE_SCHEMA)?;
             }
             self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             Ok(())
@@ -1497,7 +1499,7 @@ impl Db {
             self.conn.execute_batch(
                 "DELETE FROM scheduled_items; DELETE FROM rule_runs; DELETE FROM entries;
                  DELETE FROM ledger_accounts WHERE money_account_id IS NOT NULL;
-                 DELETE FROM accounts; DELETE FROM category_budgets;",
+                 DELETE FROM accounts; DELETE FROM category_budgets; DELETE FROM envelope_changes; DELETE FROM envelopes;",
             )?;
             self.set_meta("demo", "0")
         })
