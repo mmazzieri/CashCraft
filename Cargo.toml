@@ -28,7 +28,9 @@ dbg_macro = "warn"
 cashcraft-engine = { path = "crates/engine" }
 cashcraft-icon = { path = "crates/icon" }
 cashcraft-ui-egui = { path = "crates/ui-egui" }
+cashcraft-update = { path = "crates/update" }
 anyhow = "1"
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 clap = { version = "4", features = ["derive"] }
 craft-xls = { git = "https://github.com/storytold/craft-libs", rev = "249a41bd9306a1b34330ac94e596a1a8b881378a", version = "=0.1.0" }
@@ -47,4 +49,10 @@ hayro-syntax = { version = "=0.7.2", default-features = false }
 kurbo = "0.13"
 regex = "1.13"
 sha2 = "0.10"
+# The release signature (ed25519) is checked with ring, which rustls already brings.
+ring = "0.17"
 rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal", "wayland"] }
+# Asking GitHub for new versions: rustls on ring, with the system's own root certificates (no bundled ones).
+ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider", "_ring"] }
+rustls-native-certs = "0.8"
+winreg = "0.55"

@@ -1080,3 +1080,24 @@ fn a_window_of_format_8_with_the_file_open_is_kept_out() {
     assert!(db.transaction(1).unwrap().reconciled);
     assert_sound(&db, "kept out");
 }
+
+#[test]
+fn a_copy_before_an_update_holds_the_whole_file_and_never_replaces_one() {
+    let dir = Dir::new("copy-into");
+    let (db, _) = Db::open(&dir.file()).unwrap();
+    crate::demo::seed(&db).unwrap();
+    let before = dump(&db.conn);
+    let into = dir.0.join("backups");
+    let first = db.copy_into(&into, "before-0.5.0").unwrap();
+    let second = db.copy_into(&into, "before-0.5.0").unwrap();
+    assert_ne!(first, second);
+    assert!(second.file_name().unwrap().to_string_lossy().ends_with("-2.db"));
+    for copy in [&first, &second] {
+        let (c, is_new) = Db::open(copy).unwrap();
+        assert!(!is_new);
+        assert_eq!(dump(&c.conn), before);
+    }
+    // Nothing but the two copies is left in the folder, and the file itself is as it was.
+    assert_eq!(std::fs::read_dir(&into).unwrap().count(), 2);
+    assert_eq!(dump(&db.conn), before);
+}

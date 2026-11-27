@@ -35,6 +35,10 @@ fn main() {
     if cashcraft_engine::pdf::answer_if_child() {
         return;
     }
+    // The copy of the program that installs a new version once this one has closed.
+    if let Some(code) = cashcraft_ui_egui::updates::finish_update_if_asked() {
+        std::process::exit(code);
+    }
     let args = Args::parse();
     let asked = match (args.direct, args.shared) {
         (true, _) => Use::Direct,

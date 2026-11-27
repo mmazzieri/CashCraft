@@ -1015,3 +1015,26 @@ Account {digits}	Conto {digits}
 The new account starts with the opening balance of the list, {opening}.	Il nuovo conto parte dal saldo iniziale della lista, {opening}.
 No account has the IBAN {iban}: a new one is made, with the opening balance of the list, {opening}. To import into an account that is there, leave the name empty.	Nessun conto ha l'IBAN {iban}: ne viene creato uno nuovo, con il saldo iniziale della lista, {opening}. Per importare in un conto esistente, lascia vuoto il nome.
 The IBAN {iban} of the list is saved in "{name}".	L'IBAN {iban} della lista viene salvato in «{name}».
+CashCraft is up to date.	CashCraft è aggiornato.
+CashCraft was updated from {from} to {to}.	CashCraft è stato aggiornato dalla {from} alla {to}.
+CashCraft was updated from {from} to {to}. The data file from before is kept in {path}.	CashCraft è stato aggiornato dalla {from} alla {to}. Il file dei dati di prima è conservato in {path}.
+CashCraft {version} is available	È disponibile CashCraft {version}
+CashCraft {version} is available and fixes a security problem	È disponibile CashCraft {version}, che corregge un problema di sicurezza
+CashCraft {version} is available.	È disponibile CashCraft {version}.
+CashCraft {version} is ready: it is installed when CashCraft closes	CashCraft {version} è pronto: viene installato alla chiusura di CashCraft
+CashCraft {version} was not installed: this is still the version before.	CashCraft {version} non è stato installato: questa è ancora la versione precedente.
+Check now	Controlla ora
+GitHub could not be reached; try again later.	GitHub non è raggiungibile; riprova più tardi.
+Install by itself	Installa da solo
+Restart to update	Riavvia per aggiornare
+Should CashCraft check once a day whether a new version is out? It asks GitHub, and sends nothing about you or your data.	Vuoi che CashCraft controlli una volta al giorno se è uscita una nuova versione? Lo chiede a GitHub, senza inviare nulla su di te o sui tuoi dati.
+Tell me	Avvisami
+The new version cannot be installed by CashCraft: download it from its page.	CashCraft non può installare da solo la nuova versione: scaricala dalla sua pagina.
+The new version could not be saved: {error}	Non è stato possibile salvare la nuova versione: {error}
+The new version was refused: it is not the one the project signed. Nothing was installed.	La nuova versione è stata rifiutata: non è quella firmata dal progetto. Non è stato installato nulla.
+The update settings cannot be saved: {error}	Non è stato possibile salvare le impostazioni degli aggiornamenti: {error}
+Updates	Aggiornamenti
+Yes, check daily	Sì, ogni giorno
+No	No
+Off	Spento
+CashCraft {version} is available: {page}	È disponibile CashCraft {version}: {page}

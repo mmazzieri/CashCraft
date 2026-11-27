@@ -7,6 +7,7 @@ pub mod gui;
 mod ledger;
 mod reconcile;
 mod rules;
+pub mod updates;
 mod views;
 
 #[cfg(test)]

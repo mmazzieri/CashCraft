@@ -122,6 +122,41 @@ fn table_sizes(c: &Connection) -> Result<Vec<(String, i64)>> {
 }
 
 impl Db {
+    /// A sound copy of the whole data file, made through this connection, in `dir`, named
+    /// `<name>-<label>.db` (`-2`, `-3`… when that is taken): what is kept of the owner's books before a new
+    /// version of CashCraft is installed. The name appears only on a complete copy that holds as many rows as
+    /// this file; no file is ever overwritten.
+    pub fn copy_into(&self, dir: &Path, label: &str) -> Result<PathBuf> {
+        std::fs::create_dir_all(dir)?;
+        let stem = self.path.as_deref().and_then(Path::file_stem).and_then(OsStr::to_str).unwrap_or("cashcraft");
+        let name = |n: usize| match n {
+            1 => format!("{stem}-{label}.db"),
+            n => format!("{stem}-{label}-{n}.db"),
+        };
+        let part = Temporary(dir.join(format!("{}.{}.tmp", name(1), std::process::id())));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        drop(options.open(&part.0)?);
+        let mut copy = Connection::open(&part.0)?;
+        Backup::new(&self.conn, &mut copy)?.run_to_completion(1000, Duration::from_millis(50), None)?;
+        copy.query_row("PRAGMA journal_mode = DELETE", [], |_| Ok(()))?;
+        let check: String = copy.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+        if check != "ok" || table_sizes(&copy)? != table_sizes(&self.conn)? {
+            bail!(tr("the backup copy is not sound"));
+        }
+        copy.close().map_err(|(_, e)| e)?;
+        OpenOptions::new().write(true).open(&part.0)?.sync_all()?;
+        for n in 1..1000 {
+            let target = dir.join(name(n));
+            if publish(&part.0, &target)? {
+                return Ok(target);
+            }
+        }
+        bail!(tr("there are too many backup copies"))
+    }
+
     /// Turns the tables of an older format into the present one. Runs inside the transaction of `init`, which
     /// holds the write lock: nobody changes the file between the backup and the end.
     pub(crate) fn migrate(&self, version: i64) -> Result<()> {

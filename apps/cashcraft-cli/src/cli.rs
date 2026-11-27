@@ -125,6 +125,9 @@ pub enum Cmd {
     /// The data file: where it is, synced folders, conflicts
     #[command(subcommand, visible_alias = "archivio")]
     Data(crate::data::DataCmd),
+    /// Whether a new version of CashCraft is out (asks GitHub; installs nothing)
+    #[command(visible_alias = "aggiornamenti")]
+    Updates,
     /// List the available operations (the same as in the MCP server)
     Tools,
     /// Run an operation with JSON arguments, e.g.: call list_transactions '{"limit":5}'
@@ -775,7 +778,7 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
             });
         }
         // Answered before the data file is opened.
-        Cmd::Data(_) => return Ok(()),
+        Cmd::Data(_) | Cmd::Updates => return Ok(()),
         Cmd::Tools => {
             for t in ops::tools() {
                 println!("{:<22} {}", t.name, t.description);

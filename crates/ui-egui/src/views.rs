@@ -175,6 +175,7 @@ impl App {
                             }
                         });
                     });
+                    self.updates_setting(ui);
                     if chosen != self.language {
                         self.choose_language(ui, chosen);
                     }
@@ -318,11 +319,12 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     self.file_status(ui);
-                    if self.is_shared() {
-                        // The room is for the status.
-                        return;
-                    }
+                    let shared = self.is_shared();
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if self.updates_status(ui) || shared {
+                            // The room is for the update, or for the status of a shared file.
+                            return;
+                        }
                         ui.label(
                             RichText::new(tr(
                                 "Works from the terminal (cashcraft-cli --help) and over MCP (cashcraft-cli mcp)",
@@ -1333,7 +1335,7 @@ pub fn turn_button(ui: &mut Ui, t: &Transaction) -> bool {
 }
 
 /// A setting's name in the sidebar, padded so the menus beside it line up.
-fn setting_label(ui: &mut Ui, text: &str) {
+pub(crate) fn setting_label(ui: &mut Ui, text: &str) {
     let width = ui.label(RichText::new(text).color(pal().muted)).rect.width();
     ui.add_space((72.0 - width).max(4.0));
 }

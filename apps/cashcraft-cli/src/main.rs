@@ -52,6 +52,7 @@ fn main() {
     set_lang(if mcp { Lang::En } else { user });
     let result = match args.cmd {
         cli::Cmd::Data(cmd) => data::run(&home, &path, asked, cmd, args.json),
+        cli::Cmd::Updates => updates(args.json),
         cmd => store::open(&home, &path, asked, user, must_exist).and_then(|o| {
             if !mcp {
                 set_lang(Lang::at_start(o.db.meta(META_KEY).as_deref()));
@@ -77,6 +78,41 @@ fn main() {
     }
 }
 
+/// `cashcraft-cli updates`: the newest release, and whether it is newer than this program.
+fn updates(json: bool) -> anyhow::Result<()> {
+    use cashcraft_update::version::Version;
+    let project = cashcraft_update::Project {
+        name: "CashCraft",
+        program: "cashcraft",
+        repository: env!("CARGO_PKG_REPOSITORY"),
+        keys: cashcraft_engine::RELEASE_KEYS,
+    };
+    let running = Version::parse(env!("CARGO_PKG_VERSION"));
+    let pre = running.as_ref().is_some_and(Version::is_pre_release);
+    let release = match cashcraft_update::github::latest(&project, pre) {
+        Ok(r) => Some(r),
+        Err(cashcraft_update::Problem::NoRelease | cashcraft_update::Problem::PreRelease) => None,
+        Err(p) => anyhow::bail!("{p}"),
+    };
+    let newer = release.as_ref().filter(|r| running.as_ref().is_some_and(|v| r.version.is_newer_than(v)));
+    if json {
+        let value = serde_json::json!({
+            "running": env!("CARGO_PKG_VERSION"),
+            "latest": release.as_ref().map(|r| r.version.to_string()),
+            "newer": newer.is_some(),
+            "page": release.as_ref().map(|r| r.page.clone()),
+            "security": newer.is_some_and(|r| r.security),
+            "signed": release.as_ref().is_some_and(cashcraft_update::download::is_signed),
+        });
+        println!("{value}");
+    } else if let Some(r) = newer {
+        println!("{}", trf("CashCraft {version} is available: {page}", &[("version", &r.version), ("page", &r.page)]));
+    } else {
+        println!("{}", cashcraft_engine::i18n::tr("CashCraft is up to date."));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,6 +134,7 @@ mod tests {
             ("ledger", "contabilita"),
             ("cards", "carte"),
             ("data", "archivio"),
+            ("updates", "aggiornamenti"),
         ] {
             let cli = Cli::command();
             let name = |n: &str| cli.find_subcommand(n).map(|c| c.get_name().to_string());
