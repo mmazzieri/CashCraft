@@ -2,7 +2,7 @@
 //! with the difference in sight, the lines of the statement against the transactions, and the history.
 
 use crate::gui::{App, Dialog, View, card, cut, or_report, pal, primary_button, section_title, small_caps};
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use cashcraft_engine::db::{AccountKind, Cents, Transaction};
 use cashcraft_engine::i18n::{tr, trf, trn};
 use cashcraft_engine::importer::ParsedRow;
@@ -202,8 +202,11 @@ impl App {
                 ui.end_row();
                 ui.label(if liability { tr("Debt on the statement") } else { tr("Balance on the statement") });
                 ui.horizontal(|ui| {
-                    let r = ui
-                        .add(egui::TextEdit::singleline(&mut st.balance).hint_text(fmt_plain(0)).desired_width(140.0));
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut st.balance)
+                            .hint_text(tr("as on the statement"))
+                            .desired_width(140.0),
+                    );
                     ui.label(RichText::new(currency).color(pal().muted));
                     if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                         start = true;
@@ -263,6 +266,9 @@ impl App {
         }
         let parsed = (|| -> Result<Start<'_>> {
             let date = parse_date(&st.date).ok_or_else(|| anyhow!(tr("the date is not valid (yyyy-mm-dd)")))?;
+            if st.balance.trim().is_empty() {
+                bail!(tr("write the balance printed on the bank statement"));
+            }
             let typed = parse_amount(&st.balance)?;
             let balance = if liability {
                 typed.checked_neg().ok_or_else(|| anyhow!(tr("the amount is too large")))?

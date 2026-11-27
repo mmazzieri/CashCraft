@@ -1009,3 +1009,5 @@ transaction {id} is not ticked	il movimento {id} non è spuntato
 {n} line that the bank takes back was left out	{n} riga che la banca annulla è stata esclusa
 {n} lines after the statement date will be left out.	{n} righe successive alla data dell'estratto saranno escluse.
 {n} lines that the bank takes back were left out	{n} righe che la banca annulla sono state escluse
+write the balance printed on the bank statement	scrivi il saldo stampato sull'estratto conto
+as on the statement	come sull'estratto
