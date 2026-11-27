@@ -749,6 +749,7 @@ impl App {
         });
         if st.poll() {
             self.card_account(st);
+            self.list_account(st);
         }
         if st.loading.is_some() {
             ui.horizontal(|ui| {
@@ -982,6 +983,7 @@ impl App {
             if let Some(a) = target.filter(|_| st.new_account.trim().is_empty()) {
                 ofx_account(ui, st, a);
             }
+            list_account(ui, st, target);
             if !st.broken_rules.is_empty() {
                 ui.label(RichText::new(&st.broken_rules).color(pal().red));
             }
@@ -999,20 +1001,7 @@ impl App {
             .fill(pal().accent_fill);
             if ui.add_enabled(can, btn).clicked() {
                 let r = self.db.atomically(|| -> Result<(i64, ImportResult)> {
-                    let acc = if !st.new_account.trim().is_empty() {
-                        let ofx = st.table.as_ref().and_then(|t| t.ofx.as_ref()).and_then(|o| o.statement());
-                        let kind = match ofx.map(|s| s.kind) {
-                            Some(Kind::CreditCard) => AccountKind::CreditCard,
-                            Some(Kind::Savings) => AccountKind::Savings,
-                            Some(Kind::Bank) => AccountKind::Bank,
-                            None if statement.is_some() => AccountKind::CreditCard,
-                            None => AccountKind::Bank,
-                        };
-                        let currency = ofx.map_or("EUR", |s| s.currency.as_str());
-                        self.db.add_account(st.new_account.trim(), kind, currency, 0, "")?
-                    } else {
-                        st.account.ok_or_else(|| anyhow::anyhow!(tr("choose an account")))?
-                    };
+                    let acc = st.destination(&self.db, &self.accounts, statement.is_some())?;
                     let table = st.table.as_ref().ok_or_else(|| anyhow::anyhow!(tr("choose a file")))?;
                     let settings = st.settings();
                     let choices = importer::Choices {
@@ -1257,10 +1246,31 @@ fn ofx_account(ui: &mut Ui, st: &ImportState, account: &Account) {
     }
 }
 
+/// What a list of movements does to its account: a new one starts with its opening balance, one without an IBAN
+/// takes the list's.
+fn list_account(ui: &mut Ui, st: &ImportState, target: Option<&Account>) {
+    let Some(l) = st.table.as_ref().and_then(|t| t.list.as_ref()) else { return };
+    let text = if !st.new_account.trim().is_empty() {
+        let opening = fmt_plain(l.opening.unwrap_or(0));
+        if l.iban.is_empty() {
+            trf("The new account starts with the opening balance of the list, {opening}.", &[("opening", &opening)])
+        } else {
+            trf(
+                "No account has the IBAN {iban}: a new one is made, with the opening balance of the list, {opening}. To import into an account that is there, leave the name empty.",
+                &[("iban", &l.iban), ("opening", &opening)],
+            )
+        }
+    } else if let Some(a) = target.filter(|a| a.iban.trim().is_empty() && !l.iban.is_empty()) {
+        trf("The IBAN {iban} of the list is saved in \"{name}\".", &[("iban", &l.iban), ("name", &a.name)])
+    } else {
+        return;
+    };
+    ui.label(RichText::new(text).color(pal().muted));
+}
+
 /// The balance that the bank states, against the books. Only a check.
 fn balance_check(ui: &mut Ui, st: &ImportState) {
-    let statement = st.table.as_ref().and_then(|t| t.ofx.as_ref()).and_then(|o| o.statement());
-    let Some((stated, on)) = statement.and_then(|s| s.balance) else { return };
+    let Some((stated, on)) = st.table.as_ref().and_then(|t| t.stated_balance()) else { return };
     let books = st.books.map_or_else(|| "—".to_string(), fmt_plain);
     let date = on.map_or_else(|| "—".to_string(), fmt_date);
     let text = trf(

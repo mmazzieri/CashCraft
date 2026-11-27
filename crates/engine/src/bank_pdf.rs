@@ -7,6 +7,7 @@
 use crate::db::Cents;
 use crate::money::{checked_total, parse_amount_with, parse_date};
 use crate::pdf::{Failure, Line, Page, Word};
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 /// The headings of the table that is made, which the importer recognises.
@@ -24,6 +25,15 @@ pub struct Movements {
     /// The balances at the start and at the end, when the list states them.
     pub opening: Option<Cents>,
     pub closing: Option<Cents>,
+    /// The day of the closing balance.
+    #[serde(default)]
+    pub closing_on: Option<NaiveDate>,
+    /// The account, as the heading of the list names it: empty when it does not.
+    #[serde(default)]
+    pub bank: String,
+    /// Without spaces, and only when its check digits are right.
+    #[serde(default)]
+    pub iban: String,
 }
 
 impl Movements {
@@ -32,6 +42,67 @@ impl Movements {
         let head = HEADINGS.iter().map(|h| h.to_string()).collect();
         std::iter::once(head).chain(self.rows.iter().map(|r| r.to_vec())).collect()
     }
+}
+
+/// An IBAN written with or without spaces, in capitals, when its check digits are right (ISO 13616).
+pub fn iban(s: &str) -> Option<String> {
+    let c = compact(s);
+    let mut chars = c.chars();
+    let country = chars.by_ref().take(2).all(|ch| ch.is_ascii_uppercase());
+    let digits = chars.take(2).all(|ch| ch.is_ascii_digit());
+    if !(15..=34).contains(&c.len()) || !c.is_ascii() || !country || !digits {
+        return None;
+    }
+    let (head, tail) = c.split_at(4);
+    let mut rest = 0u32;
+    for ch in tail.chars().chain(head.chars()) {
+        let v = ch.to_digit(36)?;
+        rest = if v < 10 { (rest * 10 + v) % 97 } else { (rest * 100 + v) % 97 };
+    }
+    (rest == 1).then_some(c)
+}
+
+impl Movements {
+    /// The account with the IBAN of the list, if there is one that is not archived.
+    pub fn account<'a>(&self, accounts: &'a [crate::db::Account]) -> Option<&'a crate::db::Account> {
+        if self.iban.is_empty() {
+            return None;
+        }
+        accounts.iter().find(|a| !a.archived && iban(&a.iban).as_deref() == Some(self.iban.as_str()))
+    }
+    /// The name proposed for a new account: the bank, or the last digits of the IBAN.
+    pub fn account_name(&self) -> Option<String> {
+        if !self.bank.is_empty() {
+            return Some(self.bank.clone());
+        }
+        let digits = self.iban.get(self.iban.len().saturating_sub(4)..).filter(|d| !d.is_empty())?;
+        Some(crate::i18n::trf("Account {digits}", &[("digits", &digits)]))
+    }
+    pub fn json(&self, accounts: &[crate::db::Account]) -> serde_json::Value {
+        serde_json::json!({"bank": self.bank, "iban": self.iban,
+            "opening": self.opening.map(crate::money::fmt_machine), "closing": self.closing.map(crate::money::fmt_machine),
+            "closing_on": self.closing_on, "account": self.account(accounts).map(|a| &a.name),
+            "new_account_name": self.account_name()})
+    }
+}
+
+/// What the lines above the table say of the account: the name of the bank, on the first line, and the IBAN.
+fn heading(lines: &[Line]) -> (String, String) {
+    let text = |l: &Line| l.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+    let bank = lines
+        .first()
+        .map(text)
+        .filter(|t| t.chars().count() <= 60 && !t.chars().any(|c| c.is_ascii_digit()))
+        .unwrap_or_default();
+    let iban = lines
+        .iter()
+        .find_map(|l| {
+            let (first, rest) = l.words.split_first()?;
+            (compact(&first.text) == "IBAN").then(|| rest.iter().map(|w| w.text.as_str()).collect::<String>())
+        })
+        .and_then(|t| iban(&t))
+        .unwrap_or_default();
+    (bank.trim().to_string(), iban)
 }
 
 /// Letters and digits only, in capitals: spaces may have been lost.
@@ -105,9 +176,13 @@ struct Row {
 pub fn parse(pages: &[Page]) -> Result<Movements, Failure> {
     let mut rows: Vec<Row> = Vec::new();
     let (mut opening, mut closing, mut unread, mut found) = (None, None, 0usize, false);
+    let (mut closing_on, mut bank, mut iban) = (None, String::new(), String::new());
     for page in pages {
         let Some(start) = page.iter().position(|l| columns(l).is_some()) else { continue };
         let Some(c) = page.get(start).and_then(columns) else { continue };
+        if !found {
+            (bank, iban) = heading(page.get(..start).unwrap_or_default());
+        }
         found = true;
         // A description that starts above its date waits for it.
         let mut waiting: Vec<String> = Vec::new();
@@ -144,7 +219,7 @@ pub fn parse(pages: &[Page]) -> Result<Movements, Failure> {
             let value = here.value.join(" ");
             let figure = here.amount.join("");
             let amount = parse_amount_with(&figure, Some(true)).ok();
-            let (Some(_), Some(amount)) = (parse_date(&booking), amount) else {
+            let (Some(on), Some(amount)) = (parse_date(&booking), amount) else {
                 unread += 1;
                 waiting.clear();
                 current = None;
@@ -161,6 +236,7 @@ pub fn parse(pages: &[Page]) -> Result<Movements, Failure> {
                 current = None;
             } else if value.is_empty() && head.starts_with("SALDOFINALE") {
                 closing = Some(amount);
+                closing_on = Some(on);
                 current = None;
             } else {
                 if rows.len() >= MAX_ROWS {
@@ -186,7 +262,7 @@ pub fn parse(pages: &[Page]) -> Result<Movements, Failure> {
     if unread > 0 || !adds_up {
         return Err(Failure::Mismatch);
     }
-    let mut out = Movements { rows: Vec::new(), opening, closing };
+    let mut out = Movements { rows: Vec::new(), opening, closing, closing_on, bank, iban };
     // The newest comes first in the list.
     for r in rows.into_iter().rev() {
         out.rows.push([r.booking, r.value, r.figure, r.text.join(" ")]);

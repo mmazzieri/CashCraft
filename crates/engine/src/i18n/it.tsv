@@ -870,3 +870,7 @@ Undo the rules?	Annullare le regole?
 {n} rules that give it go too.	Si cancellano anche {n} regole che la assegnano.
 {n} rule for one account goes too.	Si cancella anche {n} regola limitata a un conto.
 {n} rules for one account go too.	Si cancellano anche {n} regole limitate a un conto.
+Account {digits}	Conto {digits}
+The new account starts with the opening balance of the list, {opening}.	Il nuovo conto parte dal saldo iniziale della lista, {opening}.
+No account has the IBAN {iban}: a new one is made, with the opening balance of the list, {opening}. To import into an account that is there, leave the name empty.	Nessun conto ha l'IBAN {iban}: ne viene creato uno nuovo, con il saldo iniziale della lista, {opening}. Per importare in un conto esistente, lascia vuoto il nome.
+The IBAN {iban} of the list is saved in "{name}".	L'IBAN {iban} della lista viene salvato in «{name}».

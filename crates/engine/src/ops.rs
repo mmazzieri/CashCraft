@@ -299,7 +299,7 @@ pub fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "preview_csv",
-            description: "Analyzes a statement (CSV, Excel 97 .xls, OFX, the PDF of a credit card, or a list of an account's movements printed to PDF by a bank, which is read as a CSV and refused when its rows do not add up to its balances) without importing it: separator, recognized columns, first rows and the lines that could not be read; for a card statement its dates and whether the rows add up to its totals; for OFX its statements and the balance they state, a check only. With an account, also likely_duplicates: rows that may be there already, each with the transactions it may be and the one proposed (certain: same date, amount and payee, and only one).",
+            description: "Analyzes a statement (CSV, Excel 97 .xls, OFX, the PDF of a credit card, or a list of an account's movements printed to PDF by a bank, which is read as a CSV and refused when its rows do not add up to its balances) without importing it: separator, recognized columns, first rows and the lines that could not be read; for a card statement its dates and whether the rows add up to its totals; for OFX its statements and the balance they state, a check only; for a list of movements, list: the bank, the IBAN, the opening and closing balances, the account that has that IBAN, and the name proposed for a new one (create_account with that IBAN and the opening balance, when none has it and the user agrees). With an account, also likely_duplicates: rows that may be there already, each with the transactions it may be and the one proposed (certain: same date, amount and payee, and only one).",
             schema: obj(
                 json!({"path": s("Path of the file."), "account": k("Account to look for likely duplicates and remembered columns in: numeric id or name (optional)."),
                 "statement": k(STATEMENT), "invert": b("Invert the sign of the amounts."), "limit": n("Preview rows (default 10)."),
@@ -956,9 +956,9 @@ fn decision(a: &Value) -> Result<Decision> {
     Ok(d)
 }
 
-/// The balance that an OFX statement states, against the books.
+/// The balance that an OFX statement or a list of movements states, against the books.
 fn ledger_balance(db: &Db, account: Option<i64>, t: &importer::Table) -> Result<Value> {
-    let Some((stated, on)) = t.ofx.as_ref().and_then(|o| o.statement()).and_then(|s| s.balance) else {
+    let Some((stated, on)) = t.stated_balance() else {
         return Ok(Value::Null);
     };
     let books = match (account, on) {
@@ -1277,6 +1277,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                 })
             };
             if dry {
+                let accounts = db.accounts(false)?;
                 let limit = opt_i64(a, "limit").unwrap_or(10).max(1) as usize;
                 let total = checked_total(rows.iter().map(|r| r.amount)).ok_or_else(too_big)?;
                 let likely: Vec<Value> = db
@@ -1309,6 +1310,7 @@ fn call_raw(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Val
                        "broken_rules": set.broken, "problems": read.problems,
                        "likely_duplicates": likely, "deletions": db.deletions(id, rows)?, "notices": notices,
                        "refused": refused, "would_import": counts, "statement": statement, "ofx": ofx,
+                       "list": t.list.as_ref().map(|l| l.json(&accounts)),
                        "ledger_balance": ledger_balance(db, id, &t)?})
             } else {
                 let (res, balance) = import()?;
