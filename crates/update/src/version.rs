@@ -73,9 +73,35 @@ impl Version {
                 (true, true) => Ordering::Equal,
                 (true, false) => Ordering::Greater,
                 (false, true) => Ordering::Less,
-                (false, false) => self.suffix.cmp(&other.suffix),
+                (false, false) => cmp_pre_release(&self.suffix, &other.suffix),
             }
         })
+    }
+}
+
+/// Two pre-release suffixes by their dot-separated parts, as Semantic Versioning orders them:
+/// numbers by their value and below words, words by their characters, and fewer parts first when
+/// the rest are equal (`beta.2` before `beta.10`, `alpha` before `alpha.1`).
+fn cmp_pre_release(a: &str, b: &str) -> Ordering {
+    let mut a = a.split('.');
+    let mut b = b.split('.');
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => {
+                let order = match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(x), Ok(y)) => x.cmp(&y),
+                    (Ok(_), Err(_)) => Ordering::Less,
+                    (Err(_), Ok(_)) => Ordering::Greater,
+                    (Err(_), Err(_)) => x.cmp(y),
+                };
+                if order != Ordering::Equal {
+                    return order;
+                }
+            }
+        }
     }
 }
 

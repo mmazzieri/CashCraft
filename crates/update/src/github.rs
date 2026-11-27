@@ -66,7 +66,9 @@ pub fn is_file_name(name: &str) -> bool {
 }
 
 /// The newest release of `project`'s repository, when GitHub says there is one this build could
-/// run. `pre_releases`: the running build is a pre-release itself. Blocks for ten seconds at most.
+/// run. GitHub's latest release is never a pre-release, so a build is only ever told of a release
+/// (`pre_releases`, the running build is a pre-release itself, only lets one through that its tag
+/// alone calls a pre-release). Blocks for ten seconds at most.
 pub fn latest(project: &Project, pre_releases: bool) -> Result<Release, Problem> {
     let (owner, repo) = owner_and_repo(project.repository).ok_or(Problem::BadAnswer)?;
     let url = format!("{API}/repos/{owner}/{repo}/releases/latest");

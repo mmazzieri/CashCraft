@@ -258,16 +258,19 @@ pub fn msiexec_repair(msi: &Path, log: &Path) -> Run {
 }
 
 /// Wait at most `most` for the program file at `exe` to be free: no process is running it any
-/// more (Windows refuses to open a running program for writing). The lock the program holds is
-/// let go a moment before the process has gone, and an installer started in that moment finds the
-/// program in use. Whether it came free (or is not there).
+/// more. The lock the program holds is let go a moment before the process has gone, and an
+/// installer started in that moment finds the program in use. Windows answers an open for writing
+/// of a running program with a sharing violation; only that answer means "still running" (a
+/// program the user may not write, installed for the whole computer, is refused for another
+/// reason, and is free). Whether it came free (or is not there).
 pub fn wait_until_free(exe: &Path, most: Duration) -> bool {
+    /// ERROR_SHARING_VIOLATION.
+    const IN_USE: i32 = 32;
     let start = Instant::now();
     loop {
         match fs::OpenOptions::new().write(true).open(exe) {
-            Ok(_) => return true,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return true,
-            Err(_) => {}
+            Err(e) if cfg!(windows) && e.raw_os_error() == Some(IN_USE) => {}
+            _ => return true,
         }
         if start.elapsed() > most {
             return false;
@@ -286,25 +289,32 @@ pub struct Job {
     /// is done, and started again when `restart`.
     pub exe: PathBuf,
     pub restart: bool,
+    /// What the program is started again with: the arguments it was started with.
+    pub restart_args: Vec<OsString>,
 }
+
+/// Most arguments the program is started again with.
+const MOST_RESTART_ARGS: usize = 16;
 
 impl Job {
     /// The arguments it is started with.
     pub fn args(&self) -> Vec<OsString> {
-        vec![
+        let mut args: Vec<OsString> = vec![
             FINISH_UPDATE.into(),
             self.msi.clone().into_os_string(),
             hex(&self.sha256).into(),
             if self.per_user { "user" } else { "machine" }.into(),
             self.exe.clone().into_os_string(),
             if self.restart { "restart" } else { "stay" }.into(),
-        ]
+        ];
+        args.extend(self.restart_args.iter().take(MOST_RESTART_ARGS).cloned());
+        args
     }
 
     /// The job its arguments (after the program's name) say, when they say one.
     pub fn parse(args: &[OsString]) -> Option<Job> {
         let text = |i: usize| args.get(i).and_then(|a| a.to_str());
-        if text(0) != Some(FINISH_UPDATE) || args.len() != 6 {
+        if text(0) != Some(FINISH_UPDATE) || args.len() < 6 || args.len() > 6 + MOST_RESTART_ARGS {
             return None;
         }
         let per_user = match text(3)? {
@@ -323,6 +333,7 @@ impl Job {
             per_user,
             exe: PathBuf::from(args.get(4)?),
             restart,
+            restart_args: args.get(6..).unwrap_or_default().to_vec(),
         };
         let named = job.msi.file_name().and_then(OsStr::to_str).is_some_and(is_file_name);
         let msi = named && job.msi.is_absolute() && job.msi.extension() == Some(OsStr::new("msi"));
@@ -336,15 +347,17 @@ impl Job {
 /// the process's exit code.
 pub fn finish(job: &Job, folders: &Folders) -> i32 {
     let started = Instant::now();
-    let _ = wait_for_lock(folders, WAIT_FOR_OLD);
-    let _ = wait_until_free(&job.exe, WAIT_FOR_OLD.saturating_sub(started.elapsed()));
-    let installed = install_msi(job, folders, &mut |run| run.wait(), &|p| p.is_file());
+    // While the program still runs nothing is installed: the download stays for another time,
+    // and the version before says so at its next start.
+    let gone = wait_for_lock(folders, WAIT_FOR_OLD)
+        && wait_until_free(&job.exe, WAIT_FOR_OLD.saturating_sub(started.elapsed()));
+    let installed = gone && install_msi(job, folders, &mut |run| run.wait(), &|p| p.is_file());
     if installed {
         let _ = fs::remove_file(&job.msi);
     }
     // Never started when it isn't there: Windows would only say it can't be found.
     if job.restart && job.exe.is_file() {
-        let _ = Run { program: job.exe.clone(), args: Vec::new() }.spawn_detached();
+        let _ = Run { program: job.exe.clone(), args: job.restart_args.clone() }.spawn_detached();
     }
     if installed { 0 } else { 1 }
 }
@@ -365,14 +378,24 @@ fn install_msi(
     if installed && !present(&job.exe) {
         installed = done(run(&msiexec_repair(&handed.path, &folders.helper().join("repair.log")))) && present(&job.exe);
     }
+    let kept = handed.path.clone();
     drop(handed);
+    // The source of the version installed before goes only once this one is in its place.
+    if installed && let Ok(list) = fs::read_dir(folders.source()) {
+        for entry in list.flatten().take(100) {
+            if entry.path() != kept {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
     installed
 }
 
-/// A checked file handed to Windows Installer: copied into the source folder (whatever else was
-/// there goes: it was the source of the version before), checked once more by its SHA-256 as it is
-/// opened, and held open (shared for reading only, on Windows) until the installer is done with
-/// it. The copy stays, as the source Windows Installer repairs the installation from.
+/// A checked file handed to Windows Installer: copied into the source folder, beside the source
+/// of the version installed now (removed once this one is installed), checked once more by its
+/// SHA-256 as it is opened, and held open (shared for reading only, on Windows) until the
+/// installer is done with it. The copy stays, as the source Windows Installer repairs the
+/// installation from.
 struct Handed {
     path: PathBuf,
     held: Option<File>,
@@ -386,11 +409,6 @@ impl Handed {
             .filter(|n| is_file_name(n))
             .ok_or_else(|| io::Error::other("no name"))?;
         fs::create_dir_all(within)?;
-        if let Ok(list) = fs::read_dir(within) {
-            for entry in list.flatten().take(100) {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
         let mut handed = Handed { path: within.join(name), held: None };
         fs::copy(file, &handed.path)?;
         let mut held = Handed::open(&handed.path)?;
@@ -432,6 +450,7 @@ pub fn on_exit(
     running: &str,
     backup: Option<PathBuf>,
     restart: bool,
+    restart_args: Vec<OsString>,
 ) -> Result<(), String> {
     let Install::Msi { per_user } = install else { return Err("this copy doesn't update itself".into()) };
     if sha256(&verified.path) != Some(verified.sha256) {
@@ -441,7 +460,8 @@ pub fn on_exit(
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     write_record(folders, &Record { from: running.into(), to: verified.version.to_string(), backup })
         .map_err(|e| e.kind().to_string())?;
-    let job = Job { msi: verified.path.clone(), sha256: verified.sha256, per_user, exe: exe.clone(), restart };
+    let job =
+        Job { msi: verified.path.clone(), sha256: verified.sha256, per_user, exe: exe.clone(), restart, restart_args };
     let dir = folders.helper().join("program");
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

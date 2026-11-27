@@ -85,7 +85,15 @@ fn versions_are_read_strictly_and_ordered() {
     for bad in ["", "1.2", "1.2.3.4", "01.2.3", "1.2.3+b", "1.2.3-", "latest", " 1.2.3"] {
         assert_eq!(Version::parse(bad), None, "{bad:?}");
     }
-    for (newer, older) in [("0.4.0", "0.3.9"), ("0.10.0", "0.9.0"), ("0.4.0", "0.4.0-beta.1")] {
+    for (newer, older) in [
+        ("0.4.0", "0.3.9"),
+        ("0.10.0", "0.9.0"),
+        ("0.4.0", "0.4.0-beta.1"),
+        ("0.4.0-beta.10", "0.4.0-beta.2"),
+        ("0.4.0-beta", "0.4.0-alpha.1"),
+        ("0.4.0-alpha.1", "0.4.0-alpha"),
+        ("0.4.0-rc", "0.4.0-7"),
+    ] {
         assert!(v(newer).is_newer_than(&v(older)) && !v(older).is_newer_than(&v(newer)));
     }
     assert!(!v("0.4.0").is_newer_than(&v("v0.4.0")));
@@ -216,12 +224,17 @@ fn only_an_msi_copy_updates_itself_in_the_scope_it_was_installed_in() {
 fn the_installer_s_job_goes_through_its_arguments_and_nothing_else_is_one() {
     let msi = std::env::temp_dir().join(MSI);
     let exe = std::env::temp_dir().join("example.exe");
-    let job = Job { msi: msi.clone(), sha256: [7; 32], per_user: true, exe: exe.clone(), restart: true };
+    let restart_args = vec![OsString::from("--db"), OsString::from("C:\\data\\books.db")];
+    let job = Job { msi: msi.clone(), sha256: [7; 32], per_user: true, exe: exe.clone(), restart: true, restart_args };
     let mut args = job.args();
     assert_eq!(Job::parse(&args), Some(job.clone()));
+    // The program is started again with what it was started with, up to a point.
+    args.extend((0..20).map(|i| OsString::from(format!("a{i}"))));
+    assert_eq!(Job::parse(&args), None);
+    let mut args = job.args();
     let stay = Job { restart: false, ..job.clone() };
     assert_eq!(Job::parse(&stay.args()), Some(stay));
-    args.push("more".into());
+    args.truncate(5);
     assert_eq!(Job::parse(&args), None);
     let bad = |i: usize, with: &str| {
         let mut a = job.args();
@@ -245,7 +258,14 @@ fn windows_installer_is_handed_a_checked_copy_in_the_right_scope() {
     std::fs::write(&msi, b"the installer").unwrap();
     let sha: [u8; 32] = Sha256::digest(b"the installer").into();
     let mut seen = Vec::new();
-    let job = Job { msi: msi.clone(), sha256: sha, per_user: true, exe: dir.join("example.exe"), restart: false };
+    let job = Job {
+        msi: msi.clone(),
+        sha256: sha,
+        per_user: true,
+        exe: dir.join("example.exe"),
+        restart: false,
+        restart_args: Vec::new(),
+    };
     let there = |_: &Path| true;
     let ok = apply::install_msi_with(
         &job,
@@ -316,6 +336,13 @@ fn windows_installer_is_handed_a_checked_copy_in_the_right_scope() {
         &|_| false,
     ));
     assert_eq!(runs.borrow().len(), 2, "one repair, not more");
+    // The source of the version installed before stays until this one is in its place.
+    let old = dir.join("updates").join("source").join("example-0.4.0-windows-x64.msi");
+    std::fs::write(&old, b"old").unwrap();
+    assert!(!apply::install_msi_with(&job, &folders, &mut |_| Some(1603), &there));
+    assert!(old.exists());
+    assert!(apply::install_msi_with(&job, &folders, &mut |_| Some(0), &there));
+    assert!(!old.exists());
 }
 
 #[test]
@@ -327,7 +354,7 @@ fn the_next_start_says_once_what_came_of_the_update() {
     std::fs::write(&msi, b"x").unwrap();
     let verified = Verified { version: v("0.5.0"), path: msi.clone(), sha256: Sha256::digest(b"x").into() };
     // Not a copy that updates itself: nothing is recorded or started.
-    assert!(apply::on_exit(&folders, Install::NoticeOnly, &verified, "0.4.0", None, false).is_err());
+    assert!(apply::on_exit(&folders, Install::NoticeOnly, &verified, "0.4.0", None, false, Vec::new()).is_err());
     assert_eq!(apply::at_start(&folders, "0.4.0"), None);
     assert!(msi.exists(), "a download newer than the running version is kept");
     // A record as on_exit writes it, read by the new version and by the old one.

@@ -320,7 +320,7 @@ impl App {
     /// The updates' part of the status bar, drawn right to left: whether there is one.
     pub(crate) fn updates_status(&mut self, ui: &mut Ui) -> bool {
         let Some(u) = self.updates.as_mut() else { return false };
-        if let Some(ready) = &u.ready {
+        if let Some(ready) = u.ready.as_ref().filter(|_| u.mode() == Mode::Install) {
             if primary_button(ui, tr("Restart to update")).clicked() {
                 u.restart = true;
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -367,20 +367,24 @@ impl App {
             });
         });
         // On a line of its own, under the choice: the sidebar is too narrow for both side by side.
-        if mode != Mode::Off {
-            ui.horizontal(|ui| {
-                crate::views::setting_label(ui, "");
-                let busy = u.checking();
-                let text = format!("⟳ {}", tr("Check now"));
-                if ui.add_enabled(!busy, egui::Button::new(text).small()).clicked() {
-                    u.check_now(&ctx);
-                }
-            });
-        }
+        ui.horizontal(|ui| {
+            crate::views::setting_label(ui, "");
+            let busy = u.checking();
+            let text = format!("⟳ {}", tr("Check now"));
+            if ui.add_enabled(!busy, egui::Button::new(text).small()).clicked() {
+                u.check_now(&ctx);
+            }
+        });
         if mode != u.mode() {
             said = u.choose(mode);
             if mode != Mode::Off && u.settings.due(cashcraft_update::now()) {
                 u.check(&ctx, false);
+            } else if mode == Mode::Install
+                && u.ready.is_none()
+                && let Some(release) = u.newer.clone()
+            {
+                // Found by today's check while the owner wanted only to be told.
+                u.download(&ctx, release);
             }
         }
         if let Some(s) = said {
@@ -392,10 +396,10 @@ impl App {
     /// data file has been made, and started again when Restart to update was pressed.
     pub(crate) fn updates_on_exit(&mut self) {
         let Some(u) = self.updates.as_mut() else { return };
-        let Some(ready) = u.ready.take() else { return };
         if u.mode() != Mode::Install {
             return;
         }
+        let Some(ready) = u.ready.take() else { return };
         let backups = u.folders.root().join("backups");
         let backup = match self.db.path {
             Some(_) => match self.db.copy_into(&backups, &format!("before-{}", ready.version)) {
@@ -407,7 +411,15 @@ impl App {
             },
             None => None,
         };
-        if let Err(e) = apply::on_exit(&u.folders, u.install, &ready, env!("CARGO_PKG_VERSION"), backup, u.restart) {
+        if let Err(e) = apply::on_exit(
+            &u.folders,
+            u.install,
+            &ready,
+            env!("CARGO_PKG_VERSION"),
+            backup,
+            u.restart,
+            std::env::args_os().skip(1).collect(),
+        ) {
             eprintln!("CashCraft update: {e}");
         }
     }
