@@ -3,6 +3,7 @@
 
 use crate::cards::CARD_SCHEMA;
 use crate::db::{Cents, Db, RENAMED, SCHEMA, SCHEMA_VERSION};
+use crate::envelopes::ENVELOPE_SCHEMA;
 use crate::i18n::{tr, trf};
 use crate::layouts::LAYOUT_SCHEMA;
 use crate::ledger::{ADDED, CARD_ROW, Draft, LEDGER_SCHEMA, Line, OPENING, UNCATEGORIZED, normalize_currency, too_big};
@@ -136,7 +137,8 @@ impl Db {
         // Format 4 had the statements, without the marks.
         let sound_cards = marked && cards && !self.has_column("card_statements", "payment_joined")?;
         let ruled = sound_cards && self.has_table("transaction_rules")?;
-        let current = ruled && renamed && self.has_table("reconciliations")? && self.has_table("posting_ids")?;
+        let ninth = ruled && renamed && self.has_table("reconciliations")? && self.has_table("posting_ids")?;
+        let current = ninth && self.has_table("envelope_changes")?;
         if current && !self.has_leftovers()? {
             return self.drop_leftovers();
         }
@@ -144,6 +146,7 @@ impl Db {
         let from = match (again, dated, current) {
             (false, _, _) => 1,
             (_, false, _) => 2,
+            (_, _, false) if ninth => 9,
             (_, _, false) if ruled && eighth_table => 8,
             (_, _, false) if seventh => 7,
             (_, _, false) if sound_cards => 6,
@@ -200,6 +203,7 @@ impl Db {
             }
             self.conn.execute_batch(LAYOUT_SCHEMA)?;
             self.conn.execute_batch(POSTING_IDS)?;
+            self.conn.execute_batch(ENVELOPE_SCHEMA)?;
             Ok(())
         })();
         if done.is_err()

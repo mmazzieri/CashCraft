@@ -116,15 +116,15 @@ was opened. It is read and changed as `opening_balance` of the account.
 `trial_balance` (up to a date) lists every balance with equal totals of debits and credits.
 `verify_ledger` checks each entry, posting and account and reports what is wrong; it changes nothing.
 
-## Migration from formats 2 to 8
+## Migration from formats 2 to 9
 
 The table `postings` (`ledger_postings` in format 7, `book_postings` in 8) becomes `journal_postings`, and `category_rules` becomes `transaction_rules`, with the same ids and
 order ([rules.md](rules.md)): a window of an older program that has the file open can neither
 read nor write a posting any more. The columns `date`, `origin`, `other_hashes`, `original_payee`, `original_memo`, `tags` and `rules` and the tables `card_statements`
 ([cards.md](cards.md)) and `csv_layouts` ([import.md](import.md)) are
 added where they are missing, and the dates of sides left alone put right, after a copy as
-`cashcraft.v2-backup.db` (or `v3` to `v8`) with the rules below. Format 9 adds the tables of the reconciliations
-([reconcile.md](reconcile.md)). Lines with an import hash on a card with
+`cashcraft.v2-backup.db` (or `v3` to `v9`) with the rules below. Format 9 adds the tables of the reconciliations
+([reconcile.md](reconcile.md)), format 10 those of the envelopes ([envelopes.md](envelopes.md)). Lines with an import hash on a card with
 statements of format 4 are taken as rows of those statements.
 
 ## Migration from formats 0 and 1

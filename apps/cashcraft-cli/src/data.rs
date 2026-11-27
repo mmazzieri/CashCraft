@@ -137,7 +137,17 @@ pub fn run(home: &Home, path: &Path, asked: Use, cmd: DataCmd, as_json: bool) ->
                     println!("  {}  {}  {}  {}", fmt_date(l.date), l.payee, l.memo, l.amounts());
                 }
             }
-            if d.first.is_empty() && d.second.is_empty() {
+            let envelopes = [
+                (tr("Envelopes only in the data file"), &d.envelopes_first),
+                (tr("Envelopes only in the other file"), &d.envelopes_second),
+            ];
+            for (title, lines) in envelopes.into_iter().filter(|(_, l)| !l.is_empty()) {
+                println!("{title}");
+                for l in lines {
+                    println!("  {l}");
+                }
+            }
+            if d.none_listed() {
                 println!(
                     "{}",
                     if d.others {

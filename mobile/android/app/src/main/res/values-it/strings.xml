@@ -38,4 +38,11 @@
     <string name="offline">Il file condiviso non è raggiungibile. Le modifiche restano sul telefono e verranno scritte al prossimo tentativo.</string>
     <string name="in_use">Il file è aperto su un computer. Chiudi lì CashCraft per scrivere dal telefono.</string>
     <string name="conflict">Le modifiche del telefono non potevano entrare nel file condiviso, cambiato altrove o non raggiungibile. Sono in %1$s.</string>
+    <string name="to_be_assigned">Da assegnare</string>
+    <string name="every_euro">Ogni euro ha un compito</string>
+    <string name="over_assigned">È assegnato più di quanto c\'è</string>
+    <string name="still_to_assign">Ancora da assegnare</string>
+    <string name="assigned_spent">%1$s assegnati, %2$s spesi</string>
+    <string name="available_now">Disponibile: %1$s</string>
+    <string name="assigned_this_month">Assegnato questo mese</string>
 </resources>

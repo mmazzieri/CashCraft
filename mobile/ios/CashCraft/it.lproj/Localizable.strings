@@ -35,3 +35,10 @@
 "Name" = "Nome";
 "Opening balance" = "Saldo iniziale";
 "Amount each month" = "Importo al mese";
+"To be assigned" = "Da assegnare";
+"Every euro has a job" = "Ogni euro ha un compito";
+"More is assigned than there is" = "È assegnato più di quanto c'è";
+"Still to assign" = "Ancora da assegnare";
+"%@ assigned, %@ spent" = "%@ assegnati, %@ spesi";
+"Available: %@" = "Disponibile: %@";
+"Assigned this month" = "Assegnato questo mese";

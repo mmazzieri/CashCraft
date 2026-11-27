@@ -38,4 +38,11 @@
     <string name="offline">The shared file could not be reached. Changes are kept on the phone and written at the next try.</string>
     <string name="in_use">The file is open on a computer. Close CashCraft there to write from the phone.</string>
     <string name="conflict">The phone\'s changes could not be put in the shared file, which was changed elsewhere or cannot be reached. They are in %1$s.</string>
+    <string name="to_be_assigned">To be assigned</string>
+    <string name="every_euro">Every euro has a job</string>
+    <string name="over_assigned">More is assigned than there is</string>
+    <string name="still_to_assign">Still to assign</string>
+    <string name="assigned_spent">%1$s assigned, %2$s spent</string>
+    <string name="available_now">Available: %1$s</string>
+    <string name="assigned_this_month">Assigned this month</string>
 </resources>

@@ -752,6 +752,8 @@ pub struct App {
     pub rules: Option<(Vec<Rule>, Option<LastRun>)>,
     /// The screen of the reconciliation of an account.
     pub reconcile: Option<crate::reconcile::ReconcileState>,
+    /// The budget made of envelopes.
+    pub envelopes: crate::envelopes::EnvelopeState,
     pub new_cat: (String, bool, Option<i64>),
     pub rename_cat: Option<(i64, String)>,
     pub dash: Option<Dash>,
@@ -922,6 +924,7 @@ impl App {
             new_budget: (None, String::new()),
             rules: None,
             reconcile: None,
+            envelopes: Default::default(),
             new_cat: (String::new(), false, None),
             rename_cat: None,
             dash: None,
@@ -949,7 +952,7 @@ impl App {
                 "register" | "movimenti" | "selected" | "transfer" => View::Register(first),
                 "all" | "tutti" => View::Register(None),
                 "reports" | "report" => View::Reports,
-                "budget" => View::Budget,
+                "budget" | "envelopes" | "buste" => View::Budget,
                 "categories" | "categorie" => View::Categories,
                 "rules" | "regole" => View::Rules,
                 "scheduled" | "pianificati" => View::Scheduled,
@@ -976,12 +979,22 @@ impl App {
             if v == "entry" {
                 app.open_entry();
             }
+            app.sample_envelopes(&v);
             if v == "journal" {
                 let all = or_report(app.db.ledger_accounts(), &mut app.toast);
                 app.journal = all.first().map(|l| (l.id, 0));
             }
         }
         app
+    }
+
+    /// For the screenshot of the envelopes: the sample budgets in memory become envelopes, as a file of the user's
+    /// would. A real file keeps its mode.
+    pub fn sample_envelopes(&mut self, start_view: &str) {
+        if (start_view == "envelopes" || start_view == "buste") && self.db.path.is_none() {
+            let r = self.db.set_budget_mode(cashcraft_engine::envelopes::Mode::Envelopes);
+            or_report(r.map(|_| ()), &mut self.toast);
+        }
     }
 
     /// Changes the language of the window, and of the command line on this data file.
@@ -1020,6 +1033,7 @@ impl App {
         if let Some(r) = self.reconcile.as_mut() {
             r.stale = true;
         }
+        self.envelopes.stale = true;
     }
 
     pub fn reload_txs(&mut self) {
@@ -1062,6 +1076,7 @@ impl App {
     pub fn go(&mut self, v: View) {
         if self.view != v {
             self.view = v;
+            self.envelopes.leave();
             self.selected = None;
             if matches!(v, View::Register(_)) {
                 self.reload_txs();
