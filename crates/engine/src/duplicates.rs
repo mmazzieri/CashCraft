@@ -229,7 +229,7 @@ impl Db {
             "SELECT p.id, p.amount, COALESCE(p.date, e.date), p.import_hash, COALESCE(p.other_hashes,''), p.origin,
                     COALESCE(p.payee, e.payee), COALESCE(p.memo, e.memo), p.original_payee, p.original_memo,
                     p.rules
-             FROM book_postings p JOIN entries e ON e.id=p.entry_id
+             FROM journal_postings p JOIN entries e ON e.id=p.entry_id
              WHERE p.ledger_account_id=?1 AND (p.import_hash IS NOT NULL OR p.other_hashes IS NOT NULL)
              ORDER BY p.id",
         )?;
@@ -418,6 +418,24 @@ impl Db {
         Ok(())
     }
 
+    /// Takes back keys that [`Db::add_import_keys`] gave a transaction.
+    pub(crate) fn remove_import_keys(&self, posting: i64, keys: &[&str]) -> Result<()> {
+        let entry = self.entry_of_transaction(posting)?.ok_or_else(|| crate::db::no_transaction(posting))?;
+        let mut d = self.load_draft(entry)?;
+        for l in d.lines.iter_mut().filter(|l| l.id == Some(posting)) {
+            let left: Vec<&str> = l
+                .other_hashes
+                .as_deref()
+                .unwrap_or_default()
+                .split_whitespace()
+                .filter(|k| !keys.contains(k))
+                .collect();
+            l.other_hashes = (!left.is_empty()).then(|| left.join(" "));
+        }
+        self.save_entry(&d)?;
+        Ok(())
+    }
+
     /// The balance of an account in the books at the end of a day.
     pub fn balance_on(&self, account: i64, date: NaiveDate) -> Result<Cents> {
         let all = self.transactions(&TxFilter { account_id: Some(account), ..Default::default() })?;
@@ -427,6 +445,73 @@ impl Db {
         let accounts = self.accounts(true)?;
         Ok(accounts.iter().find(|a| a.id == account).map_or(0, |a| a.opening_balance))
     }
+}
+
+/// What a line of a statement may be, for a reconciliation.
+pub(crate) struct Proposal {
+    /// The transactions it may be, the likeliest first.
+    pub candidates: Vec<i64>,
+    /// The one that the order of an import gives it, for the user to confirm.
+    pub proposed: Option<i64>,
+    /// Same date, amount and payee, and no other line or transaction like it.
+    pub certain: bool,
+}
+
+/// Pairs the lines `ask` of a statement with transactions of the books of the same amount, up to five days apart,
+/// in the order of an import ([`Planner::pair`]); the transactions typed by hand too. Nothing is chosen: each pair
+/// is a proposal.
+pub(crate) fn propose(rows: &[ParsedRow], ask: &[usize], books: &[Transaction]) -> HashMap<usize, Proposal> {
+    let imported = books
+        .iter()
+        .map(|t| Imported {
+            id: t.id,
+            date: t.date,
+            amount: t.amount,
+            texts: [
+                norm(t.source_payee.as_deref().unwrap_or(&t.payee)),
+                norm(t.source_memo.as_deref().unwrap_or(&t.memo)),
+            ],
+            keys: Vec::new(),
+            formats: Vec::new(),
+        })
+        .collect();
+    let planner = Planner::new(imported, rows);
+    let mut free = [Free::default(), Free::default()];
+    {
+        let [_, far] = &mut free;
+        for (at, t) in planner.imported.iter().enumerate() {
+            far.add(at, t);
+        }
+    }
+    let pairs = planner.pair(ask, &HashSet::new(), &free);
+    let mut rows_like: HashMap<(Cents, NaiveDate, &str), usize> = HashMap::new();
+    for i in ask {
+        if let (Some(r), Some(t)) = (rows.get(*i), planner.texts.get(*i)) {
+            *rows_like.entry((r.amount, r.date, t)).or_default() += 1;
+        }
+    }
+    let id_of = |at: &usize| planner.imported.get(*at).map(|t| t.id);
+    let mut out = HashMap::new();
+    for i in ask {
+        let (Some(row), Some(text)) = (rows.get(*i), planner.texts.get(*i)) else { continue };
+        let mut near = planner.candidates(*i, row, &free);
+        let pair = pairs.get(i).copied();
+        if let Some(at) = pair
+            && !near.contains(&at)
+        {
+            near.insert(0, at);
+        }
+        near.truncate(SHOWN);
+        let like = |f: &Free| f.by_text.get(&(row.amount, row.date, text.clone())).map_or(0, Vec::len);
+        let certain = pair.is_some_and(|at| planner.is_exact(*i, row, at))
+            && rows_like.get(&(row.amount, row.date, text.as_str())) == Some(&1)
+            && free.iter().map(like).sum::<usize>() == 1;
+        let candidates: Vec<i64> = near.iter().filter_map(id_of).collect();
+        if !candidates.is_empty() {
+            out.insert(*i, Proposal { candidates, proposed: pair.as_ref().and_then(id_of), certain });
+        }
+    }
+    out
 }
 
 struct Planner<'a> {

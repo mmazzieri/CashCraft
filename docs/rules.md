@@ -50,7 +50,7 @@ with another statement. When a rule takes its place, because the user asked or o
   ever filled, when they are empty and were not emptied by hand. Transfers, splits and entries on accounts of the chart
   are never touched. The preview has a token: a run that is given it is refused when the changes would be others by now.
 
-The transaction keeps the ids of the rules that set its category, payee and tags (`book_postings.rules`). The mark of the category
+The transaction keeps the ids of the rules that set its category, payee and tags (`journal_postings.rules`). The mark of the category
 counts only while that is its category, and goes when a category is chosen by hand, even the same one. The categories of
 files older than format 8 count as set by hand.
 

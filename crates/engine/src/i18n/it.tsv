@@ -870,6 +870,147 @@ Undo the rules?	Annullare le regole?
 {n} rules that give it go too.	Si cancellano anche {n} regole che la assegnano.
 {n} rule for one account goes too.	Si cancella anche {n} regola limitata a un conto.
 {n} rules for one account go too.	Si cancellano anche {n} regole limitate a un conto.
+"{name}" is not a credit card	"{name}" non è una carta di credito
+Add to the books	Aggiungi ai registri
+Added to the books	Aggiunto ai registri
+Arrows up and down choose a row · Space or Enter: match, confirm, add or tick it · Delete: undo its match · ⌘ Enter: finish	Frecce su e giù: scegli una riga · Spazio o Invio: abbina, conferma, aggiungi o spunta · Canc: annulla l'abbinamento · ⌘ Invio: concludi
+Balance on the statement	Saldo sull'estratto conto
+Change it and undo its reconciliation	Modifica e annulla la riconciliazione
+Change reconciled transactions?	Modificare movimenti riconciliati?
+Check the account against a bank statement (⌘R)	Confronta il conto con l'estratto della banca (⌘R)
+Confirm	Conferma
+Debt on the statement	Debito sull'estratto conto
+Difference	Differenza
+Discard	Scarta
+In the books	Nei registri
+In the books, on no line	Nei registri, su nessuna riga
+In the books, on no line of the statement	Nei registri, su nessuna riga dell'estratto
+Its balance against the books, line by line	Il suo saldo confrontato con i registri, riga per riga
+Its reconciliation will no longer count it and shows as broken until it is done again. Notes, payee, category and tags can be changed without this.	La sua riconciliazione non lo conterà più e risulterà da rifare. Note, beneficiario, categoria ed etichette si cambiano senza questo.
+Line	Riga
+Lines of the statement	Righe dell'estratto conto
+Lines of the statement ({n} to match)	Righe dell'estratto conto ({n} da abbinare)
+Match	Abbina
+Match all exact ones ({n}) (⌘E)	Abbina tutte quelle esatte ({n}) (⌘E)
+New reconciliation	Nuova riconciliazione
+None.	Nessuno.
+Reconcile	Riconcilia
+Reconciled: {n} transaction is locked	Riconciliato: {n} movimento è bloccato
+Reconciled: {n} transactions are locked	Riconciliato: {n} movimenti sono bloccati
+Reconciliation {id} of {account} on {date}: {status}	Riconciliazione {id} di {account} al {date}: {status}
+Reconciliations	Riconciliazioni
+Start reconciling	Inizia la riconciliazione
+Statement balance	Saldo dell'estratto
+Statement date	Data dell'estratto
+Statement of {date}. Started {when}.	Estratto del {date}. Iniziata il {when}.
+Status	Stato
+The lines whose own imported transaction is in the books.	Le righe il cui movimento importato è già nei registri.
+The statement states {amount} ({label}): check it.	L'estratto indica {amount} ({label}): controllalo.
+This changes a transaction that was checked against a bank statement:	Così cambia un movimento verificato su un estratto conto:
+This changes transactions that were checked against a bank statement:	Così cambiano movimenti verificati su un estratto conto:
+Tick those the statement shows: the ticked ones count in the balance of the books.	Spunta quelli presenti sull'estratto: gli spuntati contano nel saldo dei registri.
+To match the lines of a statement, import it (⌘I) and choose to reconcile at the end.	Per abbinare le righe di un estratto, importalo (⌘I) e scegli di riconciliare alla fine.
+Transactions	Movimenti
+Transactions up to the statement date	Movimenti fino alla data dell'estratto
+Type the day and the balance of the bank statement, then tick the transactions it shows until the difference is zero.	Scrivi la data e il saldo dell'estratto conto, poi spunta i movimenti che riporta finché la differenza è zero.
+Undo it	Annullala
+Undo the match	Annulla l'abbinamento
+a reconciliation has at most {n} lines	una riconciliazione ha al massimo {n} righe
+broken: to be done again	da rifare
+debt at the end of the statement	debito alla fine dell'estratto
+difference {amount}	differenza {amount}
+done again later	rifatta in seguito
+finished	conclusa
+its own transaction {id}: to match (--exact)	il suo movimento {id}: da abbinare (--exact)
+its own: {line}	il suo: {line}
+line {n} is in the books already: match it	la riga {n} è già nei registri: abbinala
+line {n} is matched already	la riga {n} è già abbinata
+line {n} is not matched	la riga {n} non è abbinata
+line {n} is not on the statement	la riga {n} non è sull'estratto conto
+matched with {id}	abbinata a {id}
+missing in the books	manca nei registri
+no line has its own transaction to match	nessuna riga ha un suo movimento da abbinare
+only the last reconciliation of an account can be undone	si annulla solo l'ultima riconciliazione di un conto
+open	aperta
+or {ids}	o {ids}
+perhaps {id}	forse {id}
+perhaps {line}	forse {line}
+reconciled before ({id})	già riconciliato ({id})
+reconciled before as {id}	già riconciliato come {id}
+reconciled: {n} transaction is locked	riconciliato: {n} movimento è bloccato
+reconciled: {n} transactions are locked	riconciliato: {n} movimenti sono bloccati
+reconciliation started	riconciliazione iniziata
+reconciliation {id} is not open	la riconciliazione {id} non è aperta
+reconciliation {id} is undone already	la riconciliazione {id} è già annullata
+reconciliation {id} not found	riconciliazione {id} non trovata
+the account is being reconciled already (reconciliation {id}): finish or undo it first	il conto è già in riconciliazione ({id}): prima concludila o annullala
+the account is being reconciled: finish or undo that reconciliation first	il conto è in riconciliazione: prima concludi o annulla quella riconciliazione
+the account was reconciled up to {date}: a new reconciliation starts on that day or later	il conto è riconciliato fino al {date}: una nuova riconciliazione parte da quel giorno o dopo
+the file states {amount} ({label})	il file indica {amount} ({label})
+the parameter "{name}" must have numbers	il parametro "{name}" deve avere dei numeri
+the parameter "{name}" must have pairs such as 3=41	il parametro "{name}" deve avere coppie come 3=41
+the reconciliation was discarded	la riconciliazione è stata scartata
+the reconciliation was undone: its transactions are no longer reconciled	la riconciliazione è stata annullata: i suoi movimenti non sono più riconciliati
+the statement and the books differ by {amount}: the reconciliation cannot be finished	estratto e registri differiscono di {amount}: la riconciliazione non si può concludere
+the statement is in {statement} and the account is in {account}	l'estratto è in {statement} e il conto in {account}
+transaction {ids} is reconciled: changing its amount, date or account, unclearing or deleting it undoes its reconciliation	il movimento {ids} è riconciliato: cambiarne importo, data o conto, togliere la verifica o eliminarlo annulla la sua riconciliazione
+transaction {id} has another amount than line {n}	il movimento {id} ha un importo diverso dalla riga {n}
+transaction {id} is dated after the statement	il movimento {id} è datato dopo l'estratto
+transaction {id} is matched with another line	il movimento {id} è abbinato a un'altra riga
+transaction {id} is not of the account	il movimento {id} non è del conto
+transaction {id} is reconciled already	il movimento {id} è già riconciliato
+transactions {ids} are reconciled: changing their amount, date or account, unclearing or deleting them undoes their reconciliation	i movimenti {ids} sono riconciliati: cambiarne importo, data o conto, togliere la verifica o eliminarli annulla la loro riconciliazione
+undone	annullata
+{error}; ask the user, then pass unreconcile: true	{error}; chiedi all'utente, poi passa unreconcile: true
+{n} line added to the books	{n} riga aggiunta ai registri
+{n} line after the statement date was left out	{n} riga successiva alla data dell'estratto è stata esclusa
+{n} line matched	{n} riga abbinata
+{n} line of the statement will be matched with the transactions.	{n} riga dell'estratto sarà abbinata ai movimenti.
+{n} lines added to the books	{n} righe aggiunte ai registri
+{n} lines after the statement date were left out	{n} righe successive alla data dell'estratto sono state escluse
+{n} lines matched	{n} righe abbinate
+{n} lines of the statement will be matched with the transactions.	{n} righe dell'estratto saranno abbinate ai movimenti.
+{n} match undone	{n} abbinamento annullato
+{n} matches undone	{n} abbinamenti annullati
+{n} transaction cleared	{n} movimento verificato
+{n} transaction it added stays	{n} movimento che ha aggiunto resta
+{n} transaction no longer cleared	{n} movimento non più verificato
+{n} transactions cleared	{n} movimenti verificati
+{n} transactions it added stay	{n} movimenti che ha aggiunto restano
+{n} transactions no longer cleared	{n} movimenti non più verificati
+☰ Transactions	☰ Movimenti
+✔ Finish	✔ Concludi
+🔒 Reconcile	🔒 Riconcilia
+🔒 Reconcile with this statement	🔒 Riconcilia con questo estratto
+Every line of the statement is matched or added first.	Prima ogni riga dell'estratto va abbinata o aggiunta.
+{n} line of the statement is not matched: match it, or add it to the books	{n} riga dell'estratto non è abbinata: abbinala o aggiungila ai registri
+{n} lines of the statement are not matched: match them, or add them to the books	{n} righe dell'estratto non sono abbinate: abbinale o aggiungile ai registri
+Balance of the books	Saldo dei registri
+Card payment unlinked	Pagamento della carta scollegato
+Discard the reconciliation?	Scartare la riconciliazione?
+Finish the reconciliation?	Concludere la riconciliazione?
+Its matches and ticks are undone; the transactions it added stay.	I suoi abbinamenti e le spunte si annullano; i movimenti che ha aggiunto restano.
+Its transactions are locked: changing their amount, date or account will ask first.	I suoi movimenti si bloccano: cambiarne importo, data o conto chiederà prima conferma.
+Its transactions are no longer reconciled; they stay cleared.	I suoi movimenti non sono più riconciliati; restano verificati.
+The bank's line now pays the card statement	La riga della banca ora paga l'estratto della carta
+This changes the opening balance or the currency of an account that was reconciled:	Così cambiano il saldo iniziale o la valuta di un conto riconciliato:
+Undo the reconciliation?	Annullare la riconciliazione?
+an available balance may count what is not booked yet, or a credit line: check it against the statement	un saldo disponibile può contare ciò che non è ancora contabilizzato, o un fido: controllalo sull'estratto
+the account has finished reconciliations: changing its opening balance or currency makes them to be done again	il conto ha riconciliazioni concluse: cambiarne saldo iniziale o valuta le rende da rifare
+ticked	spuntato
+transaction {id} changed since it was ticked or matched: tick or match it again	il movimento {id} è cambiato da quando è stato spuntato o abbinato: spuntalo o abbinalo di nuovo
+transaction {id} is in this reconciliation already	il movimento {id} è già in questa riconciliazione
+transaction {id} is matched with a line: undo the match	il movimento {id} è abbinato a una riga: annulla l'abbinamento
+transaction {id} is no longer that of line {n}: match it again	il movimento {id} non è più quello della riga {n}: abbinalo di nuovo
+transaction {id} is not ticked	il movimento {id} non è spuntato
+{n} cleared transaction ticked	{n} movimento verificato spuntato
+{n} cleared transactions ticked	{n} movimenti verificati spuntati
+{n} line after the statement date will be left out.	{n} riga successiva alla data dell'estratto sarà esclusa.
+{n} line that the bank takes back was left out	{n} riga che la banca annulla è stata esclusa
+{n} lines after the statement date will be left out.	{n} righe successive alla data dell'estratto saranno escluse.
+{n} lines that the bank takes back were left out	{n} righe che la banca annulla sono state escluse
+write the balance printed on the bank statement	scrivi il saldo stampato sull'estratto conto
+as on the statement	come sull'estratto
 Account {digits}	Conto {digits}
 The new account starts with the opening balance of the list, {opening}.	Il nuovo conto parte dal saldo iniziale della lista, {opening}.
 No account has the IBAN {iban}: a new one is made, with the opening balance of the list, {opening}. To import into an account that is there, leave the name empty.	Nessun conto ha l'IBAN {iban}: ne viene creato uno nuovo, con il saldo iniziale della lista, {opening}. Per importare in un conto esistente, lascia vuoto il nome.

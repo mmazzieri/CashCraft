@@ -7,11 +7,13 @@ use crate::i18n::{Lang, lang, tr, trf, trn, with_lang};
 use crate::layouts::LAYOUT_SCHEMA;
 use crate::ledger::{self, COUNTED, Draft, LEDGER_SCHEMA, Line, PROFIT_AND_LOSS, UNCATEGORIZED};
 use crate::money::checked_total;
+use crate::reconcile::{POSTING_IDS, RECONCILE_SCHEMA};
 use crate::rules::{Marks, RULE_SCHEMA, RuleUse, Ruleset, Subject, has_tag, stored_tags};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{Datelike, Days, Local, Months, NaiveDate};
 use rusqlite::{Connection, OptionalExtension, Transaction as SqlTransaction, TransactionBehavior, params};
 use serde::Serialize;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -140,6 +142,8 @@ pub struct Transaction {
     pub category_id: Option<i64>,
     pub category: String,
     pub cleared: bool,
+    /// Checked against a statement by a reconciliation that is finished: see `docs/reconcile.md`.
+    pub reconciled: bool,
     pub transfer_peer: Option<i64>,
     /// A side of a transfer that was added and not seen on a statement yet.
     pub added: bool,
@@ -318,6 +322,11 @@ pub struct Db {
     pub path: Option<PathBuf>,
     /// Whether the ids of new rows are unlike those of any other computer: see [`Db::new_id`].
     pub(crate) spread_ids: bool,
+    /// The postings that the transaction in progress changes or deletes, with the rows of the reconciliations that
+    /// they agreed with when it touched them first: see [`Db::check_reconciled`].
+    pub(crate) touched: RefCell<HashMap<i64, Vec<i64>>>,
+    /// A change to reconciled transactions undoes their reconciliation instead of being refused.
+    pub(crate) unlocking: Cell<bool>,
 }
 
 /// Version of the data file format, kept in `PRAGMA user_version` (0 is CashCraft 0.1, 1 is 0.2.0 with
@@ -325,8 +334,9 @@ pub struct Db {
 /// released, 5 tells the added sides of transfers, 6 the card statements, 7 the saved columns of CSV
 /// files and the other import keys of a posting, in a table
 /// with another name so that an older program fails to write, 8 the rules with conditions and order, the
-/// tags and the texts of the bank, in tables with other names: see `docs/ledger.md`).
-pub const SCHEMA_VERSION: i64 = 8;
+/// tags and the texts of the bank, in tables with other names, 9 the reconciliations with the bank, with the postings
+/// in a table with another name again: see `docs/ledger.md` and `docs/reconcile.md`).
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// Tables of formats 0 and 1 with their name in 2. The rules have another one since 8. A window of an older program that has the file open
 /// fails at once when it writes to one, instead of doing half of what it was asked.
@@ -423,7 +433,7 @@ impl Db {
             std::fs::create_dir_all(dir).with_context(|| trf("cannot create {path}", &[("path", &dir.display())]))?;
         }
         let conn = Connection::open(path).with_context(|| trf("cannot open {path}", &[("path", &path.display())]))?;
-        let db = Db { conn, path: Some(path.to_path_buf()), spread_ids };
+        let db = Db::new(conn, Some(path.to_path_buf()), spread_ids);
         db.init()?;
         if is_new {
             with_lang(seed, || db.seed_defaults())?;
@@ -431,8 +441,12 @@ impl Db {
         Ok((db, is_new))
     }
 
+    pub(crate) fn new(conn: Connection, path: Option<PathBuf>, spread_ids: bool) -> Db {
+        Db { conn, path, spread_ids, touched: RefCell::default(), unlocking: Cell::new(false) }
+    }
+
     pub fn open_in_memory() -> Result<Db> {
-        let db = Db { conn: Connection::open_in_memory()?, path: None, spread_ids: false };
+        let db = Db::new(Connection::open_in_memory()?, None, false);
         db.init()?;
         db.seed_defaults()?;
         Ok(db)
@@ -469,6 +483,8 @@ impl Db {
                 self.conn.execute_batch(CARD_SCHEMA)?;
                 self.conn.execute_batch(LAYOUT_SCHEMA)?;
                 self.conn.execute_batch(RULE_SCHEMA)?;
+                self.conn.execute_batch(RECONCILE_SCHEMA)?;
+                self.conn.execute_batch(POSTING_IDS)?;
             }
             self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             Ok(())
@@ -614,10 +630,10 @@ impl Db {
     pub fn accounts(&self, include_archived: bool) -> Result<Vec<Account>> {
         let mut st = self.conn.prepare(
             "SELECT a.id, a.name, a.kind, a.currency,
-                    COALESCE((SELECT SUM(p.amount) FROM book_postings p JOIN entries e ON e.id=p.entry_id
+                    COALESCE((SELECT SUM(p.amount) FROM journal_postings p JOIN entries e ON e.id=p.entry_id
                               WHERE p.ledger_account_id=l.id AND e.opening_account_id=a.id),0),
                     a.iban, a.archived,
-                    COALESCE((SELECT SUM(p.amount) FROM book_postings p WHERE p.ledger_account_id=l.id),0)
+                    COALESCE((SELECT SUM(p.amount) FROM journal_postings p WHERE p.ledger_account_id=l.id),0)
              FROM accounts a LEFT JOIN ledger_accounts l ON l.money_account_id=a.id
              ORDER BY a.name COLLATE NOCASE",
         )?;
@@ -831,13 +847,13 @@ impl Db {
         let mut uncategorized: HashSet<i64> = HashSet::new();
         if f.uncategorized {
             let spare = self.system_ledger(UNCATEGORIZED)?;
-            let mut st = self.conn.prepare("SELECT entry_id FROM book_postings WHERE ledger_account_id=?1")?;
+            let mut st = self.conn.prepare("SELECT entry_id FROM journal_postings WHERE ledger_account_id=?1")?;
             uncategorized = st.query_map([spare], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
         }
         let mut entry_categories: HashMap<i64, Vec<i64>> = HashMap::new();
         if f.category_id.is_some() {
             let mut st = self.conn.prepare(
-                "SELECT p.entry_id, l.category_id FROM book_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                "SELECT p.entry_id, l.category_id FROM journal_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
                  WHERE l.category_id IS NOT NULL",
             )?;
             for row in st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))? {
@@ -849,18 +865,19 @@ impl Db {
             Some(a) => self.accounts(true)?.iter().find(|x| x.id == a).map_or(0, |x| x.opening_balance),
             None => 0,
         };
-        let mut sql = String::from(
+        let mut sql = format!(
             "SELECT p.id, a.id, a.name, COALESCE(p.date, e.date), p.amount, COALESCE(p.payee, e.payee), COALESCE(p.memo, e.memo),
                     ol.category_id, p.cleared, o.id, e.id, oa.id, oa.name, ol.system, ol.name, p.origin,
                     p.original_payee, p.original_memo, p.tags, p.rules, ol.id,
-                    p.import_hash, p.other_hashes
-             FROM book_postings p JOIN entries e ON e.id=p.entry_id
+                    p.import_hash, p.other_hashes, {LIVE}
+             FROM journal_postings p JOIN entries e ON e.id=p.entry_id
              JOIN ledger_accounts l ON l.id=p.ledger_account_id JOIN accounts a ON a.id=l.money_account_id
-             LEFT JOIN book_postings o ON o.entry_id=p.entry_id AND o.id<>p.id
-                  AND (SELECT COUNT(*) FROM book_postings x WHERE x.entry_id=p.entry_id)=2
+             LEFT JOIN journal_postings o ON o.entry_id=p.entry_id AND o.id<>p.id
+                  AND (SELECT COUNT(*) FROM journal_postings x WHERE x.entry_id=p.entry_id)=2
              LEFT JOIN ledger_accounts ol ON ol.id=o.ledger_account_id
              LEFT JOIN accounts oa ON oa.id=ol.money_account_id
              WHERE +e.opening_account_id IS NULL",
+            LIVE = crate::reconcile::LIVE
         );
         // The plus keeps away from the index of the opening balances, which has every other entry.
         let mut args: Vec<rusqlite::types::Value> = Vec::new();
@@ -924,6 +941,7 @@ impl Db {
                     TxKind::Split => tr("Split").into(),
                 },
                 cleared: r.get::<_, i64>(8)? != 0,
+                reconciled: r.get(23)?,
                 transfer_peer: peer.filter(|_| kind == TxKind::Transfer),
                 added: kind == TxKind::Transfer && r.get::<_, Option<String>>(15)?.as_deref() == Some(ledger::ADDED),
                 card_row: r.get::<_, Option<String>>(15)?.as_deref() == Some(ledger::CARD_ROW),
@@ -996,7 +1014,7 @@ impl Db {
         let acc: Option<i64> = self
             .conn
             .query_row(
-                "SELECT l.money_account_id FROM book_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
+                "SELECT l.money_account_id FROM journal_postings p JOIN ledger_accounts l ON l.id=p.ledger_account_id
                  WHERE p.id=?1 AND l.money_account_id IS NOT NULL",
                 [id],
                 |r| r.get(0),
@@ -1034,7 +1052,7 @@ impl Db {
             let (account, currency) = self.money_ledger(tx.account_id)?;
             if let Some(hash) = &tx.import_hash {
                 let known: i64 = self.conn.query_row(
-                    "SELECT COUNT(*) FROM book_postings WHERE ledger_account_id=?1 AND import_hash=?2",
+                    "SELECT COUNT(*) FROM journal_postings WHERE ledger_account_id=?1 AND import_hash=?2",
                     params![account, hash],
                     |r| r.get(0),
                 )?;
@@ -1285,7 +1303,7 @@ impl Db {
             Ok(())
         };
         let mut st = self.conn.prepare(&format!(
-            "SELECT l.class='income', l.category_id, p.amount FROM book_postings p
+            "SELECT l.class='income', l.category_id, p.amount FROM journal_postings p
              JOIN ledger_accounts l ON l.id=p.ledger_account_id WHERE p.entry_id=?1 AND {PROFIT_AND_LOSS}"
         ))?;
         let mut seen = HashSet::new();
@@ -1312,7 +1330,7 @@ impl Db {
     /// Assets minus debts: every account of the chart of those classes, up to a date.
     pub fn net_worth(&self, until: Option<NaiveDate>) -> Result<Cents> {
         Ok(self.conn.query_row(
-            "SELECT COALESCE(SUM(p.amount),0) FROM book_postings p JOIN entries e ON e.id=p.entry_id
+            "SELECT COALESCE(SUM(p.amount),0) FROM journal_postings p JOIN entries e ON e.id=p.entry_id
              JOIN ledger_accounts l ON l.id=p.ledger_account_id
              WHERE l.class IN ('asset','liability') AND (?1 IS NULL OR e.date<=?1)",
             [until.map(d2s)],
@@ -1419,7 +1437,9 @@ impl Db {
             return out;
         }
         let tx = SqlTransaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        self.touched.borrow_mut().clear();
         let out = f()?;
+        self.check_reconciled()?;
         tx.commit()?;
         Ok(out)
     }

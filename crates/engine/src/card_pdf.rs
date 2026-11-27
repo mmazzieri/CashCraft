@@ -84,6 +84,9 @@ pub struct Statement {
     /// When the bank is debited.
     pub debit_date: Option<NaiveDate>,
     pub debit: Option<Cents>,
+    /// The debt left after the debit, as the statement says it ("Debito residuo al" its last day).
+    #[serde(default)]
+    pub residual: Option<Cents>,
     /// Last digits of the cards.
     pub cards: Vec<String>,
     /// A heading of a card whose number could not be read.
@@ -429,7 +432,8 @@ pub fn parse(pages: &[Page]) -> Result<Statement, Failure> {
     }
     let closing_label = s.closing.map(|d| format!("DEBITORESIDUOAL{}", d.format("%d%m%Y")));
     let previous = figure(&summary, "DEBITORESIDUOALMESEPRECEDENTE").unwrap_or(0);
-    let residual = closing_label.and_then(|l| figure(&summary, &l)).unwrap_or(0);
+    s.residual = closing_label.and_then(|l| figure(&summary, &l));
+    let residual = s.residual.unwrap_or(0);
     let duty = figure(&summary, "IMPOSTADIBOLLO").unwrap_or(0);
     s.debit = figure(&summary, "TOTALEADDEBITO");
     let first = pages.first();

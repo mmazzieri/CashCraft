@@ -1452,7 +1452,7 @@ impl Db {
             .conn
             .query_row(
                 "SELECT COALESCE(p.date, e.date), COALESCE(p.payee, e.payee), p.amount
-                 FROM book_postings p JOIN entries e ON e.id=p.entry_id WHERE p.id=?1",
+                 FROM journal_postings p JOIN entries e ON e.id=p.entry_id WHERE p.id=?1",
                 [id],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Cents>(2)?)),
             )
@@ -1515,7 +1515,7 @@ impl Db {
 
     /// Every tag, with how many transactions have it.
     pub fn tags(&self) -> Result<Vec<(String, usize)>> {
-        let mut st = self.conn.prepare("SELECT tags FROM book_postings WHERE tags IS NOT NULL ORDER BY id")?;
+        let mut st = self.conn.prepare("SELECT tags FROM journal_postings WHERE tags IS NOT NULL ORDER BY id")?;
         let mut all: BTreeMap<String, (String, usize)> = BTreeMap::new();
         for t in st.query_map([], |r| r.get::<_, String>(0))? {
             for tag in stored_tags(Some(&t?)) {

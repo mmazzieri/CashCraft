@@ -98,7 +98,7 @@ order: same date and payee; same date and a payee alike (one contains the other,
 common); same date; then other dates, the same payee first, then alike, then any, the nearest first. What comes
 later never takes what comes before. A transaction is one row only. "Surely the same" is the
 same date, amount and payee with no other row or transaction like it: only those can be skipped together
-(`same`); the others one by one. What is skipped gives its key to the transaction (`book_postings.other_hashes`),
+(`same`); the others one by one. What is skipped gives its key to the transaction (`journal_postings.other_hashes`),
 so that either file can be imported again without questions. Rows are numbered by date, as in the preview.
 Transactions typed by hand are not compared.
 

@@ -6,6 +6,7 @@ use crate::gui::{
     budget_color, card, category_combo, cut, donut, error_text, has_category, hbars, kind_icon, language_name, legend,
     line_chart, money, nav_item, or_report, pal, palette, primary_button, progress, section_title, small_caps,
 };
+use crate::reconcile::Unlock;
 use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Transaction, TxKind};
 use cashcraft_engine::i18n::{tr, trf, trn};
 use cashcraft_engine::money::{
@@ -210,6 +211,7 @@ impl App {
             View::Categories => (tr("Categories").into(), tr("How income and expenses are grouped").into()),
             View::Rules => (tr("Automatic rules").into(), tr("They categorize imported transactions").into()),
             View::Scheduled => (tr("Scheduled").into(), tr("Recurring transactions and due dates").into()),
+            View::Reconcile(a) => (tr("Reconcile").into(), self.account_name(a)),
             View::Ledger => (
                 tr("Chart of accounts").into(),
                 tr("Double-entry ledger: every amount has a debit and a credit").into(),
@@ -249,6 +251,19 @@ impl App {
                         });
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if let View::Register(Some(a)) = self.view
+                            && ui
+                                .button(tr("🔒 Reconcile"))
+                                .on_hover_text(tr("Check the account against a bank statement (⌘R)"))
+                                .clicked()
+                        {
+                            self.go(View::Reconcile(a));
+                        }
+                        if let View::Reconcile(a) = self.view
+                            && ui.button(tr("☰ Transactions")).clicked()
+                        {
+                            self.go(View::Register(Some(a)));
+                        }
                         if ui
                             .button(tr("⬇ Import"))
                             .on_hover_text(tr(
@@ -714,7 +729,10 @@ impl App {
                                 13.0,
                             );
                             let chk_c = Pos2::new(x + fixed_chk / 2.0 - 6.0, rect.center().y);
-                            if t.cleared {
+                            if t.reconciled {
+                                p.circle_filled(chk_c, 7.0, pal().green_fill);
+                                p.text(chk_c, Align2::CENTER_CENTER, "🔒", FontId::proportional(9.0), Color32::WHITE);
+                            } else if t.cleared {
                                 p.circle_filled(chk_c, 7.0, pal().green_fill);
                                 p.text(chk_c, Align2::CENTER_CENTER, "✔", FontId::proportional(10.0), Color32::WHITE);
                             } else {
@@ -823,7 +841,9 @@ impl App {
         }
         if let Some((id, c)) = toggle_cleared {
             let r = self.db.set_cleared(id, c).map(|_| String::new());
-            self.act(ui, r);
+            if let Some(r) = self.unless_reconciled(r, || Unlock::Cleared(id, c)) {
+                self.act(ui, r);
+            }
         }
         if let Some((id, c)) = set_cat {
             let r = self.db.set_category(id, c).map(|_| tr("Category updated").to_string());
@@ -843,7 +863,9 @@ impl App {
         {
             let r = self.db.delete_transaction(t.id).map(|_| tr("Transaction deleted").to_string());
             self.selected = None;
-            self.act(ui, r);
+            if let Some(r) = self.unless_reconciled(r, || Unlock::Delete(t.id)) {
+                self.act(ui, r);
+            }
         }
     }
 

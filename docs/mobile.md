@@ -17,7 +17,7 @@ New rows get ids that no other phone or computer gives (`Db::open_copy`, see [da
 
 ## The bridge
 
-`crates/ffi` builds a shared library for Android (`Core.call` through JNI) and a static one for iOS (`cashcraft_call`, `cashcraft_free`). One request in JSON, one answer: `{"ok": …}` or `{"error": "…"}`.
+`crates/ffi` builds a shared library for Android (`Core.call` through JNI) and a static one for iOS (`cashcraft_call`, `cashcraft_free`). One request in JSON, one answer: `{"ok": …}` or `{"error": "…"}`. An `update_transaction` or `delete_transaction` that would change a reconciled transaction ([reconcile.md](reconcile.md)) answers `{"error": "…", "reconciled": [ids]}`, the error in words for the user: the app asks, and on a yes calls again with `"unreconcile": true` in `args`.
 
 | `op` | Fields | What it does |
 |---|---|---|

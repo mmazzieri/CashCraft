@@ -1,10 +1,12 @@
 //! Finestre di dialogo: movimento, giroconto, conto, pianificato, importazione CSV, conferme.
 
+use crate::gui::AccountForm;
 use crate::gui::{
     App, CardPayments, Dialog, ImportState, PREVIEWED, Period, TurnForm, TxForm, View, account_combo, card,
     category_combo, column_combo, cut, error_text, expense_toggle, form_row, kind_icon, money, pal, primary_button,
     section_title,
 };
+use crate::reconcile::Unlock;
 use anyhow::Result;
 use cashcraft_engine::cards::{CardStatement, PaymentProposal};
 use cashcraft_engine::db::{Account, AccountKind, NewScheduled, NewTx, Transaction, TxEdit};
@@ -26,6 +28,8 @@ impl App {
         };
         let mut keep = true;
         let mut message: Option<Result<String>> = None;
+        // The dialog that a question about reconciled transactions came from.
+        let mut reopen: Option<Dialog> = None;
         let accounts = self.accounts.clone();
         let cats = self.categories.clone();
         let modal = egui::Modal::new(Id::unique("dialog")).show(ctx, |ui| {
@@ -105,7 +109,13 @@ impl App {
                                     message = Some(Ok(m));
                                     keep = false;
                                 }
-                                Err(e) => f.error = format!("{e:#}"),
+                                Err(e) => {
+                                    let form = Box::new(f.clone());
+                                    match self.unless_reconciled(Err(e), || Unlock::Save(form)) {
+                                        Some(Err(e)) => f.error = format!("{e:#}"),
+                                        _ => keep = false,
+                                    }
+                                }
                             }
                         }
                         if let Some(id) = f.id
@@ -201,7 +211,10 @@ impl App {
                     ui.horizontal(|ui| {
                         if primary_button(ui, tr("Separate")).clicked() {
                             let done = self.db.separate_transfer(t.id, *keep_other);
-                            message = Some(done.map(|_| tr("Transfer separated").into()));
+                            let (id, other) = (t.id, *keep_other);
+                            message = self.unless_reconciled(done.map(|_| tr("Transfer separated").into()), || {
+                                Unlock::Separate(id, other)
+                            });
                             keep = false;
                         }
                         if ui.button(tr("Cancel")).clicked() {
@@ -249,32 +262,21 @@ impl App {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if primary_button(ui, tr("Save")).clicked() {
-                            let r = (|| -> Result<String> {
-                                let opening = if f.opening.trim().is_empty() { 0 } else { parse_amount(&f.opening)? };
-                                match f.id {
-                                    Some(id) => {
-                                        self.db.atomically(|| {
-                                            self.db.update_account(id, &f.name, f.kind, opening, &f.iban, f.archived)?;
-                                            if f.currency.trim() != f.old_currency {
-                                                self.db.set_account_currency(id, &f.currency)?;
-                                            }
-                                            Ok(())
-                                        })?;
-                                        Ok(tr("Account updated").into())
-                                    }
-                                    None => {
-                                        let id = self.db.add_account(&f.name, f.kind, &f.currency, opening, &f.iban)?;
+                            match self.save_account(f) {
+                                Ok((m, created)) => {
+                                    if let Some(id) = created {
                                         self.view = View::Register(Some(id));
-                                        Ok(tr("Account created").into())
                                     }
-                                }
-                            })();
-                            match r {
-                                Ok(m) => {
                                     message = Some(Ok(m));
                                     keep = false;
                                 }
-                                Err(e) => f.error = format!("{e:#}"),
+                                Err(e) => {
+                                    let form = Box::new(f.clone());
+                                    match self.unless_reconciled(Err(e), || Unlock::Account(form)) {
+                                        Some(Err(e)) => f.error = format!("{e:#}"),
+                                        _ => keep = false,
+                                    }
+                                }
                             }
                         }
                         if ui.button(tr("Cancel")).clicked() {
@@ -402,6 +404,15 @@ impl App {
                         }
                     });
                 }
+                Dialog::ConfirmUnreconcile(asked) => {
+                    keep = self.unlock_dialog(ui, asked, &mut message);
+                    if !keep {
+                        reopen = asked.2.take();
+                    }
+                }
+                Dialog::ConfirmReconcile(step) => {
+                    keep = self.step_dialog(ui, *step, &mut message);
+                }
                 Dialog::ConfirmDeleteCategory(id, name, rules) => {
                     ui.heading(tr("Delete the category?"));
                     ui.label(trf("The transactions of \"{name}\" stay, uncategorized.", &[("name", name)]));
@@ -489,7 +500,9 @@ impl App {
                             .add(egui::Button::new(RichText::new(tr("Delete")).color(Color32::WHITE)).fill(pal().red_fill))
                             .clicked()
                         {
-                            message = Some(self.db.delete_entry(*id).map(|_| tr("Entry deleted").into()));
+                            let done = self.db.delete_entry(*id).map(|_| tr("Entry deleted").into());
+                            let entry = *id;
+                            message = self.unless_reconciled(done, || Unlock::DeleteEntry(entry));
                             keep = false;
                         }
                         if ui.button(tr("Cancel")).clicked() {
@@ -563,8 +576,32 @@ impl App {
         if modal.should_close() && !precious {
             keep = false;
         }
+        // A join, link or unlink of the import that changes reconciled transactions asks first, then goes back.
+        let pending = match &mut dialog {
+            Dialog::Import(st) => st.pending.take().or_else(|| st.cards.pending.take()),
+            _ => None,
+        };
+        if let Some(asked) = pending {
+            let (locked, retry) = *asked;
+            let then = if keep { Some(dialog) } else { None };
+            self.dialog = Some(Dialog::ConfirmUnreconcile(Box::new((locked, retry, then))));
+            return;
+        }
         if keep {
             self.dialog = Some(dialog);
+        }
+        if let Some(mut d) = reopen {
+            if let Dialog::Import(st) = &mut d {
+                st.cards.reload(&self.db);
+                if let Some(res) = st.result.as_mut() {
+                    res.maybe_transfers.retain(|m| {
+                        self.db
+                            .transaction(m.transaction.id)
+                            .is_ok_and(|t| t.kind != cashcraft_engine::db::TxKind::Transfer)
+                    });
+                }
+            }
+            self.dialog = Some(d);
         }
         if let Some(m) = message {
             let time = ctx.input(|i| i.time);
@@ -642,7 +679,13 @@ impl App {
                         message = Some(Ok(text.into()));
                         keep = false;
                     }
-                    Err(e) => f.error = format!("{e:#}"),
+                    Err(e) => {
+                        let (id, other) = (f.tx.id, f.other);
+                        match self.unless_reconciled(Err(e), || Unlock::Turn(id, account, other)) {
+                            Some(Err(e)) => f.error = format!("{e:#}"),
+                            _ => keep = false,
+                        }
+                    }
                 }
             }
             if ui.button(tr("Cancel")).clicked() {
@@ -652,7 +695,28 @@ impl App {
         (keep, message)
     }
 
-    pub(crate) fn save_tx(&mut self, f: &TxForm) -> Result<String> {
+    /// Saves the form of an account: a message, and the id of a new one.
+    pub(crate) fn save_account(&self, f: &AccountForm) -> Result<(String, Option<i64>)> {
+        let opening = if f.opening.trim().is_empty() { 0 } else { parse_amount(&f.opening)? };
+        match f.id {
+            Some(id) => {
+                self.db.atomically(|| {
+                    self.db.update_account(id, &f.name, f.kind, opening, &f.iban, f.archived)?;
+                    if f.currency.trim() != f.old_currency {
+                        self.db.set_account_currency(id, &f.currency)?;
+                    }
+                    Ok(())
+                })?;
+                Ok((tr("Account updated").into(), None))
+            }
+            None => {
+                let id = self.db.add_account(&f.name, f.kind, &f.currency, opening, &f.iban)?;
+                Ok((tr("Account created").into(), Some(id)))
+            }
+        }
+    }
+
+    pub(crate) fn save_tx(&self, f: &TxForm) -> Result<String> {
         let account = f.account.ok_or_else(|| anyhow::anyhow!(tr("choose an account")))?;
         let date = parse_date(&f.date).ok_or_else(|| anyhow::anyhow!(tr("the date is not valid (yyyy-mm-dd)")))?;
         let a = parse_amount(&f.amount)?.abs();
@@ -799,6 +863,17 @@ impl App {
                     }
                     keep = false;
                     msg = Some(Ok(String::new()));
+                }
+                if let (Some(a), Some(t)) = (st.account, st.table.as_ref())
+                    && ui
+                        .button(tr("🔒 Reconcile with this statement"))
+                        .on_hover_text(tr("Its balance against the books, line by line"))
+                        .clicked()
+                {
+                    let stated = cashcraft_engine::reconcile::stated_balance(t, &st.settings());
+                    let source = cashcraft_engine::reconcile::Source::of(t.format());
+                    keep = false;
+                    msg = Some(self.reconcile_with(a, st.rows.clone(), source, stated).map(|()| String::new()));
                 }
                 if ui.button(tr("Close")).clicked() {
                     keep = false;
@@ -1041,7 +1116,7 @@ impl App {
     /// Imported lines that may be the side of a transfer that is there.
     fn maybe_transfers(&mut self, ui: &mut Ui, st: &mut ImportState) {
         let Some(res) = st.result.as_mut().filter(|r| !r.maybe_transfers.is_empty()) else { return };
-        let mut joined: Option<(usize, Result<()>)> = None;
+        let mut joined: Option<(usize, Result<()>, Unlock)> = None;
         ui.add_space(8.0);
         card(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -1054,7 +1129,7 @@ impl App {
                         ui.horizontal(|ui| {
                             if ui.button(tr("Join")).clicked() {
                                 let done = self.db.turn_into_transfer(t.id, c.account_id, OtherSide::Join(c.id));
-                                joined = Some((i, done.map(|_| ())));
+                                joined = Some((i, done.map(|_| ()), Unlock::Join(t.id, c.account_id, c.id)));
                             }
                             ui.label(format!("{} · {} · {}", fmt_date(c.date), c.account, cut(&c.payee, 40)));
                         });
@@ -1063,11 +1138,14 @@ impl App {
             });
         });
         match joined {
-            Some((i, Ok(()))) => {
+            Some((i, Ok(()), _)) => {
                 res.maybe_transfers.remove(i);
                 self.reload();
             }
-            Some((_, Err(e))) => st.error = format!("{e:#}"),
+            Some((_, Err(e), retry)) => match cashcraft_engine::reconcile::reconciled_in(&e) {
+                Some(locked) => st.pending = Some(Box::new((locked.clone(), retry))),
+                None => st.error = format!("{e:#}"),
+            },
             None => {}
         }
     }
@@ -1079,7 +1157,7 @@ impl App {
         if pending.is_empty() && linked.is_empty() && cards.error.is_empty() {
             return;
         }
-        let mut done: Option<Result<()>> = None;
+        let mut done: Option<(Result<()>, Unlock)> = None;
         ui.add_space(8.0);
         card(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -1099,7 +1177,8 @@ impl App {
                         ui.horizontal(|ui| {
                             if ui.button(tr("Link")).clicked() {
                                 let join = cards.join.get(&t.id).copied();
-                                done = Some(self.db.link_card_payment(p.statement.id, t.id, join));
+                                let r = self.db.link_card_payment(p.statement.id, t.id, join);
+                                done = Some((r, Unlock::Link(p.statement.id, t.id, join)));
                             }
                             ui.label(format!("{} · {} · {}", fmt_date(t.date), t.account, cut(&t.payee, 44)));
                             ui.label(money(t.amount));
@@ -1140,7 +1219,7 @@ impl App {
                         }
                         ui.label(tr("The bank's line becomes an uncategorized expense."));
                         if ui.button(RichText::new(tr("Unlink")).color(pal().red)).clicked() {
-                            done = Some(self.db.unlink_card_payment(s.id));
+                            done = Some((self.db.unlink_card_payment(s.id), Unlock::Unlink(s.id)));
                         }
                         if ui.button(tr("Cancel")).clicked() {
                             cards.unlinking = None;
@@ -1152,10 +1231,13 @@ impl App {
                 ui.label(RichText::new(&cards.error).color(pal().red));
             }
         });
-        if let Some(r) = done {
+        if let Some((r, retry)) = done {
             cards.reload(&self.db);
             if let Err(e) = r {
-                cards.error = format!("{e:#}");
+                match cashcraft_engine::reconcile::reconciled_in(&e) {
+                    Some(locked) => cards.pending = Some(Box::new((locked.clone(), retry))),
+                    None => cards.error = format!("{e:#}"),
+                }
             }
             self.reload();
         }

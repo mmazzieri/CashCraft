@@ -187,3 +187,35 @@ fn hostile_params_never_panic() {
         assert!(!crate::c::cashcraft_call(std::ptr::null()).is_null());
     }
 }
+
+/// A change to a reconciled transaction is refused in words for the user, with the ids, and made once the app
+/// passes `unreconcile` after asking.
+#[test]
+fn a_reconciled_transaction_is_asked_about() {
+    let d = Dir::new("reconciled");
+    let f = d.file("a.db");
+    ask(json!({"op": "new", "path": f}));
+    tool(&f, "create_account", json!({"name": "Wallet", "kind": "cash"}));
+    let id =
+        tool(&f, "add_transaction", json!({"account": "Wallet", "amount": -12.5, "payee": "Bakery", "cleared": true}))
+            ["id"]
+            .clone();
+    {
+        // Reconciled on a computer.
+        let (db, _) = cashcraft_engine::db::Db::open(&f).unwrap();
+        let r = ops::call(
+            &db,
+            "start_reconciliation",
+            &json!({"account": "Wallet", "balance": "-12.50", "date": "2026-12-31"}),
+            None,
+        )
+        .unwrap();
+        ops::call(&db, "finish_reconciliation", &json!({"id": r["reconciliation"]["id"]}), None).unwrap();
+    }
+    let a = answer(json!({"op": "call", "path": f, "tool": "update_transaction", "args": {"id": id, "amount": -13}}));
+    let error = a["error"].as_str().unwrap();
+    assert!(error.contains("reconciled") && !error.contains("unreconcile"), "{a}");
+    assert_eq!(a["reconciled"], json!([id]));
+    tool(&f, "update_transaction", json!({"id": id, "amount": -13, "unreconcile": true}));
+    assert_sound(&f);
+}

@@ -40,6 +40,10 @@
 - **Double-entry ledger** underneath: chart of accounts with sub-accounts, entries with any number
   of postings, trial balance. An entry that does not balance is refused. See [docs/ledger.md](docs/ledger.md).
 - **Scheduled transactions**: recurring payments and transfers, posted when due.
+- **Reconciliation** with the bank statement: its balance against the cleared balance of the books, with the
+  difference in sight; its lines matched with the transactions, exactly first, then by amount and date, always
+  confirmed by you. Reconciled transactions ask before their amount, date or account change. See
+  [docs/reconcile.md](docs/reconcile.md).
 - **Italian bank CSV and Excel 97 (`.xls`) import**, BPER's included: detects the encoding (UTF-8 or Windows-1252), the separator, the
   heading lines to skip and the columns by name (*Data contabile*, *Data valuta*, *Descrizione*,
   *Causale*, *Importo*, *Accrediti/Addebiti*, *Entrate/Uscite*, *Dare/Avere*…); reads Italian
