@@ -29,7 +29,8 @@ added side of a transfer (`adopted`) and those that may (`maybe_transfers`). Boo
 
 An account of the chart is named by its path or name, or as `ledger:5` (its `ledger_account_id`), `code:3010`
 or `system:uncategorized`; a bare number is refused. `post_scheduled` posts what it can: `failed` lists the
-rest, with the reason.
+rest, with the reason. `add_scheduled` with `from_transaction` starts from a transaction in the register: the
+other parameters change what they name, and the next date is one period after the transaction.
 
 ## Statements
 

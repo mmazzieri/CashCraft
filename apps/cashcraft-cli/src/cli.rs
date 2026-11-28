@@ -698,16 +698,20 @@ pub enum ReportCmd {
 pub enum SchedCmd {
     /// List the scheduled transactions
     List,
-    /// Add a recurring transaction, or a transfer with --to-account
+    /// Add a recurring transaction, or a transfer with --to-account; with --from-transaction, start
+    /// from a transaction in the register (the next date is one period after it)
     Add {
-        #[arg(long, short)]
-        account: String,
-        #[arg(long, allow_hyphen_values = true)]
-        amount: String,
-        #[arg(long, short)]
-        payee: String,
+        /// Id of the transaction to start from; the other options change what they name
         #[arg(long)]
-        next: String,
+        from_transaction: Option<i64>,
+        #[arg(long, short)]
+        account: Option<String>,
+        #[arg(long, allow_hyphen_values = true)]
+        amount: Option<String>,
+        #[arg(long, short)]
+        payee: Option<String>,
+        #[arg(long)]
+        next: Option<String>,
         #[arg(long, default_value_t = 1)]
         every: i64,
         /// day, week, month, year
@@ -715,6 +719,8 @@ pub enum SchedCmd {
         unit: String,
         #[arg(long, short)]
         category: Option<String>,
+        #[arg(long)]
+        memo: Option<String>,
         #[arg(long)]
         to_account: Option<String>,
     },
@@ -1147,16 +1153,29 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
         },
         Cmd::Scheduled(c) => match c {
             SchedCmd::List => ("list_scheduled", json!({})),
-            SchedCmd::Add { account, amount, payee, next, every, unit, category, to_account } => (
+            SchedCmd::Add {
+                from_transaction,
+                account,
+                amount,
+                payee,
+                next,
+                every,
+                unit,
+                category,
+                memo,
+                to_account,
+            } => (
                 "add_scheduled",
                 args(&[
-                    ("account", v(account)),
-                    ("amount", v(amount)),
-                    ("payee", v(payee)),
-                    ("next_date", v(next)),
+                    ("from_transaction", from_transaction.map(|id| json!(id))),
+                    ("account", o(&account)),
+                    ("amount", o(&amount)),
+                    ("payee", o(&payee)),
+                    ("next_date", o(&next)),
                     ("every", v(every)),
                     ("unit", v(unit)),
                     ("category", o(&category)),
+                    ("memo", o(&memo)),
                     ("to_account", o(&to_account)),
                 ]),
             ),

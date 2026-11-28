@@ -1048,3 +1048,69 @@ fn entries_come_in_pages() {
     assert_eq!(all.len(), 7);
     assert!(all.windows(2).all(|w| w[0] > w[1]));
 }
+
+/// A transaction made recurring (#42): the schedule starts from it, a month later, and leaves it alone.
+#[test]
+fn a_transaction_made_recurring_starts_a_period_after_it_and_stays_as_it_is() {
+    let (db, a, b) = books();
+    let health = db.find_category("Health").unwrap().id;
+    let tx = |date: &str| NewTx {
+        account_id: a,
+        date: day(date),
+        amount: -65_000,
+        payee: "Mortgage".into(),
+        memo: "instalment".into(),
+        category_id: Some(health),
+        ..Default::default()
+    };
+    // At the end of a month the next date is the last day of the next one, in a leap year too.
+    for (date, next) in [("2026-01-31", "2026-02-28"), ("2028-01-31", "2028-02-29"), ("2026-11-27", "2026-12-27")] {
+        let id = db.add_transaction(&tx(date)).unwrap().unwrap();
+        let s = db.scheduled_from(id).unwrap();
+        assert_eq!(
+            (s.account_id, s.to_account_id, s.amount, s.payee.as_str(), s.memo.as_str(), s.category_id),
+            (a, None, -65_000, "Mortgage", "instalment", Some(health))
+        );
+        assert_eq!((d2s(s.next_date), s.every, s.unit.as_str()), (next.to_string(), 1, "month"));
+    }
+    // Saving it changes nothing of the transactions, and recording what is due does not count them again.
+    let id = db.add_transaction(&tx("2026-03-10")).unwrap().unwrap();
+    let before = db.transactions(&TxFilter::default()).unwrap().len();
+    let v = ops::call(&db, "add_scheduled", &json!({"from_transaction": id}), None).unwrap();
+    let s = db.scheduled().unwrap().into_iter().find(|s| json!(s.id) == v["id"]).unwrap();
+    assert_eq!((d2s(s.next_date), s.amount, s.category_id), ("2026-04-10".to_string(), -65_000, Some(health)));
+    db.post_scheduled(day("2026-03-31")).unwrap();
+    assert_eq!(db.transactions(&TxFilter::default()).unwrap().len(), before);
+    assert_sound(&db, "recurring");
+    // What is given changes what it names; the next date follows the repetition asked for.
+    let v = ops::call(
+        &db,
+        "add_scheduled",
+        &json!({"from_transaction": id, "amount": "-70", "unit": "week", "every": 2, "to_account": "Card"}),
+        None,
+    )
+    .unwrap();
+    let s = db.scheduled().unwrap().into_iter().find(|s| json!(s.id) == v["id"]).unwrap();
+    assert_eq!(
+        (d2s(s.next_date), s.amount, s.to_account_id, s.category_id),
+        ("2026-03-24".into(), -7_000, Some(b), None)
+    );
+    // A transfer is scheduled out of the account the money left, whichever side it is made from.
+    let (out, into) = db.add_transfer(a, b, day("2026-05-05"), 12_345, "card").unwrap();
+    for side in [out, into] {
+        let s = db.scheduled_from(side).unwrap();
+        assert_eq!((s.account_id, s.to_account_id, s.amount, s.category_id), (a, Some(b), 12_345, None), "{side}");
+    }
+    // A transaction with several categories has no schedule, and one that does not exist is an error.
+    let (bank, salary, taxes) = (ledger(&db, "Bank"), ledger(&db, "Salary"), ledger(&db, "Bank and taxes:Taxes"));
+    db.post_entry(&entry(vec![line(bank, 150_000), line(taxes, 50_000), line(salary, -200_000)])).unwrap();
+    let split = db.transactions(&TxFilter::default()).unwrap().into_iter().find(|t| t.kind == TxKind::Split).unwrap();
+    let count = db.scheduled().unwrap().len();
+    assert!(db.scheduled_from(split.id).is_err());
+    for bad in
+        [json!({"from_transaction": split.id}), json!({"from_transaction": 99_999}), json!({"from_transaction": "x"})]
+    {
+        assert!(ops::call(&db, "add_scheduled", &bad, None).is_err(), "{bad}");
+    }
+    assert_eq!(db.scheduled().unwrap().len(), count);
+}

@@ -40,7 +40,8 @@
   after a preview, never over what you set by hand unless you ask, and the last run can be undone. See [docs/rules.md](docs/rules.md).
 - **Double-entry ledger** underneath: chart of accounts with sub-accounts, entries with any number
   of postings, trial balance. An entry that does not balance is refused. See [docs/ledger.md](docs/ledger.md).
-- **Scheduled transactions**: recurring payments and transfers, posted when due.
+- **Scheduled transactions**: recurring payments and transfers, posted when due. **Make recurring…** on a
+  transaction in the register schedules it every month from a month after it, without touching it.
 - **Reconciliation** with the bank statement: its balance against the cleared balance of the books, with the
   difference in sight; its lines matched with the transactions, exactly first, then by amount and date, always
   confirmed by you. Reconciled transactions ask before their amount, date or account change. See

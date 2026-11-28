@@ -385,10 +385,14 @@ pub struct SchedForm {
     pub amount: String,
     pub expense: bool,
     pub payee: String,
+    pub memo: String,
     pub category: Option<i64>,
     pub date: String,
     pub every: String,
     pub unit: String,
+    /// The date of the transaction it is made from: the next date follows it when the repetition
+    /// changes, until the user writes another.
+    pub from: Option<NaiveDate>,
     pub error: String,
 }
 
@@ -1154,6 +1158,27 @@ impl App {
     }
 
     /// Asks for the other account of a transaction, or whether to separate a transfer.
+    /// The form of a scheduled transaction, filled in from `t`.
+    pub fn open_recurring(&mut self, t: &Transaction) -> Result<()> {
+        let s = self.db.scheduled_from(t.id)?;
+        self.dialog = Some(Dialog::Scheduled(SchedForm {
+            account: Some(s.account_id),
+            to_account: s.to_account_id,
+            transfer: s.to_account_id.is_some(),
+            amount: cashcraft_engine::money::fmt_plain(s.amount.saturating_abs()),
+            expense: s.amount < 0,
+            payee: s.payee,
+            memo: s.memo,
+            category: s.category_id,
+            date: fmt_date(s.next_date),
+            every: s.every.to_string(),
+            unit: s.unit,
+            from: Some(t.date),
+            error: String::new(),
+        }));
+        Ok(())
+    }
+
     pub fn open_turn(&mut self, t: &Transaction) {
         self.dialog = Some(if t.kind == TxKind::Transfer {
             // Both added by hand: none is the one that should go.

@@ -1151,3 +1151,10 @@ from {month}	da {month}
 {category} out of the envelopes	{category} fuori dalle buste
 {name} deleted	{name} eliminata
 {n} changes of the envelopes come before {month} and would no longer count: confirm to start there	{n} modifiche delle buste vengono prima di {month} e non conterebbero più: conferma per cominciare da lì
+📅 Make recurring…	📅 Rendi ricorrente…
+Schedules it every month, starting a month after this one; this transaction stays as it is.	Lo pianifica ogni mese, a partire da un mese dopo questo; questo movimento resta com'è.
+A scheduled transaction has one category: this transaction has several.	Un movimento pianificato ha una sola categoria: questo ne ha più d'una.
+Only a transaction with a category, or a transfer between your accounts, can be made recurring.	Si può rendere ricorrente solo un movimento con una categoria, o un giroconto tra i tuoi conti.
+From the transaction of {date}, which stays as it is: the first due date comes after it.	Dal movimento del {date}, che resta com'è: la prima scadenza viene dopo.
+a transaction with several categories cannot be made recurring: a scheduled transaction has one category	un movimento con più categorie non si può rendere ricorrente: un movimento pianificato ha una sola categoria
+only a transaction with a category, or a transfer between your accounts, can be made recurring	si può rendere ricorrente solo un movimento con una categoria, o un giroconto tra i tuoi conti
