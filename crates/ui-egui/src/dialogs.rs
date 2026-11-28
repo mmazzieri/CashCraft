@@ -115,9 +115,13 @@ impl App {
                                     .desired_width(280.0),
                             );
                         });
-                        form_row(ui, "", |ui| {
-                            ui.checkbox(&mut f.cleared, tr("Checked against the bank statement"));
-                        });
+                        // A movement still to come is not on a statement yet: it is written unchecked when due.
+                        let to_come = f.repeat && parse_date(&f.date).is_some_and(|d| d > db::today());
+                        if !to_come {
+                            form_row(ui, "", |ui| {
+                                ui.checkbox(&mut f.cleared, tr("Checked against the bank statement"));
+                            });
+                        }
                     }
                     if f.id.is_none() {
                         form_row(ui, "", |ui| {
@@ -746,7 +750,8 @@ impl App {
         if f.payee.trim().is_empty() && !(f.transfer && f.id.is_none()) {
             anyhow::bail!(tr("write the payee or a description"));
         }
-        let tags = parse_tags(&f.tags)?;
+        // A new transfer has no tags: its field is hidden, and what was typed before switching is not read.
+        let tags = if f.transfer && f.id.is_none() { Vec::new() } else { parse_tags(&f.tags)? };
         self.db.atomically(|| match f.id {
             Some(id) => {
                 if f.category_chosen {
@@ -832,7 +837,8 @@ impl App {
         };
         // A transfer has no tags: the field is hidden then, but keeps what was typed before switching.
         let tags: &[String] = if to.is_some() { &[] } else { tags };
-        let done = self.db.add_repeating(&s, tags, f.cleared && to.is_none(), db::today())?;
+        let cleared = f.cleared && to.is_none() && s.next_date <= db::today();
+        let done = self.db.add_repeating(&s, tags, cleared, db::today())?;
         Ok(if done.ids.is_empty() {
             trf("Scheduled from {date}", &[("date", &fmt_date(done.next_date))]).to_string()
         } else {
