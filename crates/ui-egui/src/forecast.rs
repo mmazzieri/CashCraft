@@ -95,8 +95,14 @@ impl App {
 
     /// The warning above an account's register when its projection goes below the minimum.
     pub(crate) fn forecast_banner(&mut self, ui: &mut Ui, account_id: i64) {
-        // A failure is said on the overview and in the scheduled view.
-        let list = self.ensure_forecasts().unwrap_or_default();
+        let list = match self.ensure_forecasts() {
+            Ok(list) => list,
+            Err(e) => {
+                ui.horizontal(|ui| self.forecast_failed(ui, &e));
+                ui.add_space(4.0);
+                return;
+            }
+        };
         let Some(f) = list.iter().find(|f| f.account_id == account_id && f.shortfall.is_some()) else { return };
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("⚠ {}", f.message())).color(pal().red).strong());

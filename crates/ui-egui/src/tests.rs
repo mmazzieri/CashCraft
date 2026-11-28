@@ -1352,6 +1352,7 @@ fn the_account_form_keeps_the_minimum_and_the_projection_warns_about_it() {
     app.reload();
     assert!(app.ensure_forecasts().is_err());
     ctx.run_ui(Default::default(), |ui| app.dashboard(ui)).textures_delta.clear();
+    ctx.run_ui(Default::default(), |ui| app.register(ui, Some(id))).textures_delta.clear();
     assert!(matches!(app.forecasts, Some((_, Err(_)))));
     app.db.conn.execute_batch("ALTER TABLE gone RENAME TO scheduled_items").unwrap();
     app.forecasts = None;
