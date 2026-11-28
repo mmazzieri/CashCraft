@@ -45,6 +45,12 @@ pub enum Cmd {
         date: Option<String>,
         #[arg(long)]
         memo: Option<String>,
+        /// Repeat it: every how many units (the next ones are scheduled from one period later)
+        #[arg(long)]
+        every: Option<i64>,
+        /// Repeat it: day, week, month or year (default month)
+        #[arg(long)]
+        unit: Option<String>,
     },
     /// Import a statement (CSV, .xls, OFX or the PDF of a credit card) into an account
     #[command(visible_alias = "importa")]
@@ -315,6 +321,12 @@ pub enum TxCmd {
         tags: Option<String>,
         #[arg(long)]
         cleared: bool,
+        /// Repeat it: every how many units (the next ones are scheduled from one period later)
+        #[arg(long)]
+        every: Option<i64>,
+        /// Repeat it: day, week, month or year (default month)
+        #[arg(long)]
+        unit: Option<String>,
     },
     /// Change a transaction
     Edit {
@@ -982,7 +994,7 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
                     ("limit", v(limit)),
                 ]),
             ),
-            TxCmd::Add { account, amount, payee, date, category, memo, tags, cleared } => (
+            TxCmd::Add { account, amount, payee, date, category, memo, tags, cleared, every, unit } => (
                 "add_transaction",
                 args(&[
                     ("account", v(account)),
@@ -993,6 +1005,8 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
                     ("memo", o(&memo)),
                     ("tags", o(&tags)),
                     ("cleared", v(cleared)),
+                    ("every", every.map(|e| json!(e))),
+                    ("unit", o(&unit)),
                 ]),
             ),
             TxCmd::Edit { id, amount, payee, date, category, memo, tags, cleared, unreconcile } => (
@@ -1033,9 +1047,17 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
                 ]),
             ),
         },
-        Cmd::Transfer { from, to, amount, date, memo } => (
+        Cmd::Transfer { from, to, amount, date, memo, every, unit } => (
             "add_transfer",
-            args(&[("from", v(from)), ("to", v(to)), ("amount", v(amount)), ("date", o(&date)), ("memo", o(&memo))]),
+            args(&[
+                ("from", v(from)),
+                ("to", v(to)),
+                ("amount", v(amount)),
+                ("date", o(&date)),
+                ("memo", o(&memo)),
+                ("every", every.map(|e| json!(e))),
+                ("unit", o(&unit)),
+            ]),
         ),
         Cmd::Import { file, account, dry_run, allow_mismatch, any_account, skip_rows, add_rows, cols } => {
             let mut m = Map::new();

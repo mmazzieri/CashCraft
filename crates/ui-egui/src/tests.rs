@@ -1358,3 +1358,55 @@ fn the_account_form_keeps_the_minimum_and_the_projection_warns_about_it() {
     app.forecasts = None;
     assert!(app.ensure_forecasts().is_ok());
 }
+
+/// The form of a new movement writes a transfer, and a movement that repeats, with the one of its day written once.
+#[test]
+fn the_new_movement_form_does_transfers_and_repetitions() {
+    with_lang(Lang::En, || {
+        let db = Db::open_in_memory().unwrap();
+        let bank = db.add_account("Bank", AccountKind::Bank, "EUR", 100_000, "").unwrap();
+        let fund = db.add_account("Fund", AccountKind::Investment, "EUR", 0, "").unwrap();
+        let mut app = App::new(db, None);
+        let ctx = egui::Context::default();
+        let today = cashcraft_engine::db::today();
+        let open = |app: &mut App| -> crate::gui::TxForm {
+            app.open_new_tx();
+            match app.dialog.take() {
+                Some(Dialog::Tx(f)) => f,
+                _ => panic!("no form"),
+            }
+        };
+        // A transfer, drawn with its repetition, then saved.
+        let mut f = open(&mut app);
+        (f.account, f.to, f.transfer, f.repeat, f.amount) = (Some(bank), Some(fund), true, true, "100".into());
+        app.dialog = Some(Dialog::Tx(f.clone()));
+        for _ in 0..2 {
+            ctx.run_ui(Default::default(), |ui| app.dialogs(&ui.ctx().clone())).textures_delta.clear();
+        }
+        assert!(
+            crate::dialogs::repeat_note(&f)
+                .contains(&cashcraft_engine::money::fmt_date(cashcraft_engine::db::advance(today, 1, "month")))
+        );
+        app.save_tx(&f).unwrap();
+        let balance = |app: &App, id| app.db.accounts(true).unwrap().into_iter().find(|a| a.id == id).unwrap().balance;
+        assert_eq!(balance(&app, fund), 10_000);
+        let s = app.db.scheduled().unwrap();
+        assert_eq!(
+            (s.len(), s[0].to_account_id, s[0].next_date),
+            (1, Some(fund), cashcraft_engine::db::advance(today, 1, "month"))
+        );
+        // A transfer that does not repeat, and an ordinary movement that does.
+        f.repeat = false;
+        app.save_tx(&f).unwrap();
+        assert_eq!(balance(&app, fund), 20_000);
+        let mut g = open(&mut app);
+        (g.amount, g.payee, g.repeat, g.unit) = ("12".into(), "Gym".into(), true, "week".into());
+        app.save_tx(&g).unwrap();
+        assert_eq!(app.db.scheduled().unwrap().len(), 2);
+        assert_eq!(balance(&app, bank), 100_000 - 20_000 - 1_200);
+        // Without the other account, nothing is written.
+        f.to = None;
+        assert!(app.save_tx(&f).is_err());
+        assert_eq!(balance(&app, fund), 20_000);
+    });
+}

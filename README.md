@@ -43,8 +43,11 @@
   after a preview, never over what you set by hand unless you ask, and the last run can be undone. See [docs/rules.md](docs/rules.md).
 - **Double-entry ledger** underneath: chart of accounts with sub-accounts, entries with any number
   of postings, trial balance. An entry that does not balance is refused. See [docs/ledger.md](docs/ledger.md).
-- **Scheduled transactions**: recurring payments and transfers, posted when due. **Make recurring…** on a
-  transaction in the register schedules it every month from a month after it, without touching it.
+- **Scheduled transactions**: recurring payments and transfers, posted when due. **+ Transaction** writes a
+  transaction or a transfer and, with **Repeat**, schedules the next ones from one period after it, in one go; with
+  a date still to come it writes nothing now and schedules the first one on that date.
+  **Make recurring…** on a transaction in the register schedules it every month from a month after it, without
+  touching it.
 - **Projected balance**: each account day by day for the next 90 days, from today's balance, the transactions
   already in the books with a later date and the scheduled ones. The overview, the account's register and the
   scheduled view say on which day it first goes below its minimum (zero unless set in the account) and how much

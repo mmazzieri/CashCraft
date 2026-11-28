@@ -323,16 +323,13 @@ pub struct TxForm {
     pub old_tags: String,
     /// What the bank wrote, and the rules that set something of it.
     pub detail: String,
-    pub error: String,
-}
-
-#[derive(Clone, Default)]
-pub struct TransferForm {
-    pub from: Option<i64>,
+    /// A new movement only: it is a transfer from `account` to `to`.
+    pub transfer: bool,
     pub to: Option<i64>,
-    pub date: String,
-    pub amount: String,
-    pub memo: String,
+    /// A new movement only: it repeats, every `every` `unit`, from one period after its date.
+    pub repeat: bool,
+    pub every: String,
+    pub unit: String,
     pub error: String,
 }
 
@@ -688,7 +685,6 @@ impl ImportState {
 
 pub enum Dialog {
     Tx(TxForm),
-    Transfer(TransferForm),
     TurnIntoTransfer(Box<TurnForm>),
     /// A side of a transfer, and whether the other one stays.
     SeparateTransfer(Box<Transaction>, bool),
@@ -968,7 +964,7 @@ impl App {
         if let Ok(v) = std::env::var("CASHCRAFT_START_VIEW") {
             let first = app.accounts.first().map(|a| a.id);
             app.view = match v.as_str() {
-                "register" | "movimenti" | "selected" | "transfer" => View::Register(first),
+                "register" | "movimenti" | "selected" | "transfer" | "new" | "nuovo" => View::Register(first),
                 "all" | "tutti" => View::Register(None),
                 "reports" | "report" => View::Reports,
                 "budget" | "envelopes" | "buste" => View::Budget,
@@ -983,6 +979,13 @@ impl App {
             if v == "import" || v == "importa" {
                 // Optional file to read, for screenshots.
                 app.open_import(std::env::var_os("CASHCRAFT_START_FILE").map(PathBuf::from));
+            }
+            if v == "new" || v == "nuovo" {
+                // The form of a new movement, as a transfer that repeats.
+                app.open_new_tx();
+                if let Some(Dialog::Tx(f)) = &mut app.dialog {
+                    (f.transfer, f.repeat, f.to) = (true, true, app.accounts.get(1).map(|a| a.id));
+                }
             }
             if v == "selected" || v == "transfer" {
                 let t = app.txs.iter().find(|t| has_category(t) && t.amount < 0).cloned();
@@ -1128,6 +1131,8 @@ impl App {
             date: fmt_date(db::today()),
             expense: true,
             has_category: true,
+            every: "1".into(),
+            unit: "month".into(),
             ..Default::default()
         }));
     }
@@ -1150,7 +1155,7 @@ impl App {
             tags: t.tags.join(", "),
             old_tags: t.tags.join(", "),
             detail: self.detail_of(t),
-            error: String::new(),
+            ..Default::default()
         }));
     }
 

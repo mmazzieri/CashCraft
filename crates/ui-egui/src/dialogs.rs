@@ -9,7 +9,7 @@ use crate::gui::{
 use crate::reconcile::Unlock;
 use anyhow::Result;
 use cashcraft_engine::cards::{CardStatement, PaymentProposal};
-use cashcraft_engine::db::{self, Account, AccountKind, NewScheduled, NewTx, Transaction, TxEdit};
+use cashcraft_engine::db::{self, Account, AccountKind, Cents, NewScheduled, NewTx, Transaction, TxEdit};
 use cashcraft_engine::duplicates::{Choice, Decision, LikelyDuplicate};
 use cashcraft_engine::i18n::{tr, trf, trn};
 use cashcraft_engine::importer::{self, ImportResult, Statement};
@@ -18,6 +18,7 @@ use cashcraft_engine::money::{DateOrder, fmt_date, fmt_eur, fmt_plain, parse_amo
 use cashcraft_engine::ofx::Kind;
 use cashcraft_engine::rules::parse_tags;
 use cashcraft_engine::transfers::OtherSide;
+use chrono::NaiveDate;
 use egui::{self, Color32, CornerRadius, Frame, Id, Margin, RichText, Ui};
 use std::collections::BTreeMap;
 
@@ -38,13 +39,27 @@ impl App {
                 Dialog::Tx(f) => {
                     ui.heading(if f.id.is_some() { tr("Edit transaction") } else { tr("New transaction") });
                     ui.add_space(8.0);
+                    if f.id.is_none() {
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut f.transfer, false, tr("Transaction"));
+                            ui.radio_value(&mut f.transfer, true, tr("Transfer"));
+                        });
+                        ui.add_space(4.0);
+                    }
                     if f.is_transfer {
                         ui.label(RichText::new(tr("Transfer: the amount changes in both accounts.")).color(pal().muted));
+                    } else if f.transfer {
+                        ui.label(
+                            RichText::new(tr(
+                                "Move money between two of your accounts (it does not count as an expense).",
+                            ))
+                            .color(pal().muted),
+                        );
                     } else {
                         expense_toggle(ui, &mut f.expense);
                         ui.add_space(6.0);
                     }
-                    form_row(ui, tr("Account"), |ui| {
+                    form_row(ui, if f.transfer { tr("From") } else { tr("Account") }, |ui| {
                         if f.id.is_some() {
                             ui.label(
                                 accounts
@@ -57,6 +72,11 @@ impl App {
                             account_combo(ui, "txacc", &accounts, &mut f.account);
                         }
                     });
+                    if f.transfer {
+                        form_row(ui, tr("To"), |ui| {
+                            account_combo(ui, "txto", &accounts, &mut f.to);
+                        });
+                    }
                     form_row(ui, tr("Date"), |ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut f.date).hint_text(tr("yyyy-mm-dd")).desired_width(120.0),
@@ -65,9 +85,11 @@ impl App {
                     form_row(ui, tr("Amount €"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.amount).hint_text(fmt_plain(0)).desired_width(120.0));
                     });
-                    form_row(ui, tr("Payee"), |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.payee).desired_width(280.0));
-                    });
+                    if !f.transfer {
+                        form_row(ui, tr("Payee"), |ui| {
+                            ui.add(egui::TextEdit::singleline(&mut f.payee).desired_width(280.0));
+                        });
+                    }
                     if f.is_split {
                         ui.label(
                             RichText::new(tr(
@@ -76,7 +98,7 @@ impl App {
                             .color(pal().muted),
                         );
                     }
-                    if f.has_category {
+                    if f.has_category && !f.transfer {
                         form_row(ui, tr("Category"), |ui| {
                             f.category_chosen |=
                                 category_combo(ui, "txcat", &cats, &mut f.category, tr("Automatic (rules)"));
@@ -85,16 +107,31 @@ impl App {
                     form_row(ui, tr("Notes"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.memo).desired_width(280.0));
                     });
-                    form_row(ui, tr("Tags"), |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut f.tags)
-                                .hint_text(tr("separated by commas"))
-                                .desired_width(280.0),
-                        );
-                    });
-                    form_row(ui, "", |ui| {
-                        ui.checkbox(&mut f.cleared, tr("Checked against the bank statement"));
-                    });
+                    if !f.transfer {
+                        form_row(ui, tr("Tags"), |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut f.tags)
+                                    .hint_text(tr("separated by commas"))
+                                    .desired_width(280.0),
+                            );
+                        });
+                        // A movement still to come is not on a statement yet: it is written unchecked when due.
+                        let to_come = f.repeat && parse_date(&f.date).is_some_and(|d| d > db::today());
+                        if !to_come {
+                            form_row(ui, "", |ui| {
+                                ui.checkbox(&mut f.cleared, tr("Checked against the bank statement"));
+                            });
+                        }
+                    }
+                    if f.id.is_none() {
+                        form_row(ui, "", |ui| {
+                            ui.checkbox(&mut f.repeat, tr("Repeat"));
+                        });
+                        if f.repeat {
+                            form_row(ui, tr("Repeat every"), |ui| repeat_every(ui, "txunit", &mut f.every, &mut f.unit));
+                            ui.label(RichText::new(repeat_note(f)).color(pal().muted).size(12.5));
+                        }
+                    }
                     if !f.detail.is_empty() {
                         ui.label(RichText::new(&f.detail).color(pal().muted).size(12.5));
                     }
@@ -128,61 +165,6 @@ impl App {
                             match self.db.transaction(id) {
                                 Ok(t) => {
                                     self.open_turn(&t);
-                                    keep = false;
-                                }
-                                Err(e) => f.error = format!("{e:#}"),
-                            }
-                        }
-                        if ui.button(tr("Cancel")).clicked() {
-                            keep = false;
-                        }
-                    });
-                }
-                Dialog::Transfer(f) => {
-                    ui.heading(tr("Transfer"));
-                    ui.label(
-                        RichText::new(tr("Move money between two of your accounts (it does not count as an expense)."))
-                            .color(pal().muted),
-                    );
-                    ui.add_space(8.0);
-                    form_row(ui, tr("From"), |ui| {
-                        account_combo(ui, "trfrom", &accounts, &mut f.from);
-                    });
-                    form_row(ui, tr("To"), |ui| {
-                        account_combo(ui, "trto", &accounts, &mut f.to);
-                    });
-                    form_row(ui, tr("Date"), |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.date).desired_width(120.0));
-                    });
-                    form_row(ui, tr("Amount €"), |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.amount).hint_text(fmt_plain(0)).desired_width(120.0));
-                    });
-                    form_row(ui, tr("Notes"), |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.memo).desired_width(280.0));
-                    });
-                    if !f.error.is_empty() {
-                        ui.label(RichText::new(&f.error).color(pal().red));
-                    }
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if primary_button(ui, tr("Record")).clicked() {
-                            let r = (|| -> Result<String> {
-                                let from =
-                                    f.from.ok_or_else(|| anyhow::anyhow!(tr("choose the account to transfer from")))?;
-                                let to =
-                                    f.to.ok_or_else(|| anyhow::anyhow!(tr("choose the account to transfer to")))?;
-                                let d =
-                                    parse_date(&f.date).ok_or_else(|| anyhow::anyhow!(tr("the date is not valid")))?;
-                                let a = parse_amount(&f.amount)?;
-                                if a == 0 {
-                                    anyhow::bail!(tr("enter an amount"));
-                                }
-                                self.db.add_transfer(from, to, d, a, &f.memo)?;
-                                Ok(tr("Transfer recorded").into())
-                            })();
-                            match r {
-                                Ok(m) => {
-                                    message = Some(Ok(m));
                                     keep = false;
                                 }
                                 Err(e) => f.error = format!("{e:#}"),
@@ -765,10 +747,11 @@ impl App {
             anyhow::bail!(tr("enter an amount"));
         }
         let amount = if f.expense { -a } else { a };
-        if f.payee.trim().is_empty() {
+        if f.payee.trim().is_empty() && !(f.transfer && f.id.is_none()) {
             anyhow::bail!(tr("write the payee or a description"));
         }
-        let tags = parse_tags(&f.tags)?;
+        // A new transfer has no tags: its field is hidden, and what was typed before switching is not read.
+        let tags = if f.transfer && f.id.is_none() { Vec::new() } else { parse_tags(&f.tags)? };
         self.db.atomically(|| match f.id {
             Some(id) => {
                 if f.category_chosen {
@@ -791,6 +774,7 @@ impl App {
                 }
                 Ok(tr("Transaction updated").into())
             }
+            None if f.transfer || f.repeat => self.save_new_movement(f, account, date, a, amount, &tags),
             None => {
                 let id = self.db.add_transaction(&NewTx {
                     account_id: account,
@@ -809,6 +793,56 @@ impl App {
                 }
                 Ok(tr("Transaction recorded").into())
             }
+        })
+    }
+
+    /// A new transfer, or a new movement that repeats: the one of its day, and the next ones scheduled.
+    fn save_new_movement(
+        &self,
+        f: &TxForm,
+        account: i64,
+        date: NaiveDate,
+        a: Cents,
+        amount: Cents,
+        tags: &[String],
+    ) -> Result<String> {
+        let to = if f.transfer {
+            Some(f.to.ok_or_else(|| anyhow::anyhow!(tr("choose the account to transfer to")))?)
+        } else {
+            None
+        };
+        if !f.repeat {
+            let to = to.ok_or_else(|| anyhow::anyhow!(tr("choose the account to transfer to")))?;
+            self.db.add_transfer(account, to, date, a, &f.memo)?;
+            return Ok(tr("Transfer recorded").into());
+        }
+        let every: i64 =
+            f.every.trim().parse().map_err(|_| anyhow::anyhow!(tr("the repetition goes from 1 to 1000")))?;
+        // A scheduled movement has a description: a transfer's is its notes, or the word.
+        let payee = match (to, f.memo.trim()) {
+            (Some(_), "") => tr("Transfer").to_string(),
+            (Some(_), memo) => memo.to_string(),
+            (None, _) => f.payee.clone(),
+        };
+        let s = NewScheduled {
+            account_id: account,
+            to_account_id: to,
+            amount: if to.is_some() { a } else { amount },
+            payee,
+            memo: f.memo.clone(),
+            category_id: if to.is_some() { None } else { f.category },
+            next_date: date,
+            every,
+            unit: f.unit.clone(),
+        };
+        // A transfer has no tags: the field is hidden then, but keeps what was typed before switching.
+        let tags: &[String] = if to.is_some() { &[] } else { tags };
+        let cleared = f.cleared && to.is_none() && s.next_date <= db::today();
+        let done = self.db.add_repeating(&s, tags, cleared, db::today())?;
+        Ok(if done.ids.is_empty() {
+            trf("Scheduled from {date}", &[("date", &fmt_date(done.next_date))]).to_string()
+        } else {
+            trf("Recorded, and scheduled from {date}", &[("date", &fmt_date(done.next_date))]).to_string()
         })
     }
 
@@ -1568,4 +1602,42 @@ pub(crate) fn follow_repetition(f: &mut SchedForm, was: (&str, &str)) {
     let next = fmt_date(db::advance(*from, every, &f.unit));
     f.date = next.clone();
     *wrote = next;
+}
+
+/// The number and the unit of a repetition.
+pub(crate) fn repeat_every(ui: &mut Ui, salt: &str, every: &mut String, unit: &mut String) {
+    ui.add(egui::TextEdit::singleline(every).desired_width(40.0));
+    let label = match unit.as_str() {
+        "day" => tr("days"),
+        "week" => tr("weeks"),
+        "year" => tr("years"),
+        _ => tr("months"),
+    };
+    egui::ComboBox::from_id_salt(salt).selected_text(label).show_ui(ui, |ui| {
+        ui.selectable_value(unit, "day".to_string(), tr("days"));
+        ui.selectable_value(unit, "week".to_string(), tr("weeks"));
+        ui.selectable_value(unit, "month".to_string(), tr("months"));
+        ui.selectable_value(unit, "year".to_string(), tr("years"));
+    });
+}
+
+/// What saving a movement that repeats will do, in one line.
+pub(crate) fn repeat_note(f: &TxForm) -> String {
+    let Some(date) = parse_date(&f.date) else {
+        return tr("Write the date of the first one.").to_string();
+    };
+    if date > db::today() {
+        let note = trf("Nothing is recorded now: it is scheduled from {date}.", &[("date", &fmt_date(date))]);
+        if !f.transfer && !f.tags.trim().is_empty() {
+            return format!("{note} {}", tr("A scheduled movement keeps no tags: add them once it is recorded."));
+        }
+        return note.to_string();
+    }
+    let every = f.every.trim().parse().unwrap_or(1);
+    let next = db::advance(date, every, &f.unit);
+    trf(
+        "Recorded on {date}; the next ones are scheduled from {next}.",
+        &[("date", &fmt_date(date)), ("next", &fmt_date(next))],
+    )
+    .to_string()
 }

@@ -252,6 +252,21 @@ fn transaction_json(db: &Db, id: i64) -> Result<Value> {
 }
 
 /// Operations that may change reconciled transactions: they take `unreconcile`.
+const REPEAT_EVERY: &str = "To repeat it: every how many units (default 1 when unit is given).";
+const REPEAT_UNIT: &str = "To repeat it: day, week, month, year (default month when every is given).";
+
+/// The repetition asked for a new movement, if any.
+fn repetition(a: &Value) -> Result<Option<(i64, String)>> {
+    let every = opt_i64_strict(a, "every")?;
+    let unit = opt_str(a, "unit").filter(|u| !u.trim().is_empty());
+    if every.is_none() && unit.is_none() {
+        return Ok(None);
+    }
+    let unit = unit.unwrap_or_else(|| "month".into());
+    db::normalize_unit(&unit)?;
+    Ok(Some((every.unwrap_or(1), unit)))
+}
+
 const UNRECONCILING: [&str; 10] = [
     "update_transaction",
     "delete_transaction",
@@ -331,10 +346,11 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "add_transaction",
-            description: "Records a transaction. Without a category, the automatic rules are applied.",
+            description: "Records a transaction. Without a category, the automatic rules are applied. With every or unit it also repeats: the transaction of date is recorded and the next ones are scheduled from one period later, in one change (a date still to come is only scheduled).",
             schema: obj(
                 json!({"account": k(ACCOUNT), "amount": k(AMOUNT), "payee": s("Payee or description."), "date": s(DATE),
-                "category": k(CATEGORY), "memo": s("Notes."), "tags": list(TAGS), "cleared": b("Already checked against the bank statement.")}),
+                "category": k(CATEGORY), "memo": s("Notes."), "tags": list(TAGS), "cleared": b("Already checked against the bank statement."),
+                "every": n(REPEAT_EVERY), "unit": s(REPEAT_UNIT)}),
                 &["account", "amount", "payee"],
             ),
         },
@@ -364,10 +380,10 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "add_transfer",
-            description: "Records a transfer between two accounts.",
+            description: "Records a transfer between two accounts. With every or unit it also repeats: the transfer of date is recorded and the next ones are scheduled from one period later, in one change (a date still to come is only scheduled).",
             schema: obj(
                 json!({"from": k("Account to transfer from."), "to": k("Account to transfer to."), "amount": k("Positive amount in euros."),
-                "date": s(DATE), "memo": s("Notes.")}),
+                "date": s(DATE), "memo": s("Notes."), "every": n(REPEAT_EVERY), "unit": s(REPEAT_UNIT)}),
                 &["from", "to", "amount"],
             ),
         },
@@ -1522,13 +1538,31 @@ fn call_op(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Valu
                 import_marks: None,
                 card_row: false,
             };
-            db.atomically(|| {
-                let id = db.add_transaction(&tx)?.ok_or_else(|| anyhow!(tr("the transaction was not saved")))?;
-                if let Some(tags) = tags_arg(a)? {
-                    db.add_tags(id, &tags)?;
-                }
-                Ok(json!({"id": id, "transaction": db.transaction(id)?}))
-            })?
+            if let Some((every, unit)) = repetition(a)? {
+                let s = NewScheduled {
+                    account_id: tx.account_id,
+                    to_account_id: None,
+                    amount: tx.amount,
+                    payee: tx.payee.clone(),
+                    memo: tx.memo.clone(),
+                    category_id: tx.category_id,
+                    next_date: tx.date,
+                    every,
+                    unit,
+                };
+                let done = db.add_repeating(&s, &tags_arg(a)?.unwrap_or_default(), tx.cleared, db::today())?;
+                let transaction = done.ids.first().map(|id| db.transaction(*id)).transpose()?;
+                json!({"id": done.ids.first(), "transaction": transaction, "scheduled": done.scheduled,
+                    "next_date": done.next_date})
+            } else {
+                db.atomically(|| {
+                    let id = db.add_transaction(&tx)?.ok_or_else(|| anyhow!(tr("the transaction was not saved")))?;
+                    if let Some(tags) = tags_arg(a)? {
+                        db.add_tags(id, &tags)?;
+                    }
+                    Ok(json!({"id": id, "transaction": db.transaction(id)?}))
+                })?
+            }
         }
         "update_transaction" => {
             let id = req_i64(a, "id")?;
@@ -1579,14 +1613,31 @@ fn call_op(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Valu
         "add_transfer" => {
             let from = db.find_account(&req_str(a, "from")?)?;
             let to = db.find_account(&req_str(a, "to")?)?;
-            let (x, y) = db.add_transfer(
-                from.id,
-                to.id,
-                opt_date(a, "date")?.unwrap_or_else(db::today),
-                req_amount(a, "amount")?,
-                &opt_str(a, "memo").unwrap_or_default(),
-            )?;
-            json!({"ids": [x, y], "message": tr("transfer recorded")})
+            let date = opt_date(a, "date")?.unwrap_or_else(db::today);
+            let amount = req_amount(a, "amount")?;
+            let memo = opt_str(a, "memo").unwrap_or_default();
+            if let Some((every, unit)) = repetition(a)? {
+                // A scheduled movement has a description: a transfer's is its notes, or the word.
+                let payee = if memo.trim().is_empty() { tr("Transfer").to_string() } else { memo.clone() };
+                let s = NewScheduled {
+                    account_id: from.id,
+                    to_account_id: Some(to.id),
+                    amount,
+                    payee,
+                    memo,
+                    category_id: None,
+                    next_date: date,
+                    every,
+                    unit,
+                };
+                let done = db.add_repeating(&s, &[], false, db::today())?;
+                let message =
+                    if done.ids.is_empty() { tr("transfer scheduled") } else { tr("transfer recorded and scheduled") };
+                json!({"ids": done.ids, "scheduled": done.scheduled, "next_date": done.next_date, "message": message})
+            } else {
+                let (x, y) = db.add_transfer(from.id, to.id, date, amount, &memo)?;
+                json!({"ids": [x, y], "message": tr("transfer recorded")})
+            }
         }
         "transfer_candidates" => {
             let acc = db.find_account(&req_str(a, "account")?)?;
@@ -2858,5 +2909,33 @@ mod tests {
             assert!(db.verify_ledger().unwrap().problems.is_empty(), "{}", tool.name);
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_movement_with_a_repetition_is_recorded_and_scheduled_from_the_next_period() {
+        let db = one_account();
+        db.add_account("B", AccountKind::Bank, "EUR", 0, "").unwrap();
+        let today = db::d2s(db::today());
+        let v =
+            call(&db, "add_transfer", &json!({"from": "A", "to": "B", "amount": 50, "date": today, "every": 1}), None)
+                .unwrap();
+        assert_eq!(v["ids"].as_array().map(Vec::len), Some(2), "{v}");
+        let next = db::advance(db::today(), 1, "month");
+        assert_eq!(db.scheduled().unwrap()[0].next_date, next);
+        let v =
+            call(&db, "add_transaction", &json!({"account": "A", "amount": -5, "payee": "Gym", "unit": "week"}), None)
+                .unwrap();
+        assert!(v["transaction"]["id"].is_i64(), "{v}");
+        assert_eq!(db.scheduled().unwrap().len(), 2);
+        assert!(
+            call(
+                &db,
+                "add_transaction",
+                &json!({"account": "A", "amount": -5, "payee": "x", "unit": "fortnight"}),
+                None
+            )
+            .is_err()
+        );
+        assert_eq!(db.scheduled().unwrap().len(), 2);
     }
 }
