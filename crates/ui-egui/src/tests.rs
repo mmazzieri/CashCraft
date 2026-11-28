@@ -1,5 +1,5 @@
 use crate::dialogs::follow_repetition;
-use crate::gui::{App, Dialog, LANGUAGES, View, short_eur};
+use crate::gui::{App, Dialog, LANGUAGES, SchedForm, View, short_eur};
 use crate::ledger::{EntryForm, tree};
 use crate::reconcile::Unlock;
 use cashcraft_engine::db::{AccountKind, Db, NewTx};
@@ -1255,16 +1255,28 @@ fn the_recurring_form_reads_back_the_transaction() {
             let id = app.db.add_transaction(&tx).unwrap().unwrap();
             let t = app.db.transaction(id).unwrap();
             app.open_recurring(&t).unwrap();
-            let Some(Dialog::Scheduled(f)) = &app.dialog else { panic!("no scheduled form") };
+            let Some(Dialog::Scheduled(f)) = &mut app.dialog else { panic!("no scheduled form") };
             assert_eq!(
                 (f.account, f.transfer, f.expense, f.payee.as_str()),
                 (Some(account_id), false, true, "Mortgage")
             );
             assert_eq!(parse_amount(&f.amount).unwrap(), 65_050);
             assert_eq!(parse_date(&f.date), parse_date("2026-02-28"));
-            let followed = follow_repetition(date, &f.date, ("1", "month"), ("1", "week"));
-            assert_eq!(parse_date(&followed), parse_date("2026-02-07"));
-            assert_eq!(follow_repetition(date, "15/03/2026", ("1", "month"), ("1", "week")), "15/03/2026");
+            let repeat = |f: &mut SchedForm, unit: &str| {
+                let was = (f.every.clone(), f.unit.clone());
+                f.unit = unit.into();
+                follow_repetition(f, (&was.0, &was.1));
+            };
+            repeat(f, "week");
+            assert_eq!(parse_date(&f.date), parse_date("2026-02-07"));
+            repeat(f, "month");
+            assert_eq!(parse_date(&f.date), parse_date("2026-02-28"));
+            // A date the user wrote stays, even one that a repetition would give.
+            f.date = "07/02/2026".into();
+            for unit in ["week", "month", "day"] {
+                repeat(f, unit);
+                assert_eq!(f.date, "07/02/2026", "{unit}");
+            }
         });
     }
 }

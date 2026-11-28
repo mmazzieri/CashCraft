@@ -390,9 +390,9 @@ pub struct SchedForm {
     pub date: String,
     pub every: String,
     pub unit: String,
-    /// The date of the transaction it is made from: the next date follows it when the repetition
-    /// changes, until the user writes another.
-    pub from: Option<NaiveDate>,
+    /// The date of the transaction it is made from, and the due date the form wrote: while the due
+    /// date is still that one, it follows the repetition when that changes.
+    pub from: Option<(NaiveDate, String)>,
     pub error: String,
 }
 
@@ -1173,7 +1173,7 @@ impl App {
             date: fmt_date(s.next_date),
             every: s.every.to_string(),
             unit: s.unit,
-            from: Some(t.date),
+            from: Some((t.date, fmt_date(s.next_date))),
             error: String::new(),
         }));
         Ok(())

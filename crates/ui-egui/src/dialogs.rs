@@ -2,7 +2,7 @@
 
 use crate::gui::AccountForm;
 use crate::gui::{
-    App, CardPayments, Dialog, ImportState, PREVIEWED, Period, TurnForm, TxForm, View, account_combo, card,
+    App, CardPayments, Dialog, ImportState, PREVIEWED, Period, SchedForm, TurnForm, TxForm, View, account_combo, card,
     category_combo, column_combo, cut, error_text, expense_toggle, form_row, kind_icon, money, pal, primary_button,
     section_title,
 };
@@ -18,7 +18,6 @@ use cashcraft_engine::money::{DateOrder, fmt_date, fmt_eur, fmt_plain, parse_amo
 use cashcraft_engine::ofx::Kind;
 use cashcraft_engine::rules::parse_tags;
 use cashcraft_engine::transfers::OtherSide;
-use chrono::NaiveDate;
 use egui::{self, Color32, CornerRadius, Frame, Id, Margin, RichText, Ui};
 use std::collections::BTreeMap;
 
@@ -287,7 +286,7 @@ impl App {
                 }
                 Dialog::Scheduled(f) => {
                     ui.heading(tr("New scheduled transaction"));
-                    if let Some(d) = f.from {
+                    if let Some((d, _)) = f.from {
                         ui.label(
                             RichText::new(trf(
                                 "From the transaction of {date}, which stays as it is: the first due date comes after it.",
@@ -346,9 +345,7 @@ impl App {
                             ui.selectable_value(&mut f.unit, "year".to_string(), tr("years"));
                         });
                     });
-                    if let Some(d) = f.from {
-                        f.date = follow_repetition(d, &f.date, (&every_was, &unit_was), (&f.every, &f.unit));
-                    }
+                    follow_repetition(f, (&every_was, &unit_was));
                     if !f.error.is_empty() {
                         ui.label(RichText::new(&f.error).color(pal().red));
                     }
@@ -1530,14 +1527,17 @@ fn statement_summary(ui: &mut Ui, s: &Statement, allow_mismatch: &mut bool) {
     }
 }
 
-/// The due date of a scheduled transaction made from one on `from`, after its repetition went from
-/// `was` to `now` (every, unit): one period of the new repetition after `from` when `date` was one
-/// period of the old, so that it is never the transaction already in the books; else `date`, which
-/// the user wrote.
-pub(crate) fn follow_repetition(from: NaiveDate, date: &str, was: (&str, &str), now: (&str, &str)) -> String {
-    let every = |e: &str| e.trim().parse::<i64>().unwrap_or(1);
-    if was == now || parse_date(date) != Some(db::advance(from, every(was.0), was.1)) {
-        return date.to_string();
+/// After the repetition of a scheduled transaction made from a transaction went from `was` (every,
+/// unit) to the form's, the due date becomes one period of the new repetition after the transaction,
+/// so that it is never the transaction already in the books; but only while it is the date the form
+/// wrote, never one the user wrote.
+pub(crate) fn follow_repetition(f: &mut SchedForm, was: (&str, &str)) {
+    let Some((from, wrote)) = &mut f.from else { return };
+    if was == (f.every.as_str(), f.unit.as_str()) || f.date != *wrote {
+        return;
     }
-    fmt_date(db::advance(from, every(now.0), now.1))
+    let every = f.every.trim().parse::<i64>().unwrap_or(1);
+    let next = fmt_date(db::advance(*from, every, &f.unit));
+    f.date = next.clone();
+    *wrote = next;
 }
