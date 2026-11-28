@@ -534,7 +534,7 @@ fn a_file_without_transactions_and_an_empty_file_open() {
 }
 
 #[test]
-fn files_of_formats_2_to_9_open() {
+fn files_of_formats_2_to_10_open() {
     ledger_file_opens(2, include_str!("v2.sql"));
     ledger_file_opens(3, include_str!("v3.sql"));
     ledger_file_opens(4, include_str!("v4.sql"));
@@ -543,6 +543,7 @@ fn files_of_formats_2_to_9_open() {
     ledger_file_opens(7, include_str!("v7.sql"));
     ledger_file_opens(8, include_str!("v8.sql"));
     ledger_file_opens(9, include_str!("v9.sql"));
+    ledger_file_opens(10, include_str!("v10.sql"));
 }
 
 /// What is new is added, after a copy; everything else stays as it was.
@@ -552,7 +553,7 @@ fn ledger_file_opens(version: i64, schema: &str) {
     let table = match version {
         7 => "ledger_postings",
         8 => "book_postings",
-        9 => "journal_postings",
+        9 | 10 => "journal_postings",
         _ => "postings",
     };
     let run = |sql: &str| old.execute_batch(&sql.replace("postings", table)).unwrap();
@@ -1021,6 +1022,7 @@ fn a_migrated_file_is_like_a_new_one() {
         (7, include_str!("v7.sql")),
         (8, include_str!("v8.sql")),
         (9, include_str!("v9.sql")),
+        (10, include_str!("v10.sql")),
     ] {
         let dir = Dir::new(&format!("like-new-{version}"));
         let old = Connection::open(dir.file()).unwrap();
@@ -1148,4 +1150,30 @@ fn a_window_of_format_9_with_the_file_open_harms_no_envelope() {
     let sql = "SELECT COUNT(*) FROM envelope_changes WHERE kind='link' AND category_id IS NULL";
     assert_eq!(db.conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap(), 1);
     assert_sound(&db, "kept");
+}
+
+/// A file of format 10 gets the account of the changes in value and can take the value of an investment account,
+/// after a copy; the books are as they were.
+#[test]
+fn a_file_of_format_10_takes_values_of_investments() {
+    let dir = Dir::new("format-10-values");
+    let old = Connection::open(dir.file()).unwrap();
+    old.execute_batch(include_str!("v10.sql")).unwrap();
+    old.execute_batch(
+        "INSERT INTO accounts(id,name,kind) VALUES (1,'Fund','investment');
+         INSERT INTO entries(id,date,payee,opening_account_id) VALUES (1,'0001-01-01','',1);
+         INSERT INTO journal_postings(id,entry_id,ledger_account_id,amount,currency)
+         SELECT 1,1,id,1000,'EUR' FROM ledger_accounts WHERE money_account_id=1 UNION ALL
+         SELECT 2,1,id,-1000,'EUR' FROM ledger_accounts WHERE system='opening_balances';",
+    )
+    .unwrap();
+    old.pragma_update(None, "user_version", 10).unwrap();
+    let before = dump(&old);
+    let (db, _) = Db::open(&dir.file()).unwrap();
+    assert_sound(&db, "opened");
+    assert_eq!(dump(&Connection::open(dir.0.join("books.v10-backup.db")).unwrap()), before);
+    let day = crate::money::parse_date("2026-03-31").unwrap();
+    db.record_valuation(1, day, 1_250).unwrap();
+    assert_eq!(db.performance(1).unwrap().gain, 250);
+    assert_sound(&db, "valued");
 }

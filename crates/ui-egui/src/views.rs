@@ -544,6 +544,7 @@ impl App {
 
     pub fn register(&mut self, ui: &mut Ui, account: Option<i64>) {
         if let Some(id) = account {
+            self.values_card(ui, id);
             self.forecast_banner(ui, id);
         }
         let mut changed = false;

@@ -832,12 +832,12 @@ fn every_new_row_of_a_shared_file_has_an_id_of_its_own() {
         assert!(!new.is_empty(), "{table}");
         assert!(new.iter().all(|i| *i > 1_000_000_000_000 && *i < 1 << 53), "{table} {new:?}");
     }
-    // But for the two that every file has.
+    // But for the three that every file has.
     assert!(
         seeded
             .iter()
             .all(|(t, b)| b.iter().filter(|i| **i < 1_000_000_000_000).count()
-                <= 2 * usize::from(*t == "ledger_accounts"))
+                <= 3 * usize::from(*t == "ledger_accounts"))
     );
     assert_sound(&db, "ids");
     // Every INSERT of these tables names its id; triggers and migrations are not of a shared copy.

@@ -7,6 +7,7 @@
 use crate::db::{Cents, Db, TxEdit, TxKind, d2s, s2d};
 use crate::i18n::{tr, trf};
 use crate::money::{MAX_AMOUNT, fmt_machine};
+use crate::valuations::MARKET_VALUE;
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::NaiveDate;
 use rusqlite::{OptionalExtension, params};
@@ -454,6 +455,7 @@ impl Db {
                     self.conn.last_insert_rowid()
                 }
             };
+            self.moved.borrow_mut().extend(touched.iter().copied());
             let mut ids = Vec::with_capacity(d.lines.len());
             for l in &d.lines {
                 let id = match l.id {
@@ -786,6 +788,7 @@ impl Db {
 
     pub(crate) fn edit_transaction(&self, id: i64, tx: &TxEdit) -> Result<bool> {
         let Some(entry) = self.entry_of_transaction(id)? else { return Ok(false) };
+        self.refuse_valuation(entry)?;
         let mut d = self.load_draft(entry)?;
         let (kind, other) = self.kind_of(&d, id)?;
         let negated = tx.amount.checked_neg().ok_or_else(too_big)?;
@@ -857,6 +860,7 @@ impl Db {
     /// Moves a transaction to a category; `false` when it is not there or is a transfer.
     pub(crate) fn move_to_category(&self, id: i64, category: Option<i64>) -> Result<bool> {
         let Some(entry) = self.entry_of_transaction(id)? else { return Ok(false) };
+        self.refuse_valuation(entry)?;
         let mut d = self.load_draft(entry)?;
         match self.kind_of(&d, id)? {
             (TxKind::Transfer, _) => return Ok(false),
@@ -981,6 +985,8 @@ impl Db {
     pub(crate) fn remove_entry(&self, id: i64) -> Result<()> {
         self.atomically(|| {
             self.touch(&self.posting_ids(id)?)?;
+            let accounts = self.load_draft(id)?.lines.iter().map(|l| l.account).collect::<Vec<_>>();
+            self.moved.borrow_mut().extend(accounts);
             self.conn.execute("DELETE FROM entries WHERE id=?1", [id])?;
             Ok(())
         })
@@ -1060,6 +1066,7 @@ impl Db {
             let name: String = match system.as_deref() {
                 Some(OPENING) => tr("Opening balances").into(),
                 Some(UNCATEGORIZED) => tr("Uncategorized").into(),
+                Some(MARKET_VALUE) => tr("Changes in value").into(),
                 _ => r.get(3)?,
             };
             Ok(LedgerAccount {
@@ -1358,7 +1365,9 @@ impl Db {
         {
             problems.push(tr("the sum of the postings is not the one on record").into());
         }
-        for key in [OPENING, UNCATEGORIZED] {
+        // Since format 11; a file being updated has it only at the end.
+        let valued = self.has_table("valuations")?;
+        for key in [OPENING, UNCATEGORIZED].into_iter().chain(valued.then_some(MARKET_VALUE)) {
             if self.system_ledger(key).is_err() {
                 problems.push(no_ledger_account(key).to_string());
             }

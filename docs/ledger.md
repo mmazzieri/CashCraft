@@ -14,6 +14,7 @@ are sums of postings.
 | each category (`category_id`) | income or expense | any |
 | *Opening balances* (`system = opening_balances`) | equity | any |
 | *Uncategorized* (`system = uncategorized`) | expense | any |
+| *Changes in value* (`system = market_value`, since format 11) | equity | any |
 | accounts added by hand | that of the account above, or the one chosen | one; EUR by default |
 
 Triggers give each account and category its one row, whoever adds it. Income and expense accounts
@@ -124,7 +125,8 @@ read nor write a posting any more. The columns `date`, `origin`, `other_hashes`,
 ([cards.md](cards.md)) and `csv_layouts` ([import.md](import.md)) are
 added where they are missing, and the dates of sides left alone put right, after a copy as
 `cashcraft.v2-backup.db` (or `v3` to `v9`) with the rules below. Format 9 adds the tables of the reconciliations
-([reconcile.md](reconcile.md)), format 10 those of the envelopes ([envelopes.md](envelopes.md)). Lines with an import hash on a card with
+([reconcile.md](reconcile.md)), format 10 those of the envelopes ([envelopes.md](envelopes.md)), format 11 the values of
+investment accounts and *Changes in value* ([investments.md](investments.md)). Lines with an import hash on a card with
 statements of format 4 are taken as rows of those statements.
 
 ## Migration from formats 0 and 1

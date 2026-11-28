@@ -40,6 +40,12 @@ goes below `minimum`, with `needed`, what must come in before then to stay at th
 minimum is the one set with `set_minimum_balance` (`minimum: null` takes it away), else zero, and none for a
 credit card or a loan. Nothing else is foreseen: what is neither booked nor scheduled is not in it.
 
+## Investments
+
+`record_valuation` writes down what an investment account is worth on a day (it replaces the value of that day),
+`delete_valuation` takes one away, `list_valuations` gives each investment account's `balance`, `invested`, `gain` and
+values. A gain is neither income nor spending, and the net worth counts the value ([investments.md](investments.md)).
+
 ## Statements
 
 `preview_csv` and `import_csv` read CSV, Excel 97, OFX and PDF ([import.md](import.md)). `problems` lists the

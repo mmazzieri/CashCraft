@@ -1,3 +1,5 @@
+"{account}" is not an investment account: only those have a value of their own	"{account}" non è un conto di investimento: solo questi hanno un valore proprio
+"{account}" is worth {value} on {date}	"{account}" vale {value} al {date}
 "{amount}" has more than two decimals	"{amount}" ha più di due decimali
 "{amount}" is not a valid amount	importo "{amount}" non valido
 "{amount}" is too large	importo "{amount}" troppo grande
@@ -40,6 +42,7 @@ Also open on {computer}	Aperto anche su {computer}
 Amount	Importo
 Amount (signed)	Importo (con segno)
 Amount €	Importo €
+an account has at most {n} values	un conto ha al massimo {n} valori
 An income or expense account is a category.	Un conto di entrata o di uscita è una categoria.
 Analysis	Analisi
 Analyze	Analizza
@@ -73,7 +76,9 @@ Category created	Categoria creata
 Category deleted	Categoria eliminata
 Category renamed	Categoria rinominata
 Category updated	Categoria aggiornata
+Change in value	Variazione di valore
 changed on another computer: close the form that is open to see it	modificato su un altro computer: chiudi la scheda aperta per vederlo
+Changes in value	Variazioni di valore
 Changes not written to {file} yet are in {copy}	Modifiche non ancora scritte in {file} sono in {copy}
 Chart of accounts	Piano dei conti
 Checked against the bank statement	Verificato sull'estratto conto
@@ -114,6 +119,7 @@ Delete it and start with your own accounts	Eliminali e inizia con i tuoi conti
 Delete the account?	Eliminare il conto?
 Delete the entry?	Eliminare la registrazione?
 Delete the sample data?	Eliminare i dati di esempio?
+Delete this value	Elimina questo valore
 Deposit account	Conto deposito
 Description	Descrizione
 Details	Dettagli
@@ -144,6 +150,7 @@ First due date	Prima scadenza
 Format: separator '{separator}', encoding {encoding}, decimals '{decimal}', header on row {row}	Formato: separatore '{separator}', codifica {encoding}, decimali '{decimal}', intestazione alla riga {row}
 From	Da
 From {from} to {to}	Dal {from} al {to}
+Gain	Guadagno
 Gas Station	Distributore Carburante
 Gas and water	Gas e acqua
 Gifts	Regali
@@ -171,6 +178,8 @@ Interest earned	Interessi creditori
 Internet subscription	Abbonamento internet
 Invert the sign (credit cards)	Inverti segno (carte di credito)
 Investment	Investimento
+Investment plan	Piano di accumulo
+Investment portfolio	Portafoglio investimenti
 Investments	Investimenti
 it is not a data file of CashCraft	non è un archivio di CashCraft
 It will be used in the other way when CashCraft is started again.	Sarà usato nell'altro modo al prossimo avvio di CashCraft.
@@ -180,8 +189,17 @@ July	luglio
 June	giugno
 Keep it in a synced folder…	Tienilo in una cartella sincronizzata…
 Language	Lingua
+Last value written: {date}.	Ultimo valore scritto: {date}.
 Light	Chiaro
 Dark	Scuro
+no value of "{account}" on {date}	nessun valore di "{account}" al {date}
+No value written yet: the balance is the money put in.	Nessun valore scritto: il saldo è il denaro versato.
+Put in	Versato
+put in {invested}, gain {gain}	versati {invested}, guadagno {gain}
+The balance becomes this value; the difference is a change in value, neither income nor spending	Il saldo diventa questo valore; la differenza è una variazione di valore, né entrata né spesa
+The day of the value, as the bank or the platform shows it	Il giorno del valore, come lo mostra la banca o la piattaforma
+the value of an account cannot be below zero	il valore di un conto non può essere sotto zero
+The value of the account cannot be read: {error}	Il valore del conto non si può leggere: {error}
 Theme	Tema
 Last 12 months	Ultimi 12 mesi
 Last 3 months	Ultimi 3 mesi
@@ -336,6 +354,7 @@ the working copy {path} cannot be read	la copia di lavoro {path} non si può leg
 then remove the old file	poi elimina il vecchio file
 there is no log beside the data file	non c'è un registro accanto all'archivio
 They categorize imported transactions	Assegnano la categoria ai movimenti importati
+this is the value of an investment account on a day: write the new value, or delete it	questo è il valore di un conto di investimento in un giorno: scrivi il nuovo valore, oppure eliminalo
 This month	Questo mese
 This year	Quest'anno
 Through a private copy (synced folders, network drives)	Tramite una copia privata (cartelle sincronizzate, unità di rete)
@@ -368,6 +387,11 @@ Used directly	Usato direttamente
 Used directly, in {service}	Usato direttamente, in {service}
 Used through a private copy	Usato tramite una copia privata
 Used through a private copy, in {service}	Usato tramite una copia privata, in {service}
+Value	Valore
+Value deleted	Valore eliminato
+value of "{account}" on {date} deleted	valore di "{account}" al {date} eliminato
+Value of the account	Valore del conto
+Values written ({n})	Valori scritti ({n})
 Video streaming	Streaming Video
 waiting for the folder: {reason}	in attesa della cartella: {reason}
 waiting: a program has the data file open, or left its log beside it (see `cashcraft-cli data recover`)	in attesa: un programma ha aperto l'archivio, o ha lasciato accanto il suo registro (vedi `cashcraft-cli data recover`)
@@ -515,9 +539,14 @@ unknown operation "{name}"	operazione "{name}" sconosciuta
 unknown repetition unit "{unit}" (day, week, month, year)	unità di ripetizione "{unit}" sconosciuta (giorno, settimana, mese, anno)
 up to	fino al
 weeks	settimane
+Worth	Vale
+Worth on	Valore al
+worth {amount}	vale {amount}
+Worth {value} on {date}	Vale {value} al {date}
 write a description	scrivi una descrizione
 Write it again where it was	Riscrivilo dov'era
 write the payee or a description	scrivi il beneficiario o una descrizione
+Write the value	Scrivi il valore
 years	anni
 yes	sì
 yyyy-mm-dd	gg/mm/aaaa

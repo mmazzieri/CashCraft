@@ -763,6 +763,8 @@ pub struct App {
     pub new_cat: (String, bool, Option<i64>),
     pub rename_cat: Option<(i64, String)>,
     pub dash: Option<Dash>,
+    /// The value of the investment account in view.
+    pub values: crate::investments::ValuesState,
     /// The projected balances and the day they start from, made again when the data or the day
     /// changes; the error when they could not be made.
     pub forecasts: Option<(NaiveDate, std::result::Result<Vec<cashcraft_engine::forecast::Forecast>, String>)>,
@@ -941,6 +943,7 @@ impl App {
             new_cat: (String::new(), false, None),
             rename_cat: None,
             dash: None,
+            values: Default::default(),
             forecasts: None,
             forecast_account: None,
             report: None,
@@ -1027,6 +1030,7 @@ impl App {
             // An amount being typed could mean something else in the new language.
             self.budget_edit = None;
             self.new_budget.1.clear();
+            self.values.value.clear();
         }
         self.act(ui, r.map(|_| String::new()));
     }
@@ -1056,6 +1060,7 @@ impl App {
             r.stale = true;
         }
         self.envelopes.stale = true;
+        self.values.read = None;
     }
 
     pub fn reload_txs(&mut self) {
