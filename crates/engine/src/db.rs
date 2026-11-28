@@ -1541,7 +1541,8 @@ impl Db {
             self.conn.execute_batch(
                 "DELETE FROM scheduled_items; DELETE FROM rule_runs; DELETE FROM entries;
                  DELETE FROM ledger_accounts WHERE money_account_id IS NOT NULL;
-                 DELETE FROM accounts; DELETE FROM category_budgets; DELETE FROM envelope_changes; DELETE FROM envelopes;",
+                 DELETE FROM accounts; DELETE FROM category_budgets; DELETE FROM envelope_changes; DELETE FROM envelopes;
+                 DELETE FROM meta WHERE key GLOB 'minimum_balance:*';",
             )?;
             self.set_meta("demo", "0")
         })

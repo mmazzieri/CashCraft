@@ -193,3 +193,17 @@ fn every_account_in_use_has_a_forecast() {
     db.add_account("B", AccountKind::Cash, "EUR", 0, "").unwrap();
     assert_eq!(db.forecasts(day("2026-01-01"), 30).unwrap().len(), 2);
 }
+
+#[test]
+fn clearing_the_accounts_forgets_their_minimums() {
+    let db = Db::open_in_memory().unwrap();
+    let bank = db.add_account("Bank", AccountKind::Bank, "EUR", 0, "").unwrap();
+    db.set_minimum_balance(bank, Some(500)).unwrap();
+    db.set_meta("demo", "1").unwrap();
+    db.clear_accounts().unwrap();
+    // A new account, which may get the same id, starts with none.
+    let again = db.add_account("Again", AccountKind::Bank, "EUR", 0, "").unwrap();
+    assert_eq!(db.minimum_balance(again), None);
+    assert_eq!(db.meta(&format!("minimum_balance:{bank}")), None);
+    assert_sound(&db, "cleared");
+}
