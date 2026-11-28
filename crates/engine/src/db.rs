@@ -1487,6 +1487,7 @@ impl Db {
         if !self.conn.is_autocommit() {
             // What was still to be worked out again before the savepoint stays so when it is rolled back.
             let pending = self.moved.borrow().clone();
+            let touched = self.touched.borrow().clone();
             self.conn.execute_batch("SAVEPOINT nested")?;
             let out = f();
             let end = if out.is_ok() { "RELEASE nested" } else { "ROLLBACK TO nested; RELEASE nested" };
@@ -1495,6 +1496,10 @@ impl Db {
                 ended?;
             } else {
                 self.moved.borrow_mut().extend(pending);
+                let mut now = self.touched.borrow_mut();
+                for (posting, rows) in touched {
+                    now.entry(posting).or_insert(rows);
+                }
             }
             return out;
         }
@@ -1511,10 +1516,12 @@ impl Db {
     fn post_scheduled_until(&self, until: NaiveDate) -> Result<Posted> {
         let mut out = Posted::default();
         for s in self.scheduled()? {
-            // The values of investments are worked out with each item, so that one that cannot be is that item's failure.
+            // The values of investments are worked out, and reconciliations checked, with each item: what fails is that item's.
             match self.atomically(|| {
                 let n = self.post_one_scheduled(&s, until)?;
                 self.revalue_moved()?;
+                // A value worked out again may belong to a finished reconciliation: that too is this item's failure.
+                self.check_reconciled()?;
                 Ok(n)
             }) {
                 Ok(n) => out.posted += n,

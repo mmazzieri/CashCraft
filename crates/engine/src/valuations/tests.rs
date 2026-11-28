@@ -203,3 +203,44 @@ fn a_scheduled_transaction_whose_values_cannot_be_worked_out_fails_alone() {
     assert_eq!(balance(&db, fund), crate::money::MAX_AMOUNT);
     assert_sound(&db, "scheduled");
 }
+
+#[test]
+fn a_scheduled_transaction_that_would_change_a_reconciled_value_fails_alone() {
+    use crate::reconcile::{Source, Start};
+    let (db, bank, fund) = books();
+    db.record_valuation(fund, day("2026-03-31"), 103_500).unwrap();
+    let r = db
+        .start_reconciliation(&Start {
+            account: fund,
+            date: day("2026-03-31"),
+            balance: 103_500,
+            source: Source::Typed,
+            rows: &[],
+        })
+        .unwrap()
+        .id;
+    let all: Vec<i64> = db
+        .transactions(&crate::db::TxFilter { account_id: Some(fund), ..Default::default() })
+        .unwrap()
+        .iter()
+        .map(|t| t.id)
+        .collect();
+    db.clear_for_reconciliation(r, &all, true).unwrap();
+    db.finish_reconciliation(r).unwrap();
+    let item = |account: i64| crate::db::NewScheduled {
+        account_id: account,
+        amount: -100,
+        payee: "Fee".into(),
+        next_date: day("2026-03-10"),
+        every: 1,
+        unit: "month".into(),
+        ..Default::default()
+    };
+    db.add_scheduled(&item(fund)).unwrap();
+    db.add_scheduled(&item(bank)).unwrap();
+    let posted = db.post_scheduled(day("2026-03-10")).unwrap();
+    assert_eq!((posted.posted, posted.failed.len()), (1, 1));
+    assert_eq!(db.balance_on(fund, day("2026-03-31")).unwrap(), 103_500);
+    assert_eq!(db.valuations(fund).unwrap()[0].amount, 3_500);
+    assert_sound(&db, "reconciled");
+}
