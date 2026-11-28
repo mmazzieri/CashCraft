@@ -1408,6 +1408,9 @@ impl Db {
             bail!(tr("the repetition goes from 1 to 1000"));
         }
         if let Some(to) = s.to_account_id {
+            if s.account_id == to {
+                bail!(tr("the two accounts of the transfer are the same"));
+            }
             self.check_transfer(s.account_id, to)?;
         }
         self.conn.execute(

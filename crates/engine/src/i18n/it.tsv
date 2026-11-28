@@ -23,6 +23,8 @@
 + Transaction	+ Movimento
 A complete copy is put in the folder you choose, checked, and used from then on.	Una copia completa va nella cartella scelta, viene verificata e da allora si usa quella.
 a network drive	un'unità di rete
+a scheduled movement keeps no tags: add them once it is recorded	un movimento pianificato non tiene etichette: si aggiungono quando viene registrato
+A scheduled movement keeps no tags: add them once it is recorded.	Un movimento pianificato non tiene etichette: si aggiungono quando viene registrato.
 a synced folder	una cartella sincronizzata
 Account	Conto
 Account created	Conto creato

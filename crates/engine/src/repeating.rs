@@ -2,7 +2,7 @@
 //! the first is not counted twice.
 
 use crate::db::{Db, NewScheduled, NewTx, advance, normalize_unit};
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use chrono::NaiveDate;
 use serde::Serialize;
 
@@ -32,6 +32,9 @@ impl Db {
         self.atomically(|| {
             let mut ids = Vec::new();
             let mut next_date = s.next_date;
+            if s.next_date > today && !tags.is_empty() {
+                bail!(crate::i18n::tr("a scheduled movement keeps no tags: add them once it is recorded"));
+            }
             if s.next_date <= today {
                 match s.to_account_id {
                     Some(to) => {

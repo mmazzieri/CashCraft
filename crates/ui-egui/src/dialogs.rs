@@ -1619,7 +1619,11 @@ pub(crate) fn repeat_note(f: &TxForm) -> String {
         return tr("Write the date of the first one.").to_string();
     };
     if date > db::today() {
-        return trf("Nothing is recorded now: it is scheduled from {date}.", &[("date", &fmt_date(date))]).to_string();
+        let note = trf("Nothing is recorded now: it is scheduled from {date}.", &[("date", &fmt_date(date))]);
+        if !f.transfer && !f.tags.trim().is_empty() {
+            return format!("{note} {}", tr("A scheduled movement keeps no tags: add them once it is recorded."));
+        }
+        return note.to_string();
     }
     let every = f.every.trim().parse().unwrap_or(1);
     let next = db::advance(date, every, &f.unit);

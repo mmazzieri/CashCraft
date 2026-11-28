@@ -85,3 +85,15 @@ fn when_the_schedule_cannot_be_made_the_movement_is_not_written_either() {
     assert_eq!((count(&db, fund), db.scheduled().unwrap().len()), (0, 0));
     assert_sound(&db, "refused");
 }
+
+#[test]
+fn a_repetition_still_to_come_refuses_what_it_could_not_keep() {
+    let (db, bank, _) = books();
+    let today = day("2026-04-20");
+    // A transfer from an account to itself would fail at every posting run: refused when it is made.
+    assert!(db.add_repeating(&monthly(bank, Some(bank), "2026-05-01", 10_000), &[], false, today).is_err());
+    // A scheduled item has no tags: they are refused rather than dropped.
+    let tags = ["home".to_string()];
+    assert!(db.add_repeating(&monthly(bank, None, "2026-05-01", -2_500), &tags, false, today).is_err());
+    assert!(db.scheduled().unwrap().is_empty());
+}
