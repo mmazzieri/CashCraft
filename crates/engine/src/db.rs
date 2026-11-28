@@ -1413,6 +1413,46 @@ impl Db {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// A scheduled transaction made from transaction `id`, not saved: the same account, amount, payee,
+    /// notes and category, or the two accounts of a transfer, every month. The next date is one month
+    /// after the transaction's, so that the transaction already in the books is not counted again;
+    /// the transaction itself is left as it is. A transaction with several categories, or with an
+    /// account of the chart, has no scheduled form: a scheduled transaction has one category.
+    pub fn scheduled_from(&self, id: i64) -> Result<NewScheduled> {
+        let t = self.transaction(id)?;
+        let (account_id, to_account_id, amount, category_id) = match t.kind {
+            TxKind::Category | TxKind::Uncategorized => (t.account_id, None, t.amount, t.category_id),
+            TxKind::Transfer => {
+                let peer = t.transfer_peer.ok_or_else(|| no_transaction(id))?;
+                let other = self.transaction(peer)?.account_id;
+                let amount = t.amount.checked_abs().ok_or_else(|| anyhow!(tr("the amount is too large")))?;
+                // A scheduled transfer moves money out of its account.
+                if t.amount < 0 {
+                    (t.account_id, Some(other), amount, None)
+                } else {
+                    (other, Some(t.account_id), amount, None)
+                }
+            }
+            TxKind::Split => bail!(tr(
+                "a transaction with several categories cannot be made recurring: a scheduled transaction has one category"
+            )),
+            TxKind::Other => bail!(tr(
+                "only a transaction with a category, or a transfer between your accounts, can be made recurring"
+            )),
+        };
+        Ok(NewScheduled {
+            account_id,
+            to_account_id,
+            amount,
+            payee: t.payee,
+            memo: t.memo,
+            category_id,
+            next_date: advance(t.date, 1, "month"),
+            every: 1,
+            unit: "month".into(),
+        })
+    }
+
     pub fn delete_scheduled(&self, id: i64) -> Result<()> {
         self.conn.execute("DELETE FROM scheduled_items WHERE id=?1", [id])?;
         Ok(())

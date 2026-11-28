@@ -605,6 +605,7 @@ impl App {
         let mut delete: Option<Transaction> = None;
         let mut open_entry: Option<i64> = None;
         let mut turn: Option<Transaction> = None;
+        let mut recurring: Option<Transaction> = None;
         let mut rule_from: Option<Transaction> = None;
         let mut set_cat: Option<(i64, Option<i64>)> = None;
         let mut want_import = false;
@@ -785,6 +786,9 @@ impl App {
                                 if turn_button(ui, &tc) {
                                     turn = Some(tc.clone());
                                 }
+                                if recurring_button(ui, &tc) {
+                                    recurring = Some(tc.clone());
+                                }
                                 if !has_category(&tc) && ui.button(tr("📖 Entry…")).clicked() {
                                     open_entry = Some(tc.entry_id);
                                 }
@@ -827,6 +831,9 @@ impl App {
                 if turn_button(ui, &t) {
                     turn = Some(t.clone());
                 }
+                if recurring_button(ui, &t) {
+                    recurring = Some(t.clone());
+                }
                 if !has_category(&t) && ui.button(tr("📖 Entry…")).clicked() {
                     open_entry = Some(t.entry_id);
                 }
@@ -860,6 +867,11 @@ impl App {
         }
         if let Some(t) = turn {
             self.open_turn(&t);
+        }
+        if let Some(t) = recurring
+            && let Err(e) = self.open_recurring(&t)
+        {
+            self.notify(ui, error_text(&e));
         }
         if let Some(id) = open_entry {
             self.dialog = Some(Dialog::EntryDetail(id));
@@ -1357,6 +1369,30 @@ pub fn turn_button(ui: &mut Ui, t: &Transaction) -> bool {
     ui.button(text)
         .on_hover_text(tr("Money moved between two of your accounts is neither income nor an expense (⌘T)."))
         .clicked()
+}
+
+/// The button that makes a scheduled transaction of a transaction; whether it was clicked. One with
+/// several categories, or with an account of the chart, cannot be: the button says why.
+pub fn recurring_button(ui: &mut Ui, t: &Transaction) -> bool {
+    let why = match t.kind {
+        TxKind::Split => Some(tr("A scheduled transaction has one category: this transaction has several.")),
+        TxKind::Other => {
+            Some(tr("Only a transaction with a category, or a transfer between your accounts, can be made recurring."))
+        }
+        _ => None,
+    };
+    let b = ui.add_enabled(why.is_none(), egui::Button::new(tr("📅 Make recurring…")));
+    match why {
+        Some(why) => {
+            b.on_disabled_hover_text(why);
+            false
+        }
+        None => b
+            .on_hover_text(tr(
+                "Schedules it every month, starting a month after this one; this transaction stays as it is.",
+            ))
+            .clicked(),
+    }
 }
 
 /// A setting's name in the sidebar, padded so the menus beside it line up.

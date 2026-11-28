@@ -2,14 +2,14 @@
 
 use crate::gui::AccountForm;
 use crate::gui::{
-    App, CardPayments, Dialog, ImportState, PREVIEWED, Period, TurnForm, TxForm, View, account_combo, card,
+    App, CardPayments, Dialog, ImportState, PREVIEWED, Period, SchedForm, TurnForm, TxForm, View, account_combo, card,
     category_combo, column_combo, cut, error_text, expense_toggle, form_row, kind_icon, money, pal, primary_button,
     section_title,
 };
 use crate::reconcile::Unlock;
 use anyhow::Result;
 use cashcraft_engine::cards::{CardStatement, PaymentProposal};
-use cashcraft_engine::db::{Account, AccountKind, NewScheduled, NewTx, Transaction, TxEdit};
+use cashcraft_engine::db::{self, Account, AccountKind, NewScheduled, NewTx, Transaction, TxEdit};
 use cashcraft_engine::duplicates::{Choice, Decision, LikelyDuplicate};
 use cashcraft_engine::i18n::{tr, trf, trn};
 use cashcraft_engine::importer::{self, ImportResult, Statement};
@@ -286,7 +286,18 @@ impl App {
                 }
                 Dialog::Scheduled(f) => {
                     ui.heading(tr("New scheduled transaction"));
+                    if let Some((d, _)) = f.from {
+                        ui.label(
+                            RichText::new(trf(
+                                "From the transaction of {date}, which stays as it is: the first due date comes after it.",
+                                &[("date", &fmt_date(d))],
+                            ))
+                            .color(pal().muted),
+                        );
+                    }
                     ui.add_space(8.0);
+                    // The repetition before the user changes it: a due date that followed it, follows the new one.
+                    let (every_was, unit_was) = (f.every.clone(), f.unit.clone());
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut f.transfer, false, tr("Transaction"));
                         ui.radio_value(&mut f.transfer, true, tr("Transfer"));
@@ -308,13 +319,18 @@ impl App {
                     form_row(ui, tr("Description"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.payee).desired_width(260.0));
                     });
+                    form_row(ui, tr("Notes"), |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut f.memo).desired_width(260.0));
+                    });
                     if !f.transfer {
                         form_row(ui, tr("Category"), |ui| {
                             category_combo(ui, "schcat", &cats, &mut f.category, tr("None"));
                         });
                     }
                     form_row(ui, tr("First due date"), |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.date).desired_width(120.0));
+                        if ui.add(egui::TextEdit::singleline(&mut f.date).desired_width(120.0)).changed() {
+                            date_by_hand(f);
+                        }
                     });
                     form_row(ui, tr("Repeat every"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.every).desired_width(40.0));
@@ -331,6 +347,7 @@ impl App {
                             ui.selectable_value(&mut f.unit, "year".to_string(), tr("years"));
                         });
                     });
+                    follow_repetition(f, (&every_was, &unit_was));
                     if !f.error.is_empty() {
                         ui.label(RichText::new(&f.error).color(pal().red));
                     }
@@ -355,7 +372,12 @@ impl App {
                                 if f.payee.trim().is_empty() {
                                     anyhow::bail!(tr("write a description"));
                                 }
-                                let memo = if f.transfer { f.payee.clone() } else { String::new() };
+                                // A transfer's postings are named by its accounts: the description goes in the notes.
+                                let memo = if f.transfer && f.memo.trim().is_empty() {
+                                    f.payee.clone()
+                                } else {
+                                    f.memo.clone()
+                                };
                                 let cat = if f.transfer { None } else { f.category };
                                 self.db.add_scheduled(&NewScheduled {
                                     account_id: acc,
@@ -1505,4 +1527,26 @@ fn statement_summary(ui: &mut Ui, s: &Statement, allow_mismatch: &mut bool) {
     } else if !s.is_sound() {
         ui.checkbox(allow_mismatch, tr("The totals do not match: import the rows all the same"));
     }
+}
+
+/// The user wrote the due date, even back to the one proposed: it no longer follows the repetition.
+pub(crate) fn date_by_hand(f: &mut SchedForm) {
+    if let Some((_, wrote)) = &mut f.from {
+        wrote.clear();
+    }
+}
+
+/// After the repetition of a scheduled transaction made from a transaction went from `was` (every,
+/// unit) to the form's, the due date becomes one period of the new repetition after the transaction,
+/// so that it is never the transaction already in the books; but only while it is the date the form
+/// wrote, never one the user wrote (a hand edit clears what the form wrote).
+pub(crate) fn follow_repetition(f: &mut SchedForm, was: (&str, &str)) {
+    let Some((from, wrote)) = &mut f.from else { return };
+    if was == (f.every.as_str(), f.unit.as_str()) || wrote.is_empty() || f.date != *wrote {
+        return;
+    }
+    let every = f.every.trim().parse::<i64>().unwrap_or(1);
+    let next = fmt_date(db::advance(*from, every, &f.unit));
+    f.date = next.clone();
+    *wrote = next;
 }

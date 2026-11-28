@@ -1,4 +1,5 @@
-use crate::gui::{App, Dialog, LANGUAGES, View, short_eur};
+use crate::dialogs::{date_by_hand, follow_repetition};
+use crate::gui::{App, Dialog, LANGUAGES, SchedForm, View, short_eur};
 use crate::ledger::{EntryForm, tree};
 use crate::reconcile::Unlock;
 use cashcraft_engine::db::{AccountKind, Db, NewTx};
@@ -1238,4 +1239,56 @@ fn the_start_view_never_changes_a_file() {
     assert_eq!(sample.db.budget_mode(), Mode::Envelopes);
     drop(app);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Make recurring (#42) opens the scheduled form filled in from the transaction, a month after it; the
+/// due date follows the repetition until the user writes another.
+#[test]
+fn the_recurring_form_reads_back_the_transaction() {
+    for l in [Lang::It, Lang::En] {
+        with_lang(l, || {
+            let db = Db::open_in_memory().unwrap();
+            let account_id = db.add_account("A", AccountKind::Bank, "EUR", 0, "").unwrap();
+            let mut app = App::new(db, None);
+            let date = parse_date("2026-01-31").unwrap();
+            let tx = NewTx { account_id, amount: -65_050, date, payee: "Mortgage".into(), ..Default::default() };
+            let id = app.db.add_transaction(&tx).unwrap().unwrap();
+            let t = app.db.transaction(id).unwrap();
+            app.open_recurring(&t).unwrap();
+            let Some(Dialog::Scheduled(f)) = &mut app.dialog else { panic!("no scheduled form") };
+            assert_eq!(
+                (f.account, f.transfer, f.expense, f.payee.as_str()),
+                (Some(account_id), false, true, "Mortgage")
+            );
+            assert_eq!(parse_amount(&f.amount).unwrap(), 65_050);
+            assert_eq!(parse_date(&f.date), parse_date("2026-02-28"));
+            let repeat = |f: &mut SchedForm, unit: &str| {
+                let was = (f.every.clone(), f.unit.clone());
+                f.unit = unit.into();
+                follow_repetition(f, (&was.0, &was.1));
+            };
+            repeat(f, "week");
+            assert_eq!(parse_date(&f.date), parse_date("2026-02-07"));
+            repeat(f, "month");
+            assert_eq!(parse_date(&f.date), parse_date("2026-02-28"));
+            // A date the user wrote stays, even one that a repetition would give or the one proposed.
+            f.date = "07/02/2026".into();
+            date_by_hand(f);
+            for unit in ["week", "month", "day"] {
+                repeat(f, unit);
+                assert_eq!(f.date, "07/02/2026", "{unit}");
+            }
+            repeat(f, "month");
+            f.date = with_lang(l, || cashcraft_engine::money::fmt_date(parse_date("2026-02-28").unwrap()));
+            date_by_hand(f);
+            let proposed = f.date.clone();
+            repeat(f, "week");
+            assert_eq!(f.date, proposed);
+            f.date = "07/02/2026".into();
+            for unit in ["month", "day"] {
+                repeat(f, unit);
+                assert_eq!(f.date, "07/02/2026", "{unit}");
+            }
+        });
+    }
 }

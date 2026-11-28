@@ -690,12 +690,13 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "add_scheduled",
-            description: "Adds a recurring transaction (or a recurring transfer, with to_account).",
+            description: "Adds a recurring transaction (or a recurring transfer, with to_account). With from_transaction it starts from a transaction in the register: its account, amount, payee, notes and category (or the other account of a transfer), with the next date one period after it, so that the transaction already there is not counted twice; the other parameters change what they name, and the transaction is left as it is. Without from_transaction, account, amount, payee and next_date are required.",
             schema: obj(
-                json!({"account": k(ACCOUNT), "amount": k(AMOUNT), "payee": s("Payee."), "next_date": s("Next due date."),
+                json!({"from_transaction": n("Id of a transaction to start from (not one with several categories)."),
+                "account": k(ACCOUNT), "amount": k(AMOUNT), "payee": s("Payee."), "next_date": s("Next due date."),
                 "every": n("Every how many units (default 1)."), "unit": s("day, week, month, year (default month)."),
                 "category": k(CATEGORY), "memo": s("Notes."), "to_account": k("Account to transfer to, for a transfer.")}),
-                &["account", "amount", "payee", "next_date"],
+                &[],
             ),
         },
         ToolDef {
@@ -2004,25 +2005,58 @@ fn call_op(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Valu
         }
         "list_scheduled" => json!({"scheduled": db.scheduled()?}),
         "add_scheduled" => {
-            let acc = db.find_account(&req_str(a, "account")?)?;
-            let to = match opt_str(a, "to_account") {
-                Some(t) if !t.trim().is_empty() => Some(db.find_account(&t)?.id),
-                _ => None,
+            // From a transaction: what it has, changed by what is given.
+            let from = opt_i64_strict(a, "from_transaction")?;
+            let base = from.map(|id| db.scheduled_from(id)).transpose()?;
+            let given = |k| opt_str(a, k).filter(|v| !v.trim().is_empty());
+            let account_id = match (given("account"), &base) {
+                (Some(acc), _) => db.find_account(&acc)?.id,
+                (None, Some(b)) => b.account_id,
+                (None, None) => db.find_account(&req_str(a, "account")?)?.id,
             };
-            let cat = match opt_str(a, "category") {
-                Some(c) if !c.trim().is_empty() => Some(db.find_category(&c)?.id),
-                _ => None,
+            let to_account_id = match given("to_account") {
+                Some(t) => Some(db.find_account(&t)?.id),
+                None => base.as_ref().and_then(|b| b.to_account_id),
+            };
+            let category_id = match given("category") {
+                Some(c) => Some(db.find_category(&c)?.id),
+                None => base.as_ref().and_then(|b| b.category_id).filter(|_| to_account_id.is_none()),
+            };
+            let amount = match (&base, a.get("amount")) {
+                (Some(b), None | Some(Value::Null)) => b.amount,
+                _ => req_amount(a, "amount")?,
+            };
+            let payee = match (given("payee"), &base) {
+                (Some(p), _) => p,
+                (None, Some(b)) => b.payee.clone(),
+                (None, None) => req_str(a, "payee")?,
+            };
+            let every = opt_i64(a, "every").unwrap_or(1);
+            let unit = opt_str(a, "unit").unwrap_or_else(|| "month".into());
+            let next_date = match (given("next_date"), &base) {
+                (Some(d), _) => date_arg(&d)?,
+                // One period after the transaction, with the period asked for.
+                (None, Some(_)) => {
+                    let date = db.transaction(from.unwrap_or_default())?.date;
+                    db::advance(date, every, db::normalize_unit(&unit)?)
+                }
+                (None, None) => date_arg(&req_str(a, "next_date")?)?,
+            };
+            let memo = match (opt_str(a, "memo"), &base) {
+                (Some(m), _) => m,
+                (None, Some(b)) => b.memo.clone(),
+                (None, None) => String::new(),
             };
             let id = db.add_scheduled(&NewScheduled {
-                account_id: acc.id,
-                to_account_id: to,
-                amount: req_amount(a, "amount")?,
-                payee: req_str(a, "payee")?,
-                memo: opt_str(a, "memo").unwrap_or_default(),
-                category_id: cat,
-                next_date: date_arg(&req_str(a, "next_date")?)?,
-                every: opt_i64(a, "every").unwrap_or(1),
-                unit: opt_str(a, "unit").unwrap_or_else(|| "month".into()),
+                account_id,
+                to_account_id,
+                amount,
+                payee,
+                memo,
+                category_id,
+                next_date,
+                every,
+                unit,
             })?;
             json!({"id": id})
         }
