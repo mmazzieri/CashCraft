@@ -252,7 +252,7 @@ fn transaction_json(db: &Db, id: i64) -> Result<Value> {
 }
 
 /// Operations that may change reconciled transactions: they take `unreconcile`.
-const UNRECONCILING: [&str; 8] = [
+const UNRECONCILING: [&str; 10] = [
     "update_transaction",
     "delete_transaction",
     "turn_into_transfer",
@@ -261,6 +261,8 @@ const UNRECONCILING: [&str; 8] = [
     "link_card_payment",
     "unlink_card_payment",
     "set_account_currency",
+    "record_valuation",
+    "delete_valuation",
 ];
 const UNRECONCILE: &str = "The user confirmed changing reconciled transactions: their reconciliation no longer counts them and shows as broken. Only after a refusal that names them, and the user's yes.";
 const RECONCILIATION: &str = "Id of the reconciliation, from start_reconciliation or list_reconciliations.";
@@ -731,6 +733,19 @@ fn definitions() -> Vec<ToolDef> {
             schema: obj(json!({"until": s("Up to this day.")}), &[]),
         },
         ToolDef {
+            name: "forecast",
+            description: "Projected balance of an account (or of every account in use) for the coming days: today's balance, then the transactions already in the books with a later date and every occurrence of the scheduled transactions (both sides of a scheduled transfer; those already due and not recorded count today). Gives each item with the balance after it, the lowest balance, and shortfall: the first day below the account's minimum and how much must come in before then to stay above it to the end. Only what is in the books or scheduled is projected.",
+            schema: obj(
+                json!({"account": k("Account (default: every account in use)."), "days": n("Days ahead, 1 to 730 (default 90).")}),
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "set_minimum_balance",
+            description: "Sets the minimum balance of an account, used by forecast; without minimum (or null) takes it away. Without one, an account that holds money has zero, and a credit card or loan has none.",
+            schema: obj(json!({"account": k(ACCOUNT), "minimum": k(AMOUNT)}), &["account"]),
+        },
+        ToolDef {
             name: "export_csv",
             description: "Exports transactions to a CSV file. Over MCP, and in English: comma separator, amounts as 1234.56, dates as YYYY-MM-DD. In the Italian command line: semicolon, 1.234,56, DD/MM/YYYY.",
             schema: obj(
@@ -1038,7 +1053,7 @@ fn month_arg(s: &str) -> Result<NaiveDate> {
 
 /// Converte ricorsivamente i campi in centesimi in euro.
 fn to_eur(v: Value) -> Value {
-    const KEYS: [&str; 22] = [
+    const KEYS: [&str; 26] = [
         "amount",
         "balance",
         "opening_balance",
@@ -1061,6 +1076,10 @@ fn to_eur(v: Value) -> Value {
         "to_be_assigned",
         "invested",
         "gain",
+        "minimum",
+        "lowest",
+        "end_balance",
+        "needed",
     ];
     match v {
         Value::Object(m) => {
@@ -2118,6 +2137,24 @@ fn call_op(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Valu
             let until = opt_date(a, "until")?.unwrap_or_else(db::today);
             let p = db.post_scheduled(until)?;
             json!({"posted": p.posted, "failed": p.failed, "message": p.message()})
+        }
+        "forecast" => {
+            let days = opt_i64_strict(a, "days")?.unwrap_or(crate::forecast::DEFAULT_DAYS);
+            let list = match opt_str(a, "account").filter(|v| !v.trim().is_empty()) {
+                Some(acc) => vec![db.forecast(db.find_account(&acc)?.id, db::today(), days)?],
+                None => db.forecasts(db::today(), days)?,
+            };
+            let messages: Vec<String> = list.iter().map(|f| f.message()).collect();
+            json!({"forecasts": list, "message": messages.join("\n")})
+        }
+        "set_minimum_balance" => {
+            let acc = db.find_account(&req_str(a, "account")?)?;
+            let minimum = opt_amount(a, "minimum")?;
+            db.set_minimum_balance(acc.id, minimum)?;
+            json!({"message": match minimum {
+                Some(m) => trf("minimum of {account}: {amount}", &[("account", &acc.name), ("amount", &fmt_eur(m))]),
+                None => trf("{account} has no minimum of its own", &[("account", &acc.name)]),
+            }})
         }
         "export_csv" => {
             let mut f = TxFilter { from: opt_date(a, "from")?, to: opt_date(a, "to")?, ..Default::default() };

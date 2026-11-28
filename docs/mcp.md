@@ -32,6 +32,14 @@ or `system:uncategorized`; a bare number is refused. `post_scheduled` posts what
 rest, with the reason. `add_scheduled` with `from_transaction` starts from a transaction in the register: the
 other parameters change what they name, and the next date is one period after the transaction.
 
+`forecast` projects one account (`account`) or every account in use for `days` days (1 to 730, 90 by default):
+today's balance, then the transactions already in the books with a later date and each occurrence of the
+scheduled transactions; the past due dates of one not recorded yet are counted today as one item whose
+`overdue` says how many they are. `shortfall` is the first day the balance
+goes below `minimum`, with `needed`, what must come in before then to stay at the minimum to the end. The
+minimum is the one set with `set_minimum_balance` (`minimum: null` takes it away), else zero, and none for a
+credit card or a loan. Nothing else is foreseen: what is neither booked nor scheduled is not in it.
+
 ## Investments
 
 `record_valuation` writes down what an investment account is worth on a day (it replaces the value of that day),

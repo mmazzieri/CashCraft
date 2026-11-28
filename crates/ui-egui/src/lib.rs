@@ -4,6 +4,7 @@
 mod datafile;
 mod dialogs;
 mod envelopes;
+mod forecast;
 pub mod gui;
 mod investments;
 mod ledger;

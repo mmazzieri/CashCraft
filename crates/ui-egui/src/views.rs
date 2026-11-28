@@ -90,6 +90,7 @@ impl App {
                                             old_currency: a2.currency.clone(),
                                             iban: a2.iban.clone(),
                                             archived: a2.archived,
+                                            minimum: self.db.minimum_balance(a2.id).map(fmt_plain).unwrap_or_default(),
                                             error: String::new(),
                                         }));
                                     }
@@ -119,6 +120,7 @@ impl App {
                                 old_currency: String::new(),
                                 iban: String::new(),
                                 archived: false,
+                                minimum: String::new(),
                                 error: String::new(),
                             }));
                         }
@@ -391,6 +393,8 @@ impl App {
                 }
             });
             ui.add_space(gap);
+            self.forecast_card(ui);
+            ui.add_space(gap);
             let half = (ui.available_width() - gap) / 2.0;
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
@@ -541,6 +545,7 @@ impl App {
     pub fn register(&mut self, ui: &mut Ui, account: Option<i64>) {
         if let Some(id) = account {
             self.values_card(ui, id);
+            self.forecast_banner(ui, id);
         }
         let mut changed = false;
         ui.horizontal(|ui| {
@@ -1311,38 +1316,52 @@ impl App {
             }
         });
         ui.add_space(10.0);
-        card(ui, |ui| {
-            ui.set_width(ui.available_width());
-            if items.is_empty() {
-                ui.label(RichText::new(tr("No scheduled transactions.")).color(pal().muted));
-                return;
-            }
-            egui::Grid::new("sched").striped(true).num_columns(7).spacing([18.0, 8.0]).show(ui, |ui| {
-                for h in
-                    [tr("Next"), tr("Account"), tr("Description"), tr("Category"), tr("Amount"), tr("Repetition"), ""]
-                {
-                    ui.label(RichText::new(h.to_uppercase()).size(11.0).color(pal().muted));
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            card(ui, |ui| {
+                ui.set_width(ui.available_width());
+                if items.is_empty() {
+                    ui.label(RichText::new(tr("No scheduled transactions.")).color(pal().muted));
+                    return;
                 }
-                ui.end_row();
-                for s in &items {
-                    let due = s.next_date <= db::today();
-                    ui.label(RichText::new(fmt_date(s.next_date)).color(if due { pal().amber } else { pal().text }));
-                    ui.label(&s.account);
-                    ui.label(&s.payee);
-                    let cat = match s.to_account_id {
-                        Some(to) => trf("[Transfer] {account}", &[("account", &self.account_name(to))]),
-                        None => s.category.clone(),
-                    };
-                    ui.label(RichText::new(cat).color(pal().muted));
-                    let amt = if s.to_account_id.is_some() { -s.amount.abs() } else { s.amount };
-                    ui.label(money(amt));
-                    ui.label(db::unit_label(&s.unit, s.every));
-                    if ui.small_button("🗑").clicked() {
-                        del = Some(s.id);
+                egui::Grid::new("sched").striped(true).num_columns(7).spacing([18.0, 8.0]).show(ui, |ui| {
+                    for h in [
+                        tr("Next"),
+                        tr("Account"),
+                        tr("Description"),
+                        tr("Category"),
+                        tr("Amount"),
+                        tr("Repetition"),
+                        "",
+                    ] {
+                        ui.label(RichText::new(h.to_uppercase()).size(11.0).color(pal().muted));
                     }
                     ui.end_row();
-                }
+                    for s in &items {
+                        let due = s.next_date <= db::today();
+                        ui.label(RichText::new(fmt_date(s.next_date)).color(if due {
+                            pal().amber
+                        } else {
+                            pal().text
+                        }));
+                        ui.label(&s.account);
+                        ui.label(&s.payee);
+                        let cat = match s.to_account_id {
+                            Some(to) => trf("[Transfer] {account}", &[("account", &self.account_name(to))]),
+                            None => s.category.clone(),
+                        };
+                        ui.label(RichText::new(cat).color(pal().muted));
+                        let amt = if s.to_account_id.is_some() { -s.amount.abs() } else { s.amount };
+                        ui.label(money(amt));
+                        ui.label(db::unit_label(&s.unit, s.every));
+                        if ui.small_button("🗑").clicked() {
+                            del = Some(s.id);
+                        }
+                        ui.end_row();
+                    }
+                });
             });
+            ui.add_space(10.0);
+            self.projection(ui);
         });
         if post {
             let r = self.db.post_scheduled(db::today()).map(|p| p.message());

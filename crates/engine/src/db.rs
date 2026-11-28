@@ -731,6 +731,8 @@ impl Db {
         self.atomically(|| {
             self.drop_money_ledger(id)?;
             self.conn.execute("DELETE FROM accounts WHERE id=?1", [id])?;
+            // Its settings kept beside the tables (`forecast`).
+            self.conn.execute("DELETE FROM meta WHERE key=?1", [format!("minimum_balance:{id}")])?;
             Ok(())
         })
     }
@@ -1505,7 +1507,12 @@ impl Db {
     fn post_scheduled_until(&self, until: NaiveDate) -> Result<Posted> {
         let mut out = Posted::default();
         for s in self.scheduled()? {
-            match self.atomically(|| self.post_one_scheduled(&s, until)) {
+            // The values of investments are worked out with each item, so that one that cannot be is that item's failure.
+            match self.atomically(|| {
+                let n = self.post_one_scheduled(&s, until)?;
+                self.revalue_moved()?;
+                Ok(n)
+            }) {
                 Ok(n) => out.posted += n,
                 Err(e) => {
                     out.failed.push(FailedScheduled { id: s.id, payee: s.payee, error: format!("{e:#}") });
@@ -1555,7 +1562,8 @@ impl Db {
             self.conn.execute_batch(
                 "DELETE FROM scheduled_items; DELETE FROM rule_runs; DELETE FROM entries;
                  DELETE FROM ledger_accounts WHERE money_account_id IS NOT NULL;
-                 DELETE FROM accounts; DELETE FROM category_budgets; DELETE FROM envelope_changes; DELETE FROM envelopes;",
+                 DELETE FROM accounts; DELETE FROM category_budgets; DELETE FROM envelope_changes; DELETE FROM envelopes;
+                 DELETE FROM meta WHERE key GLOB 'minimum_balance:*';",
             )?;
             self.set_meta("demo", "0")
         })

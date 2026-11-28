@@ -9,6 +9,7 @@ pub mod db;
 pub mod demo;
 pub mod duplicates;
 pub mod envelopes;
+pub mod forecast;
 pub mod i18n;
 pub mod importer;
 pub mod layouts;

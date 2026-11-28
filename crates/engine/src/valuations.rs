@@ -98,14 +98,23 @@ impl Db {
             .into_iter()
             .find(|a| a.id == account)
             .ok_or_else(|| anyhow!(trf("account \"{name}\" not found", &[("name", &account)])))?;
+        let (ledger, _) = self.money_ledger(account)?;
+        // Balance and gain in one statement, so that both are of the same state of the file.
+        let (balance, gain): (Cents, Cents) = self
+            .conn
+            .prepare_cached(
+                "SELECT COALESCE((SELECT SUM(amount) FROM journal_postings WHERE ledger_account_id=?1),0),
+                    COALESCE((SELECT SUM(p.amount) FROM journal_postings p JOIN valuations v ON v.entry_id=p.entry_id
+                              WHERE p.ledger_account_id=?1 AND v.account_id=?2),0)",
+            )?
+            .query_row(params![ledger, account], |r| Ok((r.get(0)?, r.get(1)?)))?;
         let valuations = self.valuations(account)?;
-        let gain = valuations.iter().try_fold(0, |s: Cents, v| s.checked_add(v.amount)).ok_or_else(too_big)?;
         Ok(Performance {
             account_id: a.id,
             account: a.name,
             currency: a.currency,
-            balance: a.balance,
-            invested: a.balance.checked_sub(gain).ok_or_else(too_big)?,
+            balance,
+            invested: balance.checked_sub(gain).ok_or_else(too_big)?,
             gain,
             last: valuations.last().cloned(),
             valuations,
@@ -135,8 +144,9 @@ impl Db {
         let entry = self.atomically(|| {
             if let Some(entry) = self.valuation_on(account, date)? {
                 self.conn.execute("UPDATE valuations SET value=?2 WHERE entry_id=?1", params![entry, value])?;
-                // Worked out again at the end, as the account is among those moved.
                 self.moved.borrow_mut().insert(self.money_ledger(account)?.0);
+                // Now, so that what is returned is in the books also inside a change that goes on.
+                self.revalue_moved()?;
                 return Ok(entry);
             }
             if self.valuations(account)?.len() >= MAX_VALUATIONS {
@@ -159,6 +169,7 @@ impl Db {
                 "INSERT INTO valuations(entry_id, account_id, value) VALUES(?1,?2,?3)",
                 params![entry, account, value],
             )?;
+            self.revalue_moved()?;
             Ok(entry)
         })?;
         self.valuations(account)?.into_iter().find(|v| v.entry_id == entry).ok_or_else(|| no_valuation(&a.name, date))

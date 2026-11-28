@@ -105,6 +105,15 @@ pub enum Cmd {
     /// Automatic categorization rules
     #[command(subcommand, visible_alias = "regole")]
     Rules(RulesCmd),
+    /// Projected balance of the accounts from the scheduled transactions, and the first day below the minimum
+    #[command(visible_alias = "previsione")]
+    Forecast {
+        #[arg(long, short)]
+        account: Option<String>,
+        /// Days ahead (default 90)
+        #[arg(long)]
+        days: Option<i64>,
+    },
     /// Reports
     #[command(subcommand)]
     Report(ReportCmd),
@@ -247,6 +256,13 @@ pub enum AccountsCmd {
     },
     /// Delete the value of an investment account on a day
     Unvalue { account: String, date: String },
+    /// Set the minimum balance the forecast warns about; without an amount, take it away
+    #[command(visible_alias = "minimo")]
+    Minimum {
+        account: String,
+        #[arg(allow_hyphen_values = true)]
+        amount: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -928,6 +944,9 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
             AccountsCmd::Unvalue { account, date } => {
                 ("delete_valuation", args(&[("account", v(account)), ("date", v(date))]))
             }
+            AccountsCmd::Minimum { account, amount } => {
+                ("set_minimum_balance", args(&[("account", v(account)), ("minimum", o(&amount))]))
+            }
         },
         Cmd::Tx(c) => match c {
             TxCmd::List { account, category, from, to, search, tag, uncategorized, limit } => (
@@ -1166,6 +1185,9 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
             }
             RulesCmd::Undo { run } => ("undo_rules", args(&[("run", run.map(|r| json!(r)))])),
         },
+        Cmd::Forecast { account, days } => {
+            ("forecast", args(&[("account", o(&account)), ("days", days.map(|d| json!(d)))]))
+        }
         Cmd::Report(c) => match c {
             ReportCmd::Categories { month, from, to } => {
                 ("spending_by_category", args(&[("month", o(&month)), ("from", o(&from)), ("to", o(&to))]))
@@ -1961,6 +1983,30 @@ fn print_human(tool: &str, r: &Value) {
         }
         "add_rule" | "update_rule" => {
             println!("{:>4}  {}", st(field(r, "id")), st(field(field(r, "rule"), "summary")));
+        }
+        "forecast" => {
+            for f in arr("forecasts") {
+                println!("{}", st(field(&f, "account")));
+                println!(
+                    "  {}  {:<40} {:>12}",
+                    date(field(&f, "from")),
+                    tr("Balance today"),
+                    eur(field(&f, "balance"))
+                );
+                for x in field(&f, "items").as_array().into_iter().flatten() {
+                    let late = if field(x, "overdue").as_u64().unwrap_or(0) > 0 { " *" } else { "" };
+                    println!(
+                        "  {}  {:<40} {:>12} {:>12}",
+                        date(field(x, "date")),
+                        cut(&format!("{}{late}", st(field(x, "payee"))), 40),
+                        eur(field(x, "amount")),
+                        eur(field(x, "balance"))
+                    );
+                }
+            }
+            if let Some(m) = r.get("message").filter(|m| !m.is_null()) {
+                println!("{}", st(m));
+            }
         }
         "list_scheduled" => {
             for x in arr("scheduled") {

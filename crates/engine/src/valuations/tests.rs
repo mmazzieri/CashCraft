@@ -180,3 +180,26 @@ fn a_new_transaction_without_a_transfer_moves_the_values_too() {
     assert_eq!(db.performance(fund).unwrap().gain, -200);
     assert_sound(&db, "coupon");
 }
+
+#[test]
+fn a_scheduled_transaction_whose_values_cannot_be_worked_out_fails_alone() {
+    let (db, bank, _) = books();
+    // Nothing in it before the value: one cent out would need a change beyond the largest amount.
+    let fund = db.add_account("Empty fund", AccountKind::Investment, "EUR", 0, "").unwrap();
+    db.record_valuation(fund, day("2026-03-31"), crate::money::MAX_AMOUNT).unwrap();
+    let item = |account: i64| crate::db::NewScheduled {
+        account_id: account,
+        amount: -1,
+        payee: "Fee".into(),
+        next_date: day("2026-03-10"),
+        every: 1,
+        unit: "month".into(),
+        ..Default::default()
+    };
+    db.add_scheduled(&item(fund)).unwrap();
+    db.add_scheduled(&item(bank)).unwrap();
+    let posted = db.post_scheduled(day("2026-03-10")).unwrap();
+    assert_eq!((posted.posted, posted.failed.len()), (1, 1));
+    assert_eq!(balance(&db, fund), crate::money::MAX_AMOUNT);
+    assert_sound(&db, "scheduled");
+}

@@ -1187,3 +1187,24 @@ Only a transaction with a category, or a transfer between your accounts, can be 
 From the transaction of {date}, which stays as it is: the first due date comes after it.	Dal movimento del {date}, che resta com'è: la prima scadenza viene dopo.
 a transaction with several categories cannot be made recurring: a scheduled transaction has one category	un movimento con più categorie non si può rendere ricorrente: un movimento pianificato ha una sola categoria
 only a transaction with a category, or a transfer between your accounts, can be made recurring	si può rendere ricorrente solo un movimento con una categoria, o un giroconto tra i tuoi conti
+the account does not exist	il conto non esiste
+the days go from 1 to {max}	i giorni vanno da 1 a {max}
+{account}: below zero on {date}; {needed} must come in before then	{account}: sotto zero il {date}; entro quella data devono entrare {needed}
+{account}: below its minimum on {date}; {needed} must come in before then	{account}: sotto il minimo il {date}; entro quella data devono entrare {needed}
+{account}: lowest balance {lowest} on {date}	{account}: saldo più basso {lowest} il {date}
+minimum of {account}: {amount}	minimo di {account}: {amount}
+{account} has no minimum of its own	{account} non ha un minimo proprio
+Balance today	Saldo di oggi
+Balance after	Saldo dopo
+Day by day	Giorno per giorno
+Minimum balance €	Saldo minimo €
+Next {n} days: today's balance, the transactions already in the books with a later date and the scheduled ones. Nothing else is foreseen.	Prossimi {n} giorni: il saldo di oggi, i movimenti già registrati con data successiva e quelli pianificati. Nient'altro è previsto.
+No account goes below its minimum.	Nessun conto scende sotto il suo minimo.
+Nothing is due on this account in the coming days.	Nei prossimi giorni non c'è niente in scadenza su questo conto.
+Projected balance	Saldo previsto
+The projected balance warns you of the first day it goes below this. Empty: zero, and no warning for a card or a loan.	Il saldo previsto avvisa del primo giorno in cui scende sotto questa cifra. Vuoto: zero, e nessun avviso per una carta o un prestito.
+minimum {amount}	minimo {amount}
+{payee} (overdue)	{payee} (scaduto)
+"{payee}" has too many past due dates: record or delete what is overdue	"{payee}" ha troppe scadenze passate: registra o elimina quelle arretrate
+The projection could not be made: {error}	Non è stato possibile calcolare la previsione: {error}
+{payee} ({n} due dates overdue)	{payee} ({n} scadenze arretrate)

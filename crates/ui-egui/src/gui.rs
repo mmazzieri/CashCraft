@@ -374,6 +374,8 @@ pub struct AccountForm {
     /// The currency it has now.
     pub old_currency: String,
     pub archived: bool,
+    /// The balance the projection warns about; empty for the one of its kind.
+    pub minimum: String,
     pub error: String,
 }
 
@@ -763,6 +765,11 @@ pub struct App {
     pub dash: Option<Dash>,
     /// The value of the investment account in view.
     pub values: crate::investments::ValuesState,
+    /// The projected balances and the day they start from, made again when the data or the day
+    /// changes; the error when they could not be made.
+    pub forecasts: Option<(NaiveDate, std::result::Result<Vec<cashcraft_engine::forecast::Forecast>, String>)>,
+    /// The account whose projection is drawn, when the user chose one.
+    pub forecast_account: Option<i64>,
     pub report: Option<ReportData>,
     pub ledger: Option<LedgerData>,
     /// The trial balance up to this date, as it is typed.
@@ -937,6 +944,8 @@ impl App {
             rename_cat: None,
             dash: None,
             values: Default::default(),
+            forecasts: None,
+            forecast_account: None,
             report: None,
             ledger: None,
             ledger_date: String::new(),
@@ -1021,6 +1030,7 @@ impl App {
             // An amount being typed could mean something else in the new language.
             self.budget_edit = None;
             self.new_budget.1.clear();
+            self.values.value.clear();
         }
         self.act(ui, r.map(|_| String::new()));
     }
@@ -1042,6 +1052,7 @@ impl App {
         self.demo = self.db.meta("demo").as_deref() == Some("1");
         self.reload_txs();
         self.dash = None;
+        self.forecasts = None;
         self.report = None;
         self.ledger = None;
         self.rules = None;

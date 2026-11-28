@@ -101,25 +101,31 @@ impl App {
                 egui::CollapsingHeader::new(title).id_salt(("values", account_id)).default_open(self.values.open).show(
                     ui,
                     |ui| {
-                        egui::Grid::new(("valuegrid", account_id))
-                            .striped(true)
-                            .num_columns(4)
-                            .spacing([18.0, 4.0])
-                            .show(ui, |ui| {
-                                for h in [tr("Date"), tr("Value"), tr("Change in value"), ""] {
-                                    small_caps(ui, h);
-                                }
-                                ui.end_row();
-                                for v in p.valuations.iter().rev() {
-                                    ui.label(fmt_date(v.date));
-                                    ui.label(fmt_eur(v.balance));
-                                    ui.label(money(v.amount));
-                                    if ui.small_button("🗑").on_hover_text(tr("Delete this value")).clicked() {
-                                        delete = Some(v.date);
-                                    }
-                                    ui.end_row();
-                                }
-                            });
+                        egui::ScrollArea::vertical().id_salt(("valuescroll", account_id)).max_height(180.0).show(
+                            ui,
+                            |ui| {
+                                egui::Grid::new(("valuegrid", account_id))
+                                    .striped(true)
+                                    .num_columns(4)
+                                    .spacing([18.0, 4.0])
+                                    .show(ui, |ui| {
+                                        for h in [tr("Date"), tr("Value"), tr("Change in value"), ""] {
+                                            small_caps(ui, h);
+                                        }
+                                        ui.end_row();
+                                        for v in p.valuations.iter().rev() {
+                                            ui.label(fmt_date(v.date));
+                                            ui.label(fmt_eur(v.balance));
+                                            ui.label(money(v.amount));
+                                            if ui.small_button("🗑").on_hover_text(tr("Delete this value")).clicked()
+                                            {
+                                                delete = Some(v.date);
+                                            }
+                                            ui.end_row();
+                                        }
+                                    });
+                            },
+                        );
                     },
                 );
             }
