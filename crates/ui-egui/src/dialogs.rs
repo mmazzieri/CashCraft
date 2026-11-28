@@ -251,6 +251,20 @@ impl App {
                     form_row(ui, "IBAN", |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.iban).hint_text(tr("optional")).desired_width(260.0));
                     });
+                    form_row(ui, tr("Minimum balance €"), |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut f.minimum)
+                                .hint_text(if matches!(f.kind, AccountKind::CreditCard | AccountKind::Loan) {
+                                    tr("none")
+                                } else {
+                                    "0"
+                                })
+                                .desired_width(120.0),
+                        )
+                        .on_hover_text(tr(
+                            "The projected balance warns you of the first day it goes below this. Empty: zero, and no warning for a card or a loan.",
+                        ));
+                    });
                     if f.id.is_some() {
                         form_row(ui, "", |ui| {
                             ui.checkbox(&mut f.archived, tr("Archived (hidden from the sidebar)"));
@@ -720,6 +734,7 @@ impl App {
     /// Saves the form of an account: a message, and the id of a new one.
     pub(crate) fn save_account(&self, f: &AccountForm) -> Result<(String, Option<i64>)> {
         let opening = if f.opening.trim().is_empty() { 0 } else { parse_amount(&f.opening)? };
+        let minimum = if f.minimum.trim().is_empty() { None } else { Some(parse_amount(&f.minimum)?) };
         match f.id {
             Some(id) => {
                 self.db.atomically(|| {
@@ -727,12 +742,16 @@ impl App {
                     if f.currency.trim() != f.old_currency {
                         self.db.set_account_currency(id, &f.currency)?;
                     }
-                    Ok(())
+                    self.db.set_minimum_balance(id, minimum)
                 })?;
                 Ok((tr("Account updated").into(), None))
             }
             None => {
-                let id = self.db.add_account(&f.name, f.kind, &f.currency, opening, &f.iban)?;
+                let id = self.db.atomically(|| {
+                    let id = self.db.add_account(&f.name, f.kind, &f.currency, opening, &f.iban)?;
+                    self.db.set_minimum_balance(id, minimum)?;
+                    Ok(id)
+                })?;
                 Ok((tr("Account created").into(), Some(id)))
             }
         }
