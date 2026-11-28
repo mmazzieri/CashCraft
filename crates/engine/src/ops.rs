@@ -297,6 +297,27 @@ fn definitions() -> Vec<ToolDef> {
             schema: obj(json!({"account": k(ACCOUNT)}), &["account"]),
         },
         ToolDef {
+            name: "list_valuations",
+            description: "What investment accounts are worth: for each, its balance (the last value written, with the money moved since), invested (money put in less money taken out, with the opening balance), gain (every change in value) and the values written, each with its date, balance (the value) and amount (the change in value since the value before, without the money moved). Without account, every investment account.",
+            schema: obj(json!({"account": k(ACCOUNT)}), &[]),
+        },
+        ToolDef {
+            name: "record_valuation",
+            description: "Writes down what an investment account is worth at the end of a day, as the bank or the platform shows it; it replaces the value of that day. An entry against Changes in value (equity: neither income nor spending) takes the balance to it, and keeps doing so when transactions before that day are added, changed or deleted, so the net worth counts it.",
+            schema: obj(
+                json!({"account": k(ACCOUNT), "value": k("What the account is worth, in euros: zero or more."), "date": s(DATE)}),
+                &["account", "value"],
+            ),
+        },
+        ToolDef {
+            name: "delete_valuation",
+            description: "Deletes the value of an investment account on a day; the values after it are worked out again.",
+            schema: obj(
+                json!({"account": k(ACCOUNT), "date": s("Date of the value: YYYY-MM-DD or DD/MM/YYYY.")}),
+                &["account", "date"],
+            ),
+        },
+        ToolDef {
             name: "list_transactions",
             description: "Lists transactions, newest first, with optional filters.",
             schema: obj(
@@ -1017,7 +1038,7 @@ fn month_arg(s: &str) -> Result<NaiveDate> {
 
 /// Converte ricorsivamente i campi in centesimi in euro.
 fn to_eur(v: Value) -> Value {
-    const KEYS: [&str; 20] = [
+    const KEYS: [&str; 22] = [
         "amount",
         "balance",
         "opening_balance",
@@ -1038,6 +1059,8 @@ fn to_eur(v: Value) -> Value {
         "uncategorized",
         "overspent_before",
         "to_be_assigned",
+        "invested",
+        "gain",
     ];
     match v {
         Value::Object(m) => {
@@ -1413,6 +1436,33 @@ fn call_op(db: &Db, name: &str, a: &Value, roots: Option<&Roots>) -> Result<Valu
             db.delete_account(acc.id)?;
             let message = trf("account \"{name}\" deleted", &[("name", &acc.name)]);
             json!({"message": with_rules(message, gone), "rules_deleted": gone})
+        }
+        "list_valuations" => {
+            let accounts = match opt_str(a, "account").filter(|t| !t.trim().is_empty()) {
+                Some(t) => vec![db.find_account(&t)?],
+                None => db.accounts(true)?.into_iter().filter(|x| x.kind == AccountKind::Investment).collect(),
+            };
+            let all = accounts.iter().map(|x| db.performance(x.id)).collect::<Result<Vec<_>>>()?;
+            json!({"accounts": all})
+        }
+        "record_valuation" => {
+            let acc = db.find_account(&req_str(a, "account")?)?;
+            let value = req_amount(a, "value")?;
+            let date = opt_date(a, "date")?.unwrap_or_else(db::today);
+            let v = db.record_valuation(acc.id, date, value)?;
+            let message = trf(
+                "\"{account}\" is worth {value} on {date}",
+                &[("account", &acc.name), ("value", &fmt_eur(v.balance)), ("date", &fmt_date(v.date))],
+            );
+            json!({"message": message, "valuation": v, "performance": db.performance(acc.id)?})
+        }
+        "delete_valuation" => {
+            let acc = db.find_account(&req_str(a, "account")?)?;
+            let date = date_arg(&req_str(a, "date")?)?;
+            db.delete_valuation(acc.id, date)?;
+            let message =
+                trf("value of \"{account}\" on {date} deleted", &[("account", &acc.name), ("date", &fmt_date(date))]);
+            json!({"message": message, "performance": db.performance(acc.id)?})
         }
         "list_transactions" => {
             let mut f = TxFilter {

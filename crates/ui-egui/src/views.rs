@@ -539,6 +539,9 @@ impl App {
     // -------------------------------------------------------------- registro
 
     pub fn register(&mut self, ui: &mut Ui, account: Option<i64>) {
+        if let Some(id) = account {
+            self.values_card(ui, id);
+        }
         let mut changed = false;
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("period").selected_text(self.period.label()).width(140.0).show_ui(ui, |ui| {

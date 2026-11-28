@@ -10,6 +10,7 @@ use crate::ledger::{self, COUNTED, Draft, LEDGER_SCHEMA, Line, PROFIT_AND_LOSS, 
 use crate::money::checked_total;
 use crate::reconcile::{POSTING_IDS, RECONCILE_SCHEMA};
 use crate::rules::{Marks, RULE_SCHEMA, RuleUse, Ruleset, Subject, has_tag, stored_tags};
+use crate::valuations::{MARKET_VALUE, VALUATION_SCHEMA};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{Datelike, Days, Local, Months, NaiveDate};
 use rusqlite::{Connection, OptionalExtension, Transaction as SqlTransaction, TransactionBehavior, params};
@@ -328,6 +329,9 @@ pub struct Db {
     pub(crate) touched: RefCell<HashMap<i64, Vec<i64>>>,
     /// A change to reconciled transactions undoes their reconciliation instead of being refused.
     pub(crate) unlocking: Cell<bool>,
+    /// The accounts of the chart whose postings the transaction in progress changed: the values of those that have
+    /// them are worked out again before it ends ([`crate::valuations`]).
+    pub(crate) moved: RefCell<HashSet<i64>>,
 }
 
 /// Version of the data file format, kept in `PRAGMA user_version` (0 is CashCraft 0.1, 1 is 0.2.0 with
@@ -336,8 +340,9 @@ pub struct Db {
 /// files and the other import keys of a posting, in a table
 /// with another name so that an older program fails to write, 8 the rules with conditions and order, the
 /// tags and the texts of the bank, in tables with other names, 9 the reconciliations with the bank, with the postings
-/// in a table with another name again, 10 the envelopes: see `docs/ledger.md`, `docs/reconcile.md` and `docs/envelopes.md`).
-pub const SCHEMA_VERSION: i64 = 10;
+/// in a table with another name again, 10 the envelopes, 11 the values of investment accounts: see `docs/ledger.md`,
+/// `docs/reconcile.md`, `docs/envelopes.md` and `docs/investments.md`).
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// Tables of formats 0 and 1 with their name in 2. The rules have another one since 8. A window of an older program that has the file open
 /// fails at once when it writes to one, instead of doing half of what it was asked.
@@ -443,7 +448,14 @@ impl Db {
     }
 
     pub(crate) fn new(conn: Connection, path: Option<PathBuf>, spread_ids: bool) -> Db {
-        Db { conn, path, spread_ids, touched: RefCell::default(), unlocking: Cell::new(false) }
+        Db {
+            conn,
+            path,
+            spread_ids,
+            touched: RefCell::default(),
+            unlocking: Cell::new(false),
+            moved: RefCell::default(),
+        }
     }
 
     pub fn open_in_memory() -> Result<Db> {
@@ -487,6 +499,7 @@ impl Db {
                 self.conn.execute_batch(RECONCILE_SCHEMA)?;
                 self.conn.execute_batch(POSTING_IDS)?;
                 self.conn.execute_batch(ENVELOPE_SCHEMA)?;
+                self.conn.execute_batch(VALUATION_SCHEMA)?;
             }
             self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             Ok(())
@@ -938,6 +951,7 @@ impl Db {
                     TxKind::Transfer => trf("[Transfer] {account}", &[("account", &peer_name.unwrap_or_default())]),
                     TxKind::Category => category_id.and_then(|c| cats.get(&c)).cloned().unwrap_or_default(),
                     TxKind::Uncategorized => String::new(),
+                    TxKind::Other if system.as_deref() == Some(MARKET_VALUE) => format!("[{}]", tr("Changes in value")),
                     TxKind::Other if system.is_some() => format!("[{}]", tr("Opening balances")),
                     TxKind::Other => format!("[{}]", other_name.unwrap_or_default()),
                     TxKind::Split => tr("Split").into(),
@@ -1480,7 +1494,9 @@ impl Db {
         }
         let tx = SqlTransaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         self.touched.borrow_mut().clear();
+        self.moved.borrow_mut().clear();
         let out = f()?;
+        self.revalue_moved()?;
         self.check_reconciled()?;
         tx.commit()?;
         Ok(out)

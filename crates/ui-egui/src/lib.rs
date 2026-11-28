@@ -5,6 +5,7 @@ mod datafile;
 mod dialogs;
 mod envelopes;
 pub mod gui;
+mod investments;
 mod ledger;
 mod reconcile;
 mod rules;

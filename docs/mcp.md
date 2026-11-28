@@ -32,6 +32,12 @@ or `system:uncategorized`; a bare number is refused. `post_scheduled` posts what
 rest, with the reason. `add_scheduled` with `from_transaction` starts from a transaction in the register: the
 other parameters change what they name, and the next date is one period after the transaction.
 
+## Investments
+
+`record_valuation` writes down what an investment account is worth on a day (it replaces the value of that day),
+`delete_valuation` takes one away, `list_valuations` gives each investment account's `balance`, `invested`, `gain` and
+values. A gain is neither income nor spending, and the net worth counts the value ([investments.md](investments.md)).
+
 ## Statements
 
 `preview_csv` and `import_csv` read CSV, Excel 97, OFX and PDF ([import.md](import.md)). `problems` lists the

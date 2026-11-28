@@ -232,6 +232,21 @@ pub enum AccountsCmd {
     },
     /// Delete an account and its transactions
     Delete { account: String },
+    /// What investment accounts are worth, what was put in and what they gained
+    Values {
+        /// One account (default: every investment account)
+        account: Option<String>,
+    },
+    /// Write down what an investment account is worth at the end of a day
+    Value {
+        account: String,
+        value: String,
+        /// Default: today
+        #[arg(long)]
+        date: Option<String>,
+    },
+    /// Delete the value of an investment account on a day
+    Unvalue { account: String, date: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -906,6 +921,13 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
                 ]),
             ),
             AccountsCmd::Delete { account } => ("delete_account", args(&[("account", v(account))])),
+            AccountsCmd::Values { account } => ("list_valuations", args(&[("account", o(&account))])),
+            AccountsCmd::Value { account, value, date } => {
+                ("record_valuation", args(&[("account", v(account)), ("value", v(value)), ("date", o(&date))]))
+            }
+            AccountsCmd::Unvalue { account, date } => {
+                ("delete_valuation", args(&[("account", v(account)), ("date", v(date))]))
+            }
         },
         Cmd::Tx(c) => match c {
             TxCmd::List { account, category, from, to, search, tag, uncategorized, limit } => (
@@ -1723,6 +1745,27 @@ fn print_human(tool: &str, r: &Value) {
                 );
             }
             println!("{:>1$}", trf("Net worth: {amount}", &[("amount", &eur(field(r, "net_worth")))]), w + 65);
+        }
+        "list_valuations" => {
+            for a in arr("accounts") {
+                println!(
+                    "{}  {}  {}",
+                    st(field(&a, "account")),
+                    trf("worth {amount}", &[("amount", &eur(field(&a, "balance")))]),
+                    trf(
+                        "put in {invested}, gain {gain}",
+                        &[("invested", &eur(field(&a, "invested"))), ("gain", &eur(field(&a, "gain")))]
+                    )
+                );
+                for v in field(&a, "valuations").as_array().cloned().unwrap_or_default() {
+                    println!(
+                        "  {}  {:>16}  {:>16}",
+                        date(field(&v, "date")),
+                        eur(field(&v, "balance")),
+                        eur(field(&v, "amount"))
+                    );
+                }
+            }
         }
         "get_transaction" => {
             let t = field(r, "transaction");

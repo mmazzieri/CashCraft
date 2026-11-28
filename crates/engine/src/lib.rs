@@ -25,6 +25,7 @@ pub mod store;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 pub mod transfers;
+pub mod valuations;
 mod xls;
 
 /// The public keys of CashCraft's release signature, in base64 (32 bytes each): the one the release workflow signs

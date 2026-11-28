@@ -31,6 +31,9 @@
   period and category; transfers between accounts. **Turn into transfer…** (selected row, context menu
   or ⌘T/Ctrl+T) makes a transfer of an imported line and joins the other side when it is there already;
   a transfer can be separated again.
+- **Investments**: write down what a fund or a portfolio is worth, as the platform shows it; the balance and the net
+  worth follow the value, and the account shows what was put in and what it gained, never counted as income
+  ([docs/investments.md](docs/investments.md)).
 - **Overview, reports and budgets**: income vs. spending by month, spending by category,
   net worth over time, monthly budgets per category with progress bars, or a zero-based budget with envelopes
   ([docs/envelopes.md](docs/envelopes.md)).

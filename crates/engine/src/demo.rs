@@ -24,6 +24,8 @@ pub fn seed(db: &Db) -> Result<()> {
     let carta = db.add_account(tr("Credit card"), AccountKind::CreditCard, "EUR", 0, "")?;
     let cash = db.add_account(tr("Wallet"), AccountKind::Cash, "EUR", 12_000, "")?;
     let risp = db.add_account(tr("Deposit account"), AccountKind::Savings, "EUR", 850_000, "")?;
+    let fund = db.add_account(tr("Investment portfolio"), AccountKind::Investment, "EUR", 500_000, "")?;
+    let (mut invested, mut gained) = (500_000, 0);
     let mut rng = Lcg(42);
     let start = crate::ops::months_back(today, 6);
     let add = |acc: i64, d: NaiveDate, amt: i64, payee: &str, memo: &str, c: Option<i64>| -> Result<()> {
@@ -116,6 +118,15 @@ pub fn seed(db: &Db) -> Result<()> {
         if day(9) <= today {
             db.add_transfer(conto, cash, day(9), 10_000, tr("Cash withdrawal"))?;
         }
+        // A plan of monthly payments into a fund, and its value at the end of the month as the platform shows it.
+        if day(15) <= today {
+            db.add_transfer(conto, fund, day(15), 20_000, tr("Investment plan"))?;
+            invested += 20_000;
+        }
+        if day(28) <= today {
+            gained += rng.range(-2_500, 6_000);
+            db.record_valuation(fund, day(28), invested + gained)?;
+        }
         let Some(next) = month.checked_add_months(Months::new(1)) else { break };
         month = next;
     }
@@ -172,7 +183,10 @@ mod tests {
                 let db = Db::open_in_memory().unwrap();
                 seed(&db).unwrap();
                 for t in db.transactions(&Default::default()).unwrap() {
-                    let free = t.transfer_peer.is_some() || t.payee == tr("Card payment 0412");
+                    // Transfers, a line to categorize and the values of the investments.
+                    let free = t.transfer_peer.is_some()
+                        || t.payee == tr("Card payment 0412")
+                        || t.kind == crate::db::TxKind::Other;
                     assert_eq!(t.category_id.is_none(), free, "{t:?}");
                 }
                 let scheduled = db.scheduled().unwrap();
@@ -183,5 +197,23 @@ mod tests {
         };
         assert_eq!(figures(Lang::It), figures(Lang::En));
         assert_eq!(figures(Lang::En).1, 6);
+    }
+
+    /// The net worth on a day is the sum of the balances of the accounts on that day, the investments at their value.
+    #[test]
+    fn the_net_worth_of_the_sample_data_is_the_sum_of_the_balances() {
+        let db = Db::open_in_memory().unwrap();
+        seed(&db).unwrap();
+        let accounts = db.accounts(true).unwrap();
+        let fund = accounts.iter().find(|a| a.kind == AccountKind::Investment).unwrap().id;
+        let valuations = db.valuations(fund).unwrap();
+        assert!(!valuations.is_empty());
+        for v in &valuations {
+            assert_eq!(db.balance_on(fund, v.date).unwrap(), v.balance);
+            let sum: i64 = accounts.iter().map(|a| db.balance_on(a.id, v.date).unwrap()).sum();
+            assert_eq!(db.net_worth(Some(v.date)).unwrap(), sum, "{}", v.date);
+        }
+        let today: i64 = accounts.iter().map(|a| a.balance).sum();
+        assert_eq!(db.net_worth(None).unwrap(), today);
     }
 }

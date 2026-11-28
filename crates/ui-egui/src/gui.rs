@@ -761,6 +761,8 @@ pub struct App {
     pub new_cat: (String, bool, Option<i64>),
     pub rename_cat: Option<(i64, String)>,
     pub dash: Option<Dash>,
+    /// The value of the investment account in view.
+    pub values: crate::investments::ValuesState,
     pub report: Option<ReportData>,
     pub ledger: Option<LedgerData>,
     /// The trial balance up to this date, as it is typed.
@@ -934,6 +936,7 @@ impl App {
             new_cat: (String::new(), false, None),
             rename_cat: None,
             dash: None,
+            values: Default::default(),
             report: None,
             ledger: None,
             ledger_date: String::new(),
@@ -1046,6 +1049,7 @@ impl App {
             r.stale = true;
         }
         self.envelopes.stale = true;
+        self.values.read = None;
     }
 
     pub fn reload_txs(&mut self) {
