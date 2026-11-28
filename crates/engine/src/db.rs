@@ -718,6 +718,8 @@ impl Db {
         self.atomically(|| {
             self.drop_money_ledger(id)?;
             self.conn.execute("DELETE FROM accounts WHERE id=?1", [id])?;
+            // Its settings kept beside the tables (`forecast`).
+            self.conn.execute("DELETE FROM meta WHERE key=?1", [format!("minimum_balance:{id}")])?;
             Ok(())
         })
     }
