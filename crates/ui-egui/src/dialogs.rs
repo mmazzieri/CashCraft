@@ -328,7 +328,9 @@ impl App {
                         });
                     }
                     form_row(ui, tr("First due date"), |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.date).desired_width(120.0));
+                        if ui.add(egui::TextEdit::singleline(&mut f.date).desired_width(120.0)).changed() {
+                            date_by_hand(f);
+                        }
                     });
                     form_row(ui, tr("Repeat every"), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut f.every).desired_width(40.0));
@@ -1527,13 +1529,20 @@ fn statement_summary(ui: &mut Ui, s: &Statement, allow_mismatch: &mut bool) {
     }
 }
 
+/// The user wrote the due date, even back to the one proposed: it no longer follows the repetition.
+pub(crate) fn date_by_hand(f: &mut SchedForm) {
+    if let Some((_, wrote)) = &mut f.from {
+        wrote.clear();
+    }
+}
+
 /// After the repetition of a scheduled transaction made from a transaction went from `was` (every,
 /// unit) to the form's, the due date becomes one period of the new repetition after the transaction,
 /// so that it is never the transaction already in the books; but only while it is the date the form
-/// wrote, never one the user wrote.
+/// wrote, never one the user wrote (a hand edit clears what the form wrote).
 pub(crate) fn follow_repetition(f: &mut SchedForm, was: (&str, &str)) {
     let Some((from, wrote)) = &mut f.from else { return };
-    if was == (f.every.as_str(), f.unit.as_str()) || f.date != *wrote {
+    if was == (f.every.as_str(), f.unit.as_str()) || wrote.is_empty() || f.date != *wrote {
         return;
     }
     let every = f.every.trim().parse::<i64>().unwrap_or(1);

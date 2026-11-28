@@ -1,4 +1,4 @@
-use crate::dialogs::follow_repetition;
+use crate::dialogs::{date_by_hand, follow_repetition};
 use crate::gui::{App, Dialog, LANGUAGES, SchedForm, View, short_eur};
 use crate::ledger::{EntryForm, tree};
 use crate::reconcile::Unlock;
@@ -1271,9 +1271,21 @@ fn the_recurring_form_reads_back_the_transaction() {
             assert_eq!(parse_date(&f.date), parse_date("2026-02-07"));
             repeat(f, "month");
             assert_eq!(parse_date(&f.date), parse_date("2026-02-28"));
-            // A date the user wrote stays, even one that a repetition would give.
+            // A date the user wrote stays, even one that a repetition would give or the one proposed.
             f.date = "07/02/2026".into();
+            date_by_hand(f);
             for unit in ["week", "month", "day"] {
+                repeat(f, unit);
+                assert_eq!(f.date, "07/02/2026", "{unit}");
+            }
+            repeat(f, "month");
+            f.date = with_lang(l, || cashcraft_engine::money::fmt_date(parse_date("2026-02-28").unwrap()));
+            date_by_hand(f);
+            let proposed = f.date.clone();
+            repeat(f, "week");
+            assert_eq!(f.date, proposed);
+            f.date = "07/02/2026".into();
+            for unit in ["month", "day"] {
                 repeat(f, unit);
                 assert_eq!(f.date, "07/02/2026", "{unit}");
             }
