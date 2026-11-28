@@ -93,13 +93,25 @@ impl Db {
 
     /// What an account is worth and what it gained.
     pub fn performance(&self, account: i64) -> Result<Performance> {
+        if !self.conn.is_autocommit() {
+            return self.performance_now(account);
+        }
+        // One read transaction, so that the balance, the gain and the values are of the same state of the file.
+        self.conn.execute_batch("BEGIN DEFERRED")?;
+        let out = self.performance_now(account);
+        let end = self.conn.execute_batch(if out.is_ok() { "COMMIT" } else { "ROLLBACK" });
+        let out = out?;
+        end?;
+        Ok(out)
+    }
+
+    fn performance_now(&self, account: i64) -> Result<Performance> {
         let a = self
             .accounts(true)?
             .into_iter()
             .find(|a| a.id == account)
             .ok_or_else(|| anyhow!(trf("account \"{name}\" not found", &[("name", &account)])))?;
         let (ledger, _) = self.money_ledger(account)?;
-        // Balance and gain in one statement, so that both are of the same state of the file.
         let (balance, gain): (Cents, Cents) = self
             .conn
             .prepare_cached(

@@ -253,9 +253,18 @@ pub enum AccountsCmd {
         /// Default: today
         #[arg(long)]
         date: Option<String>,
+        /// Even if it changes reconciled transactions: their reconciliation no longer counts them
+        #[arg(long)]
+        unreconcile: bool,
     },
     /// Delete the value of an investment account on a day
-    Unvalue { account: String, date: String },
+    Unvalue {
+        account: String,
+        date: String,
+        /// Even if it changes reconciled transactions: their reconciliation no longer counts them
+        #[arg(long)]
+        unreconcile: bool,
+    },
     /// Set the minimum balance the forecast warns about; without an amount, take it away
     #[command(visible_alias = "minimo")]
     Minimum {
@@ -938,12 +947,23 @@ pub fn run(db: &Db, guard: &Guard, cmd: Cmd, as_json: bool) -> Result<()> {
             ),
             AccountsCmd::Delete { account } => ("delete_account", args(&[("account", v(account))])),
             AccountsCmd::Values { account } => ("list_valuations", args(&[("account", o(&account))])),
-            AccountsCmd::Value { account, value, date } => {
-                ("record_valuation", args(&[("account", v(account)), ("value", v(value)), ("date", o(&date))]))
-            }
-            AccountsCmd::Unvalue { account, date } => {
-                ("delete_valuation", args(&[("account", v(account)), ("date", v(date))]))
-            }
+            AccountsCmd::Value { account, value, date, unreconcile } => (
+                "record_valuation",
+                args(&[
+                    ("account", v(account)),
+                    ("value", v(value)),
+                    ("date", o(&date)),
+                    ("unreconcile", unreconcile.then_some(json!(true))),
+                ]),
+            ),
+            AccountsCmd::Unvalue { account, date, unreconcile } => (
+                "delete_valuation",
+                args(&[
+                    ("account", v(account)),
+                    ("date", v(date)),
+                    ("unreconcile", unreconcile.then_some(json!(true))),
+                ]),
+            ),
             AccountsCmd::Minimum { account, amount } => {
                 ("set_minimum_balance", args(&[("account", v(account)), ("minimum", o(&amount))]))
             }

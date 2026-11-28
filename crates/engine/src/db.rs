@@ -1485,12 +1485,16 @@ impl Db {
     /// cannot change before it writes.
     pub fn atomically<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
         if !self.conn.is_autocommit() {
+            // What was still to be worked out again before the savepoint stays so when it is rolled back.
+            let pending = self.moved.borrow().clone();
             self.conn.execute_batch("SAVEPOINT nested")?;
             let out = f();
             let end = if out.is_ok() { "RELEASE nested" } else { "ROLLBACK TO nested; RELEASE nested" };
             let ended = self.conn.execute_batch(end);
             if out.is_ok() {
                 ended?;
+            } else {
+                self.moved.borrow_mut().extend(pending);
             }
             return out;
         }
