@@ -194,8 +194,13 @@ Light	Chiaro
 Dark	Scuro
 no value of "{account}" on {date}	nessun valore di "{account}" al {date}
 No value written yet: the balance is the money put in.	Nessun valore scritto: il saldo è il denaro versato.
+Nothing is recorded now: it is scheduled from {date}.	Ora non viene registrato niente: è pianificato dal {date}.
 Put in	Versato
 put in {invested}, gain {gain}	versati {invested}, guadagno {gain}
+Recorded on {date}; the next ones are scheduled from {next}.	Registrato il {date}; i successivi sono pianificati dal {next}.
+Recorded, and scheduled from {date}	Registrato, e pianificato dal {date}
+Repeat	Ripeti
+Scheduled from {date}	Pianificato dal {date}
 The balance becomes this value; the difference is a change in value, neither income nor spending	Il saldo diventa questo valore; la differenza è una variazione di valore, né entrata né spesa
 The day of the value, as the bank or the platform shows it	Il giorno del valore, come lo mostra la banca o la piattaforma
 the value of an account cannot be below zero	il valore di un conto non può essere sotto zero
@@ -272,7 +277,6 @@ Post	Registra
 Private copy: {path}	Copia privata: {path}
 Quit	Esci
 Ready: create your first account or import a CSV	Pronto: crea il tuo primo conto o importa un CSV
-Record	Registra
 Recurring transactions and due dates	Movimenti ricorrenti e scadenze
 Refueling	Rifornimento
 Refunds	Rimborsi
@@ -370,6 +374,8 @@ Transactions found: {found} (rows skipped: {skipped}), from {from} to {to}, sum 
 Transfer	Giroconto
 Transfer from {account}	Giroconto da {account}
 Transfer recorded	Giroconto registrato
+transfer recorded and scheduled	giroconto registrato e pianificato
+transfer scheduled	giroconto pianificato
 Transfer to {account}	Giroconto verso {account}
 Transport:Car	Trasporti:Auto
 Transport:Fuel	Trasporti:Carburante
@@ -430,7 +436,6 @@ category "{name}" not found	categoria "{name}" non trovata
 category {id} has no proper account in the chart	la categoria {id} non ha il suo conto nel piano
 choose an account	scegli un conto
 choose the account	scegli il conto
-choose the account to transfer from	scegli il conto di origine
 choose the account to transfer to	scegli il conto di destinazione
 column "{name}" is not in the file	colonna "{name}" non trovata nel file
 currency of "{name}" changed	valuta di "{name}" modificata
@@ -545,6 +550,7 @@ worth {amount}	vale {amount}
 Worth {value} on {date}	Vale {value} al {date}
 write a description	scrivi una descrizione
 Write it again where it was	Riscrivilo dov'era
+Write the date of the first one.	Scrivi la data del primo.
 write the payee or a description	scrivi il beneficiario o una descrizione
 Write the value	Scrivi il valore
 years	anni
@@ -602,7 +608,6 @@ yyyy-mm-dd	gg/mm/aaaa
 📂 Choose file…	📂 Scegli file…
 📂 Open another data file…	📂 Apri un altro archivio…
 📖 Entry…	📖 Registrazione…
-🔁 Transfer	🔁 Giroconto
 🔍 Search payee, notes, amount…	🔍 Cerca beneficiario, note, importo…
 🗑 Delete	🗑 Elimina
 🗑 Delete account…	🗑 Elimina conto…

@@ -2,9 +2,9 @@
 //! registro movimenti, report, budget, categorie, regole e pianificati.
 
 use crate::gui::{
-    AccountForm, App, Dialog, LANGUAGES, Period, SchedForm, Theme, TransferForm, View, amount_color, bars_chart,
-    budget_color, card, category_combo, cut, donut, error_text, has_category, hbars, kind_icon, language_name, legend,
-    line_chart, money, nav_item, or_report, pal, palette, primary_button, progress, section_title, small_caps,
+    AccountForm, App, Dialog, LANGUAGES, Period, SchedForm, Theme, View, amount_color, bars_chart, budget_color, card,
+    category_combo, cut, donut, error_text, has_category, hbars, kind_icon, language_name, legend, line_chart, money,
+    nav_item, or_report, pal, palette, primary_button, progress, section_title, small_caps,
 };
 use crate::reconcile::Unlock;
 use cashcraft_engine::db::{self, Account, AccountKind, Category, Cents, Transaction, TxKind};
@@ -279,13 +279,6 @@ impl App {
                             .clicked()
                         {
                             self.open_import(None);
-                        }
-                        if ui.button(tr("🔁 Transfer")).clicked() {
-                            self.dialog = Some(Dialog::Transfer(TransferForm {
-                                from: self.default_account(),
-                                date: fmt_date(db::today()),
-                                ..Default::default()
-                            }));
                         }
                         if primary_button(ui, tr("+ Transaction")).on_hover_text(tr("New transaction (⌘N)")).clicked()
                         {

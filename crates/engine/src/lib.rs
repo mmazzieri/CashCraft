@@ -21,6 +21,7 @@ pub mod ops;
 pub mod paths;
 pub mod pdf;
 pub mod reconcile;
+pub mod repeating;
 pub mod rules;
 pub mod store;
 #[cfg(any(test, feature = "test-support"))]

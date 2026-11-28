@@ -95,6 +95,8 @@ manage the rules ([rules.md](rules.md)). `add_rule` with `from_transaction` cate
 and stays. `preview_csv` gives each row `ruled`: the category, payee and tags it would get, and the rules; nothing for rows that would not be added. `broken_rules`
 are rules that cannot be read and were skipped: tell the user. `get_transaction` has the rules that set something of it and what the bank
 wrote, or what was typed before a rule; `tags` of `add_transaction` and `update_transaction` is text with commas, or a list; `list_transactions` takes `tag`.
+`add_transaction` and `add_transfer` with `every` or `unit` also repeat: the movement of `date` is recorded and the next ones are
+scheduled from one period later, in one change (a `date` still to come is only scheduled); the result has `scheduled` and `next_date`.
 
 ## Allowed folders
 
