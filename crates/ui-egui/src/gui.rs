@@ -1161,8 +1161,9 @@ impl App {
     /// The form of a scheduled transaction, filled in from `t`.
     pub fn open_recurring(&mut self, t: &Transaction) -> Result<()> {
         let s = self.db.scheduled_from(t.id)?;
-        // The date as the file has it now, not as the register read it.
+        // The date as the file has it now, and the due date from that same date.
         let date = self.db.transaction(t.id)?.date;
+        let next = db::advance(date, s.every, &s.unit);
         self.dialog = Some(Dialog::Scheduled(SchedForm {
             account: Some(s.account_id),
             to_account: s.to_account_id,
@@ -1172,10 +1173,10 @@ impl App {
             payee: s.payee,
             memo: s.memo,
             category: s.category_id,
-            date: fmt_date(s.next_date),
+            date: fmt_date(next),
             every: s.every.to_string(),
             unit: s.unit,
-            from: Some((date, fmt_date(s.next_date))),
+            from: Some((date, fmt_date(next))),
             error: String::new(),
         }));
         Ok(())
