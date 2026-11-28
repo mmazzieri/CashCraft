@@ -1030,7 +1030,7 @@ fn month_arg(s: &str) -> Result<NaiveDate> {
 
 /// Converte ricorsivamente i campi in centesimi in euro.
 fn to_eur(v: Value) -> Value {
-    const KEYS: [&str; 20] = [
+    const KEYS: [&str; 24] = [
         "amount",
         "balance",
         "opening_balance",
@@ -1051,6 +1051,10 @@ fn to_eur(v: Value) -> Value {
         "uncategorized",
         "overspent_before",
         "to_be_assigned",
+        "minimum",
+        "lowest",
+        "end_balance",
+        "needed",
     ];
     match v {
         Value::Object(m) => {

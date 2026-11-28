@@ -1951,7 +1951,7 @@ fn print_human(tool: &str, r: &Value) {
                     eur(field(&f, "balance"))
                 );
                 for x in field(&f, "items").as_array().into_iter().flatten() {
-                    let late = if field(x, "overdue").as_bool().unwrap_or(false) { " *" } else { "" };
+                    let late = if field(x, "overdue").as_u64().unwrap_or(0) > 0 { " *" } else { "" };
                     println!(
                         "  {}  {:<40} {:>12} {:>12}",
                         date(field(x, "date")),

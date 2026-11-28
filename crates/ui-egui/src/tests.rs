@@ -1328,7 +1328,7 @@ fn the_account_form_keeps_the_minimum_and_the_projection_warns_about_it() {
     app.save_account(&form("50")).unwrap();
     assert_eq!(app.db.minimum_balance(id), Some(5_000));
     app.reload();
-    assert!(app.ensure_forecasts().iter().any(|f| f.account_id == id && f.shortfall.is_some()));
+    assert!(app.ensure_forecasts().unwrap().iter().any(|f| f.account_id == id && f.shortfall.is_some()));
     // Each view that shows the projection draws it.
     let ctx = egui::Context::default();
     for view in [View::Dashboard, View::Register(Some(id)), View::Scheduled] {
@@ -1346,5 +1346,14 @@ fn the_account_form_keeps_the_minimum_and_the_projection_warns_about_it() {
     app.save_account(&form("")).unwrap();
     assert_eq!(app.db.minimum_balance(id), None);
     app.reload();
-    assert!(app.ensure_forecasts().iter().all(|f| f.shortfall.is_none()));
+    assert!(app.ensure_forecasts().unwrap().iter().all(|f| f.shortfall.is_none()));
+    // A projection that cannot be made is said, not drawn as "nothing below", and is tried again.
+    app.db.conn.execute_batch("ALTER TABLE scheduled_items RENAME TO gone").unwrap();
+    app.reload();
+    assert!(app.ensure_forecasts().is_err());
+    ctx.run_ui(Default::default(), |ui| app.dashboard(ui)).textures_delta.clear();
+    assert!(matches!(app.forecasts, Some((_, Err(_)))));
+    app.db.conn.execute_batch("ALTER TABLE gone RENAME TO scheduled_items").unwrap();
+    app.forecasts = None;
+    assert!(app.ensure_forecasts().is_ok());
 }

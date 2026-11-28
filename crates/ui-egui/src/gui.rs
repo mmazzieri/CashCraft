@@ -763,8 +763,9 @@ pub struct App {
     pub new_cat: (String, bool, Option<i64>),
     pub rename_cat: Option<(i64, String)>,
     pub dash: Option<Dash>,
-    /// The projected balances, made once until the data changes.
-    pub forecasts: Option<Vec<cashcraft_engine::forecast::Forecast>>,
+    /// The projected balances and the day they start from, made again when the data or the day
+    /// changes; the error when they could not be made.
+    pub forecasts: Option<(NaiveDate, std::result::Result<Vec<cashcraft_engine::forecast::Forecast>, String>)>,
     /// The account whose projection is drawn, when the user chose one.
     pub forecast_account: Option<i64>,
     pub report: Option<ReportData>,

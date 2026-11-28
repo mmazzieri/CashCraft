@@ -1,7 +1,7 @@
 //! The projected balance in the window: the dashboard's card, the warning above an account's
 //! register, and the scheduled view's day-by-day table, all from `cashcraft_engine::forecast`.
 
-use crate::gui::{App, View, card, money, or_report, pal, section_title, short_eur};
+use crate::gui::{App, View, card, money, pal, section_title, short_eur};
 use cashcraft_engine::db;
 use cashcraft_engine::forecast::{DEFAULT_DAYS, Forecast};
 use cashcraft_engine::i18n::{tr, trf};
@@ -9,12 +9,28 @@ use cashcraft_engine::money::{fmt_date, fmt_day, fmt_eur};
 use egui::{self, Align, Align2, FontId, Layout, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
 impl App {
-    /// The projections of the accounts in use, made once until the data changes.
-    pub(crate) fn ensure_forecasts(&mut self) -> Vec<Forecast> {
-        if self.forecasts.is_none() {
-            self.forecasts = Some(or_report(self.db.forecasts(db::today(), DEFAULT_DAYS), &mut self.toast));
+    /// The projections of the accounts in use, made once a day until the data changes; why they
+    /// could not be made, which is never shown as "nothing ahead".
+    pub(crate) fn ensure_forecasts(&mut self) -> Result<Vec<Forecast>, String> {
+        let today = db::today();
+        match &self.forecasts {
+            Some((day, made)) if *day == today => made.clone(),
+            _ => {
+                let made = self.db.forecasts(today, DEFAULT_DAYS).map_err(|e| format!("{e:#}"));
+                self.forecasts = Some((today, made.clone()));
+                made
+            }
         }
-        self.forecasts.clone().unwrap_or_default()
+    }
+
+    /// Why the projection is missing, with a way to try again.
+    fn forecast_failed(&mut self, ui: &mut Ui, error: &str) {
+        ui.label(
+            RichText::new(trf("The projection could not be made: {error}", &[("error", &error)])).color(pal().red),
+        );
+        if ui.link(tr("Try again")).clicked() {
+            self.forecasts = None;
+        }
     }
 
     /// The account whose projection is drawn: the one chosen, else the first that goes below its
@@ -41,7 +57,8 @@ impl App {
 
     /// The dashboard's card: which accounts go below their minimum and when, and a chart.
     pub(crate) fn forecast_card(&mut self, ui: &mut Ui) {
-        let list = self.ensure_forecasts();
+        let made = self.ensure_forecasts();
+        let list = made.clone().unwrap_or_default();
         card(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -58,6 +75,10 @@ impl App {
             });
             ui.label(RichText::new(projection_note()).size(12.0).color(pal().muted));
             ui.add_space(4.0);
+            if let Err(e) = &made {
+                self.forecast_failed(ui, e);
+                return;
+            }
             let short: Vec<&Forecast> = list.iter().filter(|f| f.shortfall.is_some()).collect();
             if short.is_empty() {
                 ui.label(RichText::new(tr("No account goes below its minimum.")).color(pal().green));
@@ -74,7 +95,8 @@ impl App {
 
     /// The warning above an account's register when its projection goes below the minimum.
     pub(crate) fn forecast_banner(&mut self, ui: &mut Ui, account_id: i64) {
-        let list = self.ensure_forecasts();
+        // A failure is said on the overview and in the scheduled view.
+        let list = self.ensure_forecasts().unwrap_or_default();
         let Some(f) = list.iter().find(|f| f.account_id == account_id && f.shortfall.is_some()) else { return };
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("⚠ {}", f.message())).color(pal().red).strong());
@@ -89,7 +111,17 @@ impl App {
     /// The scheduled view's projection of one account: chart and table, the days below the
     /// minimum in red.
     pub(crate) fn projection(&mut self, ui: &mut Ui) {
-        let list = self.ensure_forecasts();
+        let list = match self.ensure_forecasts() {
+            Ok(list) => list,
+            Err(e) => {
+                card(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    section_title(ui, tr("Projected balance"));
+                    self.forecast_failed(ui, &e);
+                });
+                return;
+            }
+        };
         let Some(f) = self.chosen_forecast(&list).cloned() else { return };
         card(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -116,9 +148,12 @@ impl App {
                 for i in &f.items {
                     let below = f.minimum.is_some_and(|m| i.balance < m);
                     ui.label(fmt_date(i.date));
-                    let payee =
-                        if i.overdue { trf("{payee} (overdue)", &[("payee", &i.payee)]) } else { i.payee.clone() };
-                    ui.label(RichText::new(payee).color(if i.overdue { pal().amber } else { pal().text }));
+                    let payee = match i.overdue {
+                        0 => i.payee.clone(),
+                        1 => trf("{payee} (overdue)", &[("payee", &i.payee)]),
+                        n => trf("{payee} ({n} due dates overdue)", &[("payee", &i.payee), ("n", &n)]),
+                    };
+                    ui.label(RichText::new(payee).color(if i.overdue > 0 { pal().amber } else { pal().text }));
                     ui.label(money(i.amount));
                     let b = RichText::new(fmt_eur(i.balance));
                     ui.label(if below { b.color(pal().red).strong() } else { b.color(pal().text) });

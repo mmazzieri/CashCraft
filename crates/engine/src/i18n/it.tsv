@@ -1176,3 +1176,6 @@ Projected balance	Saldo previsto
 The projected balance warns you of the first day it goes below this. Empty: zero, and no warning for a card or a loan.	Il saldo previsto avvisa del primo giorno in cui scende sotto questa cifra. Vuoto: zero, e nessun avviso per una carta o un prestito.
 minimum {amount}	minimo {amount}
 {payee} (overdue)	{payee} (scaduto)
+"{payee}" has too many past due dates: record or delete what is overdue	"{payee}" ha troppe scadenze passate: registra o elimina quelle arretrate
+The projection could not be made: {error}	Non è stato possibile calcolare la previsione: {error}
+{payee} ({n} due dates overdue)	{payee} ({n} scadenze arretrate)

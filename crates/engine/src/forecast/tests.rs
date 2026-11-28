@@ -70,9 +70,36 @@ fn an_overdue_occurrence_counts_today() {
     let today = day("2026-01-20");
     let f = db.forecast(bank, today, 5).unwrap();
     let first = f.items.first().unwrap();
-    assert!(first.overdue);
+    assert_eq!(first.overdue, 1);
     assert_eq!(first.date, today);
     assert_eq!(f.shortfall.unwrap().date, today);
+    assert_sound(&db, "overdue");
+}
+
+#[test]
+fn a_long_overdue_daily_schedule_is_counted_whole() {
+    let db = Db::open_in_memory().unwrap();
+    let bank = db.add_account("Bank", AccountKind::Bank, "EUR", 1_000_000, "").unwrap();
+    db.add_scheduled(&NewScheduled {
+        account_id: bank,
+        to_account_id: None,
+        amount: -100,
+        payee: "Daily".into(),
+        memo: String::new(),
+        category_id: None,
+        next_date: day("2023-01-01"),
+        every: 1,
+        unit: "day".into(),
+    })
+    .unwrap();
+    let today = day("2026-01-01");
+    let f = db.forecast(bank, today, 10).unwrap();
+    let late = f.items.iter().find(|i| i.overdue > 0).unwrap();
+    // Every day of the three years behind, not a part of them; then today and each of the ten ahead.
+    assert!(late.overdue > 1000);
+    assert_eq!(late.amount, -100 * i64::from(late.overdue));
+    assert_eq!(f.items.iter().filter(|i| i.overdue == 0).count(), 11);
+    assert_sound(&db, "daily");
 }
 
 #[test]
@@ -91,6 +118,7 @@ fn a_minimum_is_crossed_or_not() {
     db.set_minimum_balance(bank, None).unwrap();
     assert_eq!(db.minimum_balance(bank), None);
     assert!(db.set_minimum_balance(bank + 99, Some(1)).is_err());
+    assert_sound(&db, "minimum");
 }
 
 #[test]
@@ -120,6 +148,7 @@ fn a_card_has_no_minimum_unless_one_is_set() {
     assert!(f.message().contains("lowest"));
     db.set_minimum_balance(card, Some(-12_000)).unwrap();
     assert!(db.forecast(card, today, 30).unwrap().shortfall.is_some());
+    assert_sound(&db, "card");
 }
 
 #[test]
@@ -144,6 +173,7 @@ fn the_daily_balances_follow_the_items() {
     assert_eq!(daily.first().unwrap().1, f.balance);
     assert_eq!(daily.last().unwrap().1, f.end_balance);
     assert!(daily.iter().any(|&(_, b)| b == f.lowest));
+    assert_sound(&db, "daily balances");
 }
 
 #[test]

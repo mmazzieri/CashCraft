@@ -15,8 +15,9 @@ use serde::Serialize;
 pub const DEFAULT_DAYS: i64 = 90;
 /// The longest horizon, in days.
 pub const MAX_DAYS: i64 = 730;
-/// The most occurrences of one scheduled transaction counted in a projection.
-const MAX_OCCURRENCES: usize = 1000;
+/// The most past due dates of one scheduled transaction that are counted, about 270 years of a
+/// daily one; beyond it the projection is refused rather than left short.
+const MAX_OVERDUE: u32 = 100_000;
 
 /// Something that changes the balance in the projection.
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -29,9 +30,10 @@ pub struct Item {
     /// The scheduled transaction it comes from; none for a transaction already in the books.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scheduled_id: Option<i64>,
-    /// A scheduled occurrence whose date is past and that is not recorded yet: counted today.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub overdue: bool,
+    /// How many past due dates of a scheduled transaction, not recorded yet, it counts today
+    /// together (`amount` is their sum); 0 for anything due today or later.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub overdue: u32,
 }
 
 /// The first day below the minimum.
@@ -102,6 +104,10 @@ impl Forecast {
     }
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 /// The meta key of an account's minimum.
 fn minimum_key(account_id: i64) -> String {
     format!("minimum_balance:{account_id}")
@@ -140,19 +146,24 @@ impl Db {
 
     /// The projection of an account from `today` for `days` days (1 to [`MAX_DAYS`]).
     pub fn forecast(&self, account_id: i64, today: NaiveDate, days: i64) -> Result<Forecast> {
-        let a = self
-            .accounts(true)?
-            .into_iter()
-            .find(|a| a.id == account_id)
-            .ok_or_else(|| anyhow!(tr("the account does not exist")))?;
-        let scheduled = self.scheduled()?;
-        self.forecast_of(&a, &scheduled, today, days)
+        // One read of the books, so that the balances and the schedule agree.
+        self.atomically(|| {
+            let a = self
+                .accounts(true)?
+                .into_iter()
+                .find(|a| a.id == account_id)
+                .ok_or_else(|| anyhow!(tr("the account does not exist")))?;
+            let scheduled = self.scheduled()?;
+            self.forecast_of(&a, &scheduled, today, days)
+        })
     }
 
     /// The projections of the accounts in use.
     pub fn forecasts(&self, today: NaiveDate, days: i64) -> Result<Vec<Forecast>> {
-        let scheduled = self.scheduled()?;
-        self.accounts(false)?.iter().map(|a| self.forecast_of(a, &scheduled, today, days)).collect()
+        self.atomically(|| {
+            let scheduled = self.scheduled()?;
+            self.accounts(false)?.iter().map(|a| self.forecast_of(a, &scheduled, today, days)).collect()
+        })
     }
 
     fn forecast_of(&self, a: &Account, scheduled: &[Scheduled], today: NaiveDate, days: i64) -> Result<Forecast> {
@@ -177,7 +188,7 @@ impl Db {
                     amount: t.amount,
                     balance: 0,
                     scheduled_id: None,
-                    overdue: false,
+                    overdue: 0,
                 });
             }
         }
@@ -191,17 +202,42 @@ impl Db {
                 _ => continue,
             };
             let mut date = s.next_date;
-            for _ in 0..MAX_OCCURRENCES {
-                if date > until {
+            // The past due dates not recorded yet, counted today as one sum.
+            let (mut late, mut late_sum): (u32, Cents) = (0, 0);
+            while date < today {
+                late = late.checked_add(1).filter(|n| *n <= MAX_OVERDUE).ok_or_else(|| {
+                    anyhow!(trf(
+                        "\"{payee}\" has too many past due dates: record or delete what is overdue",
+                        &[("payee", &s.payee)]
+                    ))
+                })?;
+                late_sum = late_sum.checked_add(amount).ok_or_else(too_large)?;
+                let next = advance(date, s.every, &s.unit);
+                if next <= date {
                     break;
                 }
+                date = next;
+            }
+            if late > 0 {
+                let item = Item {
+                    date: today,
+                    payee: s.payee.clone(),
+                    amount: late_sum,
+                    balance: 0,
+                    scheduled_id: Some(s.id),
+                    overdue: late,
+                };
+                items.push(item);
+            }
+            // Then every due date ahead: at most one a day, so the horizon bounds them.
+            while date >= today && date <= until {
                 items.push(Item {
-                    date: date.max(today),
+                    date,
                     payee: s.payee.clone(),
                     amount,
                     balance: 0,
                     scheduled_id: Some(s.id),
-                    overdue: date < today,
+                    overdue: 0,
                 });
                 let next = advance(date, s.every, &s.unit);
                 if next <= date {
