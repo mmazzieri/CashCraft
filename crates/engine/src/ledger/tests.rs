@@ -1113,4 +1113,5 @@ fn a_transaction_made_recurring_starts_a_period_after_it_and_stays_as_it_is() {
         assert!(ops::call(&db, "add_scheduled", &bad, None).is_err(), "{bad}");
     }
     assert_eq!(db.scheduled().unwrap().len(), count);
+    assert_sound(&db, "recurring, at the end");
 }
