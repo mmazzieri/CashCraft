@@ -830,6 +830,8 @@ impl App {
             every,
             unit: f.unit.clone(),
         };
+        // A transfer has no tags: the field is hidden then, but keeps what was typed before switching.
+        let tags: &[String] = if to.is_some() { &[] } else { tags };
         let done = self.db.add_repeating(&s, tags, f.cleared && to.is_none(), db::today())?;
         Ok(if done.ids.is_empty() {
             trf("Scheduled from {date}", &[("date", &fmt_date(done.next_date))]).to_string()
